@@ -47,7 +47,7 @@ You can also build the docker image yourself. Once the container is running, you
 **Build the container image**
    From the repository root:
    ```bash
-   make docker_build name=<image_name>
+   docker compose -f docker/compose.yml build <image_name>
    ```
 
 `<image_name>` options
@@ -55,13 +55,22 @@ You can also build the docker image yourself. Once the container is running, you
 - `foundationpose_ssh` (for foundationpose with remote display)
 - `foundationpose_local` (for foundationpose with local display)
 
+Optionally, you may want to push the image to a remote registry (e.g., GitHub Container Registry) for easier sharing.
+
+If so, you can tag the image and push it:
+   ```bash
+   docker tag <image_name>:dev ghcr.io/<username>/<image_name>:dev
+   docker push ghcr.io/<username>/<image_name>:dev
+   ```
+Don't forget to change the visibility of the pushed image to public if you want others to access it.
+
 ### After Getting the Docker Image
 
 Every time you want to run a script inside the repo, follow these steps:
 
 **Run the container**
    ```bash
-   make docker_run name=<image_name>
+   docker compose -p "$USER" -f docker/compose.yml run --rm <image_name>
    ```
 
 **Execute a script inside the container**

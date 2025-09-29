@@ -1,6 +1,6 @@
 keys:
   - demo_video
-  - demo_image
+  # - demo_image
 
 preprocess:
   video_extraction:
