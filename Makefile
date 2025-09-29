@@ -9,4 +9,4 @@ docker_build:
 
 docker_run:
 	# Runs the service; will pull if needed. Use run for one-off containers.
-	docker compose -f docker/compose.yml run --rm $(name)
+	docker compose -p "$$USER" -f docker/compose.yml run --rm $(name)

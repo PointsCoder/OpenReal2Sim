@@ -7,19 +7,32 @@ services:
       context: ..
       dockerfile: Dockerfile
     image: openreal2sim:dev
-    container_name: openreal2sim
-    gpus: all
+    # container_name: openreal2sim
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     working_dir: /app
     volumes:
       - ../:/app
     stdin_open: true
     tty: true
     command: bash
+
   # FoundationPose Container (via SSH + XQuartz for display)
   foundationpose_ssh:
     image: wenbowen123/foundationpose
-    container_name: foundationpose
-    gpus: all
+    # container_name: foundationpose
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     network_mode: host
     ipc: host
     cap_add:
@@ -40,11 +53,18 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ${HOME}/.Xauthority:/root/.Xauthority:ro
     working_dir: /home/ubuntu/repos/pi-I
+
     # FoundationPose Container (using local display)
   foundationpose_local:
     image: wenbowen123/foundationpose
-    container_name: foundationpose
-    gpus: all
+    # container_name: foundationpose
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     network_mode: host
     ipc: host
     cap_add:

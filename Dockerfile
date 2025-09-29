@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu11
 # Exposing CUDA to build scripts
 ENV CUDA_HOME=/usr/local/cuda
 ENV FORCE_CUDA=1
+# T4=7.5, A100=8.0, RTX30=8.6, RTX4090/6000Ada=8.9, H100=9.0
 ENV TORCH_CUDA_ARCH_LIST="7.5"
 
 # xFormers
@@ -57,4 +58,3 @@ RUN cd /app/third_party/Hunyuan3D-2/hy3dgen/texgen/differentiable_renderer && py
 # Runtime env
 # -------------------------------------------------------------------------
 ENV PYTHONPATH=/app
-ENV CUDA_VISIBLE_DEVICES=0
