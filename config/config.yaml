@@ -1,16 +1,23 @@
 keys:
-  - demo_video
   - demo_image
+  - demo_video
+  - demo_videogen
 
+# global settings, can be overridden by local settings
 global:
-  preprocess:
+  preprocess: # stage
     fps: 25
     quality: 1
     resize: 1
+    gpu: "0" 
     depth_refinement: true
 
+# local settings for each key
 local:
-  demo_video:
-    preprocess:
+  demo_video: # key name
+    preprocess: # stage
       resize: 0.5
+  demo_videogen: # key name
+    preprocess: # stage
+      resize: 1.0
   

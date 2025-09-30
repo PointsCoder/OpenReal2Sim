@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Run the full Mega-SAM depth & tracking pipeline.
-- If --video_name is given: run once.
-- Else: read keys from config/config.yaml and run all.
+Run depth and camera tracking from images
+Inputs:
+    - outputs/{key_name}/images/frame_00000.jpg, frame_00001.jpg, ...
+    - outputs/{key_name}/geometry/geometry.npz (with initial frames)
+Outputs:
+    - outputs/{key_name}/geometry/geometry.npz (saving frames, depths, and camera infos)
+Parameters:
+    - 
+Note:
+    - if for a single image, running monocular metric depth prediction
+    - if for multiple frames, running Mega-SaM pipeline
 """
 
 import os
@@ -11,7 +19,9 @@ import argparse
 import subprocess
 from pathlib import Path
 import yaml
+import numpy as np
 
+from utils.compose_config import compose_configs
 
 def run(cmd_list, env):
     """Run a command and stream output; raise on non-zero exit."""
@@ -19,7 +29,9 @@ def run(cmd_list, env):
     subprocess.run(cmd_list, check=True, env=env)
 
 
-def main(video_name: str, gpu: str):
+def run_megasam(video_name: str, key_cfgs: dict):
+    gpu = key_cfgs["gpu"]
+
     base_dir = Path.cwd()
     data_dir = base_dir / "outputs" / video_name
     frame_dir = data_dir / "images"
@@ -109,25 +121,95 @@ def main(video_name: str, gpu: str):
         "--w_normal", "5.0"
     ], env_cvd)
 
-    print(f"[Visualization] Saving multi-step PCD HTML to: {recon_dir / 'multistep_pcd.html'}")
-    from utils.viz_dynamic_pcd import save_multistep_pcd_html
-    save_multistep_pcd_html(video_name, max_points=5000)
+    # 6) Saving geometry.npz
+    geometry_path = data_dir / "geometry" / "geometry.npz"
+    recon_npz_path = recon_dir / "sgd_cvd_hr.npz"
+    recon_npz = np.load(recon_npz_path)
+    np.savez(
+        geometry_path,
+        images=recon_npz["images"], # [N, H, W, 3], uint8
+        depths=recon_npz["depths"], # [N, H, W], float32
+        intrinsics=recon_npz["intrinsic"], # [3, 3], float32
+        extrinsics=recon_npz["cam_c2w"], # [N, 4, 4], float32 camera to world transform
+        n_frames=recon_npz["images"].shape[0] # N
+    )
+
+    print(f"[Visualization] Saving dynamic PCD HTML")
+    from utils.viz_dynamic_pcd import save_dynamic_pcd
+    save_dynamic_pcd(video_name, max_points=5000)
 
     print(f"[Done] {video_name}")
 
+def run_moge(key_name: str, key_cfgs: dict):
+    """
+    Run MoGe-2 depth predictor on a single RGB image (uint8 HxWx3).
+    Returns float32 depth (H,W) in arbitrary metric (to be aligned).
+    """
+    import torch
+    from moge.model.v2 import MoGeModel
+    device = torch.device(f"cuda:{key_cfgs['gpu']}")
+    model = MoGeModel.from_pretrained("Ruicheng/moge-2-vitl-normal").to(device).eval()
+    geometry_path = Path("outputs") / key_name / "geometry" / "geometry.npz"
+    images = np.load(geometry_path)["images"] # [1, H, W, 3], uint8
+    assert images.shape[0] == 1, "MoGe-2 only supports single image"
+    image = images[0]  # [H, W, 3], uint8
+    with torch.no_grad():
+        inp = torch.tensor(image / 255.0, dtype=torch.float32, device=device).permute(2, 0, 1).unsqueeze(0)
+        out = model.infer(inp[0])
+        depth = out["depth"].detach().float().cpu().numpy() # [H, W], float32
+        intrinsics = out["intrinsics"].detach().float().cpu().numpy() # [3, 3], float32
+        fx = intrinsics[0,0]
+        fy = intrinsics[1,1]
+        cx = intrinsics[0,2]
+        cy = intrinsics[1,2]
+        H, W = image.shape[0], image.shape[1]
+        intrinsics = np.array(
+            [fx*W, 0, cx*W,
+             0, fy*H, cy*H,
+             0, 0, 1], dtype=np.float32
+        ).reshape(3,3)
+        np.savez(
+            geometry_path,
+            images=images, # [1, H, W, 3], uint8
+            depths=depth[np.newaxis, ...], # [1, H, W]
+            intrinsics=intrinsics, # [3, 3]
+            extrinsics=np.eye(4, dtype=np.float32)[np.newaxis, ...], # [1, 4, 4] camera to world transform
+            n_frames=1
+        )
+    print(f"[Visualization] Saving dynamic PCD HTML")
+    from utils.viz_dynamic_pcd import save_dynamic_pcd
+    save_dynamic_pcd(key_name, max_points=None)
+
+    print(f"[Done] {key_name}")
+    return
+
+def mode_check(key_name: str) -> str:
+    geometry_path = Path("outputs") / key_name / "geometry" / "geometry.npz"
+    n_frames = np.load(geometry_path)["n_frames"].item()
+    if n_frames == 1:
+        return "image"
+    else:
+        return "video"
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser("run_pipeline")
-    parser.add_argument("--video_name", type=str, default=None, help="If set, run only this key")
-    parser.add_argument("--gpu", type=str, default="0", help="CUDA_VISIBLE_DEVICES value")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--key_name", type=str, default=None, help="If set, run only this key")
     parser.add_argument("--config", type=str, default="config/config.yaml", help="YAML with keys: [lab1, ...]")
     args = parser.parse_args()
 
-    # If a single key is given via CLI, run it; else read keys from YAML and run all.
-    if args.video_name is not None:
-        main(args.video_name, args.gpu)
+    if args.key_name is not None:
+        keys = [args.key_name]
     else:
         with open(args.config, "r") as f:
             cfg = yaml.safe_load(f)
-        for k in cfg["keys"]:
-            main(k, args.gpu)
+        keys = [k for k in cfg["keys"]]
+
+    for key in keys:
+        mode = mode_check(key)
+        key_cfgs = compose_configs(key, cfg)
+        if mode == "video":
+            print(f"[Info] Running mega-sam for video: {key}")
+            run_megasam(key, key_cfgs)
+        else:
+            print(f"[Info] Running moge for image: {key}")
+            run_moge(key, key_cfgs)

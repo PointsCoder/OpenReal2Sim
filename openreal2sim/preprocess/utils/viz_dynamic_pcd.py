@@ -3,7 +3,6 @@
 """
 Save an interactive multi-frame colored point cloud HTML after reconstruction.
 Additionally: merge all frames into a single point cloud and voxel-downsample (Open3D).
-Minimal refactor from the user's standalone script, now as a callable function.
 """
 
 from __future__ import annotations
@@ -65,9 +64,9 @@ def save_merged_cloud_ply(key: str,
     Returns:
         output_path: file path string to the saved file.
     """
-    recon_dir = Path(f"outputs/{key}/geometry/reconstruction")
+    recon_dir = Path(f"outputs/{key}/geometry")
     recon_dir.mkdir(parents=True, exist_ok=True)
-    out_path = recon_dir / f"4drecon.ply"
+    out_path = recon_dir / f"dynamic_pcd.ply"
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points_xyz.astype(np.float64))
@@ -83,14 +82,14 @@ def save_merged_cloud_ply(key: str,
     return str(out_path)
 
 
-def save_multistep_pcd_html(
+def save_dynamic_pcd(
     key: str,
-    max_points: int = 5000,
+    max_points: int = 50000,
     point_size: int = 5,
-    title: str = "Multi-step Point Cloud (drag the slider or press Play)",
+    title: str = "Dynamic Point Cloud (drag the slider or press Play)",
     # —— Merged cloud options —— #
     save_merged: bool = True,
-    voxel_size: float = 0.005,
+    voxel_size: float = 0.01,
     max_total_points: int = 500_000,
     merge_use_frame_downsample: bool = True,
 ) -> tuple[str, str | None]:
@@ -116,14 +115,14 @@ def save_multistep_pcd_html(
           - merged_out: saved merged PLY path if save_merged=True, else None
     """
     # I/O paths follow your convention
-    npz_path = f"outputs/{key}/geometry/reconstruction/sgd_cvd_hr.npz"
-    html_out = f"outputs/{key}/geometry/reconstruction/multistep_pcd.html"
+    npz_path = f"outputs/{key}/geometry/geometry.npz"
+    html_out = f"outputs/{key}/geometry/dynamic_pcd.html"
 
     # Load data directly, keep your original naming
     data = np.load(npz_path)
     imgs, depths = data["images"], data["depths"]        # imgs: (T,H,W,3) uint8; depths: (T,H,W) float16
-    K = data["intrinsic"]                                # (3,3)
-    c2ws = data["cam_c2w"]                               # (T,4,4)
+    K = data["intrinsics"]                                # (3,3)
+    c2ws = data["extrinsics"]                               # (T,4,4)
 
     # Camera intrinsics
     H, W = depths.shape[1], depths.shape[2]
@@ -153,7 +152,7 @@ def save_multistep_pcd_html(
         cols01_all = (imgs[t].reshape(-1, 3) / 255.0).astype(np.float32)
 
         # -------- choose indices for HTML frame & (optionally) for merging --------
-        if max_points < num_pixels:
+        if max_points is not None and max_points < num_pixels:
             # Random subset for interactive speed
             keep_idx = np.random.choice(num_pixels, size=max_points, replace=False)
         else:
@@ -265,12 +264,12 @@ if __name__ == "__main__":
     keys = cfg["keys"]  # e.g., ["lab2", "lab3"]
 
     for scene_key in keys:
-        print(f"[Visualization] Saving multi-step PCD HTML to: outputs/{scene_key}/geometry/reconstruction/multistep_pcd.html")
-        html_path, merged_path = save_multistep_pcd_html(
+        print(f"[Visualization] Saving dynamic PCD HTML to: outputs/{scene_key}/geometry/dynamic_pcd.html")
+        html_path, merged_path = save_dynamic_pcd(
             key=scene_key,
             max_points=5000,                 # per-frame random downsample for HTML speed
             point_size=5,
-            title="Multi-step Point Cloud (drag the slider or press Play)",
+            title="Dynamic Point Cloud (drag the slider or press Play)",
             save_merged=True,                # enable merged cloud output
             voxel_size=0.001,                 # 1 mm voxel
             max_total_points=500_000,        # safety cap after voxel DS

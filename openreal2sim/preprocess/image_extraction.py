@@ -83,6 +83,14 @@ def run_ffmpeg(key_name: str, cfgs: dict):
     width, height = int(width * cfgs["resize"]), int(height * cfgs["resize"])
     print(f"[Info] Resizing video {input_path} to {width}x{height} and saving frames to {output_dir}")
 
+    # if image and video both exist, resize video frames to match the image size
+    if Path(f"data/{key_name}.jpg").is_file() or Path(f"data/{key_name}.png").is_file():
+        ref_image_path = Path("data") / f"{key_name}.png" if (Path("data") / f"{key_name}.png").is_file() else Path("data") / f"{key_name}.jpg"
+        ref_width, ref_height = read_image_size(ref_image_path)
+        ref_width, ref_height = int(ref_width * cfgs["resize"]), int(ref_height * cfgs["resize"])
+        width, height = ref_width, ref_height
+        print(f"[Info] Found reference image {ref_image_path}, resizing video frames to match its size: {width}x{height}")
+
     # Build ffmpeg filter chain: fps + scale to match the reference image
     vf = f"fps={cfgs['fps']},scale={width}:{height}:flags=lanczos"
 

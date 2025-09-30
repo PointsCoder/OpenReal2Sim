@@ -3,7 +3,8 @@ default_config = {
     "fps": 25,
     "quality": 1,
     "resize": 1,
-    "depth_refinement": True
+    "depth_refinement": True,
+    "gpu": "0"
 }
 
 def compose_configs(key_name: str, config: dict) -> dict:
