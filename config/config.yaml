@@ -1,8 +1,16 @@
 keys:
   - demo_video
-  # - demo_image
+  - demo_image
 
-preprocess:
-  video_extraction:
+global:
+  preprocess:
     fps: 25
     quality: 1
+    resize: 1
+    depth_refinement: true
+
+local:
+  demo_video:
+    preprocess:
+      resize: 0.5
+  
