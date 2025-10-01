@@ -7,7 +7,7 @@ Inputs:
     - data/{key_name}.mp4 (if present).
 Outputs:
     - outputs/{key_name}/images/frame_00000.jpg, frame_00001.jpg, ...
-    - outputs/{key_name}/geometry/geometry.npz (saving frames, depths, and camera infos)
+    - outputs/{key_name}/scene/scene.pkl (saving frames, depths, and camera infos)
 Parameters:
     - fps: extraction frame rate for videos.
     - quality: JPEG quality for extracted frames, 1(best)..31(worst).
@@ -22,6 +22,7 @@ from typing import Tuple
 from PIL import Image
 import json
 import numpy as np
+import pickle
 
 from utils.compose_config import compose_configs
 
@@ -110,9 +111,9 @@ def run_ffmpeg(key_name: str, cfgs: dict):
 
 def run_collect_info(key_name: str):
     data_dir = Path("outputs") / key_name / "images"
-    output_dir = Path("outputs") / key_name / "geometry"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "geometry.npz"
+    scene_dir = Path("outputs") / key_name / "scene"
+    scene_dir.mkdir(parents=True, exist_ok=True)
+    scene_path = scene_dir / "scene.pkl"
     frame_files = sorted(data_dir.glob("frame_*.jpg"), key=lambda x: int(x.stem.split("_")[1]))
     frames = []
     for f in frame_files:
@@ -121,14 +122,16 @@ def run_collect_info(key_name: str):
     frames = np.stack(frames, axis=0)    
     n_frames = len(frame_files)
     
-    np.savez(
-        output_path,
-        images=frames, # [N, H, W, 3] uint8 array
-        n_frames=n_frames,
-        height=frames.shape[1],
-        width=frames.shape[2]
-    )
-    print(f"[Info] Wrote geometry information to: {output_path}")
+    saved_dict = {
+        "images": frames,
+        "n_frames": n_frames,
+        "height": frames.shape[1],
+        "width": frames.shape[2]
+    }
+    with open(scene_path, "wb") as f:
+        pickle.dump(saved_dict, f)
+
+    print(f"[Info] Wrote geometry information to: {scene_path}")
 
 def mode_check(key_name: str) -> Path:
     """

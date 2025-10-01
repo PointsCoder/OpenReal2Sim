@@ -41,18 +41,22 @@ If we have GT info, e.g., depth image, known intrinsics, calibrate the predicted
 
 ## Outputs
 
-We will obtain `outputs/{key_name}/geometry/geometry.npz` that contains all necessary geometry and motion information:
+We will obtain `outputs/{key_name}/scene/scene.pkl` that contains all necessary geometry and motion information:
 
 ```
-npz:
-    images # [N, H, W, 3], uint8 np array (input images or videos)
-    depths # [N, H, W], float array (predicted metric depths)
-    intrinsics # [3, 3] float array (camera fx, fy, cx, cy)
-    extrinsics # [N, 4, 4] (camera to world transform)
-    n_frames # number of frames N
-    height # frame height H
-    width # frame width W
+pkl file structure:
+{
+    "images": # [N, H, W, 3], uint8 np array (input images or videos)
+    "depths": # [N, H, W], float array (predicted metric depths)
+    "intrinsics": # [3, 3] float array (camera fx, fy, cx, cy)
+    "extrinsics": # [N, 4, 4] float array (camera to world transform)
+    "n_frames": # number of frames N
+    "height": # frame height H
+    "width": # frame width W
+}
 ```
+
+We also save intermediate results in `outputs/{key_name}/geometry/` for debugging purpose, e.g., dynamic point clouds.
 
 ## How to Use
 

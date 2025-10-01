@@ -3,18 +3,18 @@
 """
 If we have ground truth depth information, e.g. from an RGBD sensor, use this script to calibrate the predicted depth to real-world scale.
 Inputs:
-    - outputs/{key_name}/geometry/geometry.npz (predicted frames, depths, and camera infos)
+    - outputs/{key_name}/scene/scene.pkl (predicted frames, depths, and camera infos)
     - ground truth information:
         - data/{key_name}_depth.png (first frame depth)
         - fx, fy, cx, cy, depth_scale in config/config.yaml
 Outputs:
-    - outputs/{key_name}/geometry/geometry.npz (refined frames, depths, and camera infos)
+    - outputs/{key_name}/scene/scene.pkl (refined frames, depths, and camera infos)
 Notes:
     - for a single image, calibrate the predicted depth to real-world scale with the provided ground truth depth (data/{key_name}_depth.png)
     - for multiple frames, calibrate the predicted depth to real-world scale with the provided ground truth depth (data/{key_name}_depth.png) on the first frame, 
         and apply the same scale and shift to all frames
     - optionally, refine the predicted depth (Unidepth+DepthAnything) with monocular depth prediction (MoGe-2) before calibration
-    - optionally, replace the camera intrinsics in geometry.npz with the one from config.yaml
+    - optionally, replace the camera intrinsics in scene/scene.pkl with the one from config.yaml
 """
 
 
@@ -24,6 +24,7 @@ import numpy as np
 import cv2
 import yaml
 import torch
+import pickle
 from moge.model.v2 import MoGeModel
 
 from utils.compose_config import compose_configs
@@ -210,7 +211,7 @@ def process_key(key: str, key_cfgs: dict) -> None:
 
     # Paths
     recon_dir = base_dir / "outputs" / key / "geometry"
-    npz_path = recon_dir / "geometry.npz"
+    scene_path = base_dir / "outputs" / key / "scene" / "scene.pkl"
     depth0_path = base_dir / "data" / f"{key}_depth.png"
 
     if not depth0_path.is_file():
@@ -228,8 +229,9 @@ def process_key(key: str, key_cfgs: dict) -> None:
     # clip the real depth for outlier removal
     depth0_m = filter_depths(depth0_m, min_val=key_cfgs.get("depth_min"), max_val=key_cfgs.get("depth_max"))
 
-    # Load npz
-    data = np.load(str(npz_path))
+    # Load scene.pkl
+    with open(str(scene_path), "rb") as f:
+        data = pickle.load(f)
     imgs_npz = data["images"]     # (N,h,w,3) uint8
     depths_npz = data["depths"]   # (N,h,w) float16/float32
     K = data["intrinsics"]         # (3,3) float32
@@ -267,7 +269,7 @@ def process_key(key: str, key_cfgs: dict) -> None:
     depths_aligned = a * depths_for_alignment + b
     depths_aligned = np.clip(depths_aligned, 1e-3, 1e2).astype(np.float16)
 
-    # overwrite geometry.npz
+    # overwrite scene.pkl
     fx, fy, cx, cy = key_cfgs.get("fx"), key_cfgs.get("fy"), key_cfgs.get("cx"), key_cfgs.get("cy")
     if fx is not None and fy is not None and cx is not None and cy is not None:
         print(f"[Info] Overwriting {key} intrinsics with the one from config.yaml")
@@ -280,16 +282,18 @@ def process_key(key: str, key_cfgs: dict) -> None:
         )
 
     N = imgs_resized.shape[0]
-    np.savez(
-        str(npz_path),
-        images=imgs_resized, # [N, H, W, 3], uint8
-        depths=depths_aligned, # [N, H, W]
-        intrinsics=K, # [3, 3]
-        extrinsics=data["extrinsics"], # [N, 4, 4] camera to world transform
-        n_frames=N,
-        height=imgs_resized.shape[1],
-        width=imgs_resized.shape[2]
-    )
+    saved_dict = {
+        "images": imgs_resized,            # (N,H,W,3) uint8
+        "depths": depths_aligned,          # (N,H,W) float16
+        "intrinsics": K,                    # (3,3) float32
+        "extrinsics": data["extrinsics"],  # (N,4,4) float32
+        "n_frames": N,
+        "height": imgs_resized.shape[1],      # int
+        "width": imgs_resized.shape[2],    # int
+    }
+
+    with open(str(scene_path), "wb") as f:
+        pickle.dump(saved_dict, f)
 
     # Export PLYs for rebugging depth alignment results
     export_depth_alignment_pointcloud(

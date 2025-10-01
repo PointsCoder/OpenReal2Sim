@@ -12,6 +12,7 @@ from tqdm import tqdm
 import yaml
 from pathlib import Path
 import open3d as o3d  # Default assumption: Open3D is installed
+import pickle
 
 base_dir = Path.cwd()
 
@@ -114,12 +115,15 @@ def save_dynamic_pcd(
           - html_out: output HTML path string for the animation
           - merged_out: saved merged PLY path if save_merged=True, else None
     """
-    # I/O paths follow your convention
-    npz_path = f"outputs/{key}/geometry/geometry.npz"
+    # I/O paths
+    scene_path = f"outputs/{key}/scene/scene.pkl"
+    geometry_dir = Path(f"outputs/{key}/geometry")
+    geometry_dir.mkdir(parents=True, exist_ok=True)
     html_out = f"outputs/{key}/geometry/dynamic_pcd.html"
 
     # Load data directly, keep your original naming
-    data = np.load(npz_path)
+    with open(scene_path, "rb") as f:
+        data = pickle.load(f)
     imgs, depths = data["images"], data["depths"]        # imgs: (T,H,W,3) uint8; depths: (T,H,W) float16
     K = data["intrinsics"]                                # (3,3)
     c2ws = data["extrinsics"]                               # (T,4,4)

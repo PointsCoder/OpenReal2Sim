@@ -70,7 +70,7 @@ Every time you want to run a script inside the repo, follow these steps:
 
 **Run the container**
    ```bash
-   docker compose -p "$USER" -f docker/compose.yml run --rm <image_name>
+   docker compose -p "$USER" -f docker/compose.yml run <image_name>
    ```
 
 **Execute a script inside the container**

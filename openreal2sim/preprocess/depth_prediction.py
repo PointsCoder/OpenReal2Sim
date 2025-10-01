@@ -4,9 +4,9 @@
 Run depth and camera tracking from images
 Inputs:
     - outputs/{key_name}/images/frame_00000.jpg, frame_00001.jpg, ...
-    - outputs/{key_name}/geometry/geometry.npz (with initial frames)
+    - outputs/{key_name}/scene/scene.pkl (with initial frames)
 Outputs:
-    - outputs/{key_name}/geometry/geometry.npz (saving frames, depths, and camera infos)
+    - outputs/{key_name}/scene/scene.pkl (saving frames, depths, and camera infos)
 Parameters:
     - 
 Note:
@@ -20,6 +20,7 @@ import subprocess
 from pathlib import Path
 import yaml
 import numpy as np
+import pickle
 
 from utils.compose_config import compose_configs
 
@@ -121,21 +122,22 @@ def run_megasam(video_name: str, key_cfgs: dict):
         "--w_normal", "5.0"
     ], env_cvd)
 
-    # 6) Saving geometry.npz
-    geometry_path = data_dir / "geometry" / "geometry.npz"
+    # 6) Saving scene.pkl
     recon_npz_path = recon_dir / "sgd_cvd_hr.npz"
     recon_npz = np.load(recon_npz_path)
-    np.savez(
-        geometry_path,
-        images=recon_npz["images"], # [N, H, W, 3], uint8
-        depths=recon_npz["depths"], # [N, H, W], float32
-        intrinsics=recon_npz["intrinsic"], # [3, 3], float32
-        extrinsics=recon_npz["cam_c2w"], # [N, 4, 4], float32 camera to world transform
-        n_frames=recon_npz["images"].shape[0], # N
-        height=recon_npz["images"].shape[1],
-        width=recon_npz["images"].shape[2]
-    )
-
+    scene_path = data_dir / "scene" / "scene.pkl"
+    saved_dict = {
+        "images": recon_npz["images"], # [N, H, W, 3], uint8
+        "depths": recon_npz["depths"], # [N, H, W], float32
+        "intrinsics": recon_npz["intrinsic"], # [3, 3], float32
+        "extrinsics": recon_npz["cam_c2w"], # [N, 4, 4], float32 camera to world transform
+        "n_frames": recon_npz["images"].shape[0], # N
+        "height": recon_npz["images"].shape[1],
+        "width": recon_npz["images"].shape[2]
+    }
+    with open(scene_path, "wb") as f:
+        pickle.dump(saved_dict, f)
+    
     print(f"[Visualization] Saving dynamic PCD HTML")
     from utils.viz_dynamic_pcd import save_dynamic_pcd
     save_dynamic_pcd(video_name, max_points=5000)
@@ -151,8 +153,10 @@ def run_moge(key_name: str, key_cfgs: dict):
     from moge.model.v2 import MoGeModel
     device = torch.device(f"cuda:{key_cfgs['gpu']}")
     model = MoGeModel.from_pretrained("Ruicheng/moge-2-vitl-normal").to(device).eval()
-    geometry_path = Path("outputs") / key_name / "geometry" / "geometry.npz"
-    images = np.load(geometry_path)["images"] # [1, H, W, 3], uint8
+    scene_path = Path("outputs") / key_name / "scene" / "scene.pkl"
+    with open(scene_path, "rb") as f:
+        scene_data = pickle.load(f)
+    images = scene_data["images"] # [1, H, W, 3], uint8
     assert images.shape[0] == 1, "MoGe-2 only supports single image"
     image = images[0]  # [H, W, 3], uint8
     with torch.no_grad():
@@ -170,16 +174,19 @@ def run_moge(key_name: str, key_cfgs: dict):
              0, fy*H, cy*H,
              0, 0, 1], dtype=np.float32
         ).reshape(3,3)
-        np.savez(
-            geometry_path,
-            images=images, # [1, H, W, 3], uint8
-            depths=depth[np.newaxis, ...], # [1, H, W]
-            intrinsics=intrinsics, # [3, 3]
-            extrinsics=np.eye(4, dtype=np.float32)[np.newaxis, ...], # [1, 4, 4] camera to world transform
-            n_frames=1,
-            height=images.shape[1],
-            width=images.shape[2]
-        )
+        
+        saved_dict = {
+            "images": images, # [1, H, W, 3], uint8
+            "depths": depth[np.newaxis, ...], # [1, H, W], float32
+            "intrinsics": intrinsics, # [3, 3], float32
+            "extrinsics": np.eye(4, dtype=np.float32)[np.newaxis, ...], # [1, 4, 4] camera to world transform
+            "n_frames": 1,
+            "height": images.shape[1],
+            "width": images.shape[2]
+        }
+        with open(scene_path, "wb") as f:
+            pickle.dump(saved_dict, f)
+
     print(f"[Visualization] Saving dynamic PCD HTML")
     from utils.viz_dynamic_pcd import save_dynamic_pcd
     save_dynamic_pcd(key_name, max_points=None)
@@ -188,8 +195,10 @@ def run_moge(key_name: str, key_cfgs: dict):
     return
 
 def mode_check(key_name: str) -> str:
-    geometry_path = Path("outputs") / key_name / "geometry" / "geometry.npz"
-    n_frames = np.load(geometry_path)["n_frames"].item()
+    scene_path = Path("outputs") / key_name / "scene" / "scene.pkl"
+    with open(scene_path, "rb") as f:
+        scene_data = pickle.load(f)
+    n_frames = scene_data["n_frames"]
     if n_frames == 1:
         return "image"
     else:
