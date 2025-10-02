@@ -82,6 +82,10 @@ local:
       ...
 ```
 
+Download Mega-SaM checkpoints by running:
+```
+python openreal2sim/preprocess/utils/download_checkpoints.py
+```
 
 If everything is ready, run the all-in-one script:
 ```
