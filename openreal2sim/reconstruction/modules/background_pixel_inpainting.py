@@ -10,6 +10,8 @@ Outputs:
     - outputs/{key_name}/reconstruction/background.jpg (inpainted background image)
     - outputs/{key_name}/reconstruction/object_mask.jpg (object mask)
     - outputs/{key_name}/reconstruction/ground_mask.jpg (ground mask)
+Note:
+    - added keys in "recon": "background", "foreground", "ground_mask", "object_mask"
 """
 
 
@@ -32,7 +34,7 @@ sys.path.append(repo_dir)
 from objectclear.pipelines import ObjectClearPipeline
 from objectclear.utils import resize_by_short_side
 
-def scene_inpainting(keys, key_scene_dicts, key_cfgs):
+def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
     
     # hyperparameters
     USE_FP16 = True
@@ -163,12 +165,12 @@ if __name__ == '__main__':
     cfg = yaml.safe_load(cfg_path.open("r"))
     keys = cfg["keys"]
     from utils.compose_config import compose_configs
-    key_cfgs = [compose_configs(key, cfg) for key in keys]
+    key_cfgs = {key: compose_configs(key, cfg) for key in keys}
     key_scene_dicts = {}
     for key in keys:
         scene_pkl = base_dir / f'outputs/{key}/scene/scene.pkl'
         with open(scene_pkl, 'rb') as f:
             scene_dict = pickle.load(f)
         key_scene_dicts[key] = scene_dict
-    scene_inpainting(keys, key_scene_dicts, key_cfgs)
+    background_pixel_inpainting(keys, key_scene_dicts, key_cfgs)
 

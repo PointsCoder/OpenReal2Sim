@@ -1,6 +1,12 @@
 
 default_config = {
     "gpu": "0",
+    "obj_dilate_pixels": 8,
+    "ground_dilate_pixels": 8,
+    "bg_completion_mode": "plane",  # "plane" or "moge"
+    "bg_mesh_simplify_step": 1,  # 1 means no background mesh simplification
+    "bg_mesh_target_faces": 0,  # 0 means no background mesh simplification
+    "bg_mesh_thickness": 0.1,  # in meters, added thickness of the background mesh
 }
 
 def compose_configs(key_name: str, config: dict) -> dict:
