@@ -19,6 +19,7 @@ import open3d as o3d
 import trimesh
 import yaml
 import pickle
+from PIL import Image
 
 # ──────────────────── util ─────────────────────
 def get_boundary_edges(mesh: trimesh.Trimesh):
@@ -169,6 +170,7 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
 
         H, W = pmap.shape[:2]
         img = recon["background"]
+        img = Image.fromarray(np.ascontiguousarray(img), mode="RGB")
 
         # plane estimation to determine mesh thickening direction
         ground_mask = recon["ground_mask"]
