@@ -1,0 +1,5 @@
+{
+    "python.analysis.extraPaths": [
+        "./third_party/Grounded-SAM-2"
+    ]
+}
