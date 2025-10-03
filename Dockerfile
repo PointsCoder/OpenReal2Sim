@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu11
 ENV CUDA_HOME=/usr/local/cuda
 ENV FORCE_CUDA=1
 # T4=7.5, A100=8.0, RTX30=8.6, RTX4090/6000Ada=8.9, H100=9.0
-ENV TORCH_CUDA_ARCH_LIST="7.5"
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0"
 
 # xFormers
 RUN pip install -v --no-build-isolation -U \
@@ -44,13 +44,14 @@ RUN pip install --no-cache-dir -r /tmp/requirements.docker.txt
 
 
 # -------------------------------------------------------------------------
-# Third-Party compiled Python deps (mega-sam base)
+# Third-Party compiled Python deps
 # -------------------------------------------------------------------------
 
+# mega-sam
 COPY third_party/mega-sam /app/third_party/mega-sam
 RUN cd /app/third_party/mega-sam/base && python setup.py install
 
-
+# Hunyuan3D
 COPY third_party/Hunyuan3D-2 /app/third_party/Hunyuan3D-2
 RUN cd /app/third_party/Hunyuan3D-2/hy3dgen/texgen/custom_rasterizer && python setup.py install
 RUN cd /app/third_party/Hunyuan3D-2/hy3dgen/texgen/differentiable_renderer && python setup.py install

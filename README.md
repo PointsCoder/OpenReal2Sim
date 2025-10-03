@@ -24,6 +24,14 @@ docker compose -p "$USER" -f docker/compose.yml run --rm openreal2sim
 bash scripts/installation/ckpt_download.sh
 ```
 
+**Tips if you are using VSCode**:
+
+1. Install the [Container Tools](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.vscode-containers) extension for setting up the docker container as a remote development environment.
+
+2. Install the [vscode-3d-preview](https://marketplace.visualstudio.com/items?itemName=tatsy.vscode-3d-preview) extension for visualizing 3D point clouds directly in VSCode.
+
+3. Install the [glTF Model Viewer](https://marketplace.visualstudio.com/items?itemName=cloudedcat.vscode-model-viewer) extension for visualizing textured meshes (.glb files) directly in VSCode.
+
 ## How to Use
 
 Our framework contains several stages:
