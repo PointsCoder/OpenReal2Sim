@@ -15,6 +15,7 @@ Notes:
         and apply the same scale and shift to all frames
     - optionally, refine the predicted depth (Unidepth+DepthAnything) with monocular depth prediction (MoGe-2) before calibration
     - optionally, replace the camera intrinsics in scene/scene.pkl with the one from config.yaml
+    - In most cases this is not required for r3d.
 """
 
 

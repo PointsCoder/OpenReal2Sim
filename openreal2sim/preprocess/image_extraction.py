@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# r3d extraction refers to SPOT.
+
 """
 Extract frames from images or videos, reading configs from YAML file.
 Inputs:
@@ -23,6 +25,11 @@ from PIL import Image
 import json
 import numpy as np
 import pickle
+import cv2
+import liblzfse
+from zipfile import ZipFile
+import shutil
+from scipy.spatial.transform import Rotation
 
 from utils.compose_config import compose_configs
 
@@ -74,6 +81,142 @@ def get_video_resolution(video_path):
     height = info["streams"][0]["height"]
     return width, height
 
+
+def load_depth(filepath, H, W):
+    """Load depth data from compressed file."""
+    with open(filepath, 'rb') as depth_fh:
+        raw_bytes = depth_fh.read()
+        decompressed_bytes = liblzfse.decompress(raw_bytes)
+        depth_img = np.frombuffer(decompressed_bytes, dtype=np.float32)
+        depth_img = depth_img.reshape((H, W)) 
+    return depth_img
+
+def to_tensor_func(arr):
+    import torch
+    from copy import deepcopy
+    if arr.ndim == 2:
+        arr = arr[:, :, np.newaxis]
+    arr = deepcopy(arr)
+    return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+
+def run_r3d(key_name: str, cfgs: dict):
+    """Extract frames and depth from R3D file."""
+    from promptda.promptda import PromptDA
+    from promptda.utils.io_wrapper import load_image
+    import torch
+    device = torch.device(f"cuda:{cfgs['gpu']}")
+    model = PromptDA.from_pretrained("depth-anything/prompt-depth-anything-vitl").to(device).eval()
+    input_path = Path("data") / f"{key_name}.r3d"
+    output_dir = Path("outputs") / key_name / "images"
+    depth_dir = Path("outputs") / key_name / "depth"
+    
+    # Create output directories
+    output_dir.mkdir(parents=True, exist_ok=True)
+    depth_dir.mkdir(parents=True, exist_ok=True)
+
+    
+    # Create temporary extraction directory
+    temp_dir = Path("outputs") / key_name / "temp_r3d"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Extract R3D file
+        print("[Info] Extracting R3D file...")
+        with ZipFile(input_path) as zip_file:
+            zip_file.extractall(temp_dir)
+        
+        # Load metadata
+        metadata_path = temp_dir / 'metadata'
+        with open(metadata_path, "rb") as f:
+            metadata = json.loads(f.read())
+        
+        poses = np.asarray(metadata['poses'])  # (N, 7) [x, y, z, qx, qy, qz, qw]
+        
+        # Get intrinsics
+        K = np.asarray(metadata['K']).reshape(3, 3).T
+        fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+        
+        # Process RGB and depth data
+        rgbd_dir = temp_dir / 'rgbd'
+        rgb_path_list = list(rgbd_dir.glob('*.jpg'))
+        rgb_path_list.sort()
+        
+        assert len(poses) == len(rgb_path_list), f"Pose count ({len(poses)}) != RGB count ({len(rgb_path_list)})"
+        
+        # Get image dimensions
+        downscale_factor = 3.75  # 1.0 for front and 3.75 for rear camera set by iOS.
+        H, W = cv2.imread(str(rgb_path_list[0])).shape[:2]
+
+        H_dc, W_dc = int(H/downscale_factor), int(W/downscale_factor)
+                
+        print(f"[Info] Processing {len(rgb_path_list)} frames...")
+        
+        # Store extrinsics and depth paths for scene info
+        extrinsics = []
+        depth_paths = []
+        resize_factor = cfgs.get("resize", 1.0)
+        new_width = int(W * resize_factor)
+        new_height = int(H * resize_factor)
+
+        for frame_idx, rgb_path in enumerate(rgb_path_list):
+            fname = rgb_path.stem
+            
+            # Copy RGB image to images directory with frame naming
+            rgb_output_path = output_dir / f"frame_{frame_idx:05d}.jpg"
+            
+            # Load and resize RGB image
+            with Image.open(rgb_path) as im:
+                rgb = im.convert("RGB")
+
+                if resize_factor != 1.0:
+                    rgb = rgb.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                rgb.save(rgb_output_path, format="JPEG", quality=100, subsampling=0, optimize=True)
+            # Process depth if available
+            depth_path = rgb_path.with_suffix('.depth')
+            depth_output_path = depth_dir / f"frame_{frame_idx:05d}.png"
+            
+            if depth_path.exists():
+                depth = load_depth(str(depth_path), H_dc, W_dc)
+                depth = to_tensor_func(depth).to(device)
+                image = load_image(str(rgb_path)).to(device)
+                depth = model.predict(image, depth).cpu().numpy()[0,0]
+                depth = cv2.resize(depth, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+                depth = depth * 1000.
+                cv2.imwrite(str(depth_output_path), depth.astype(np.uint16))
+ 
+            # Convert camera pose (cam2world) to extrinsic matrix (world2cam)
+            pose = poses[frame_idx]  # cam2world
+            pose_mat = np.eye(4)
+            pose_mat[:3, :3] = Rotation.from_quat(pose[3:]).as_matrix()
+            pose_mat[:3, 3] = pose[:3]
+            extrinsic = np.linalg.inv(pose_mat)  # world2cam
+            extrinsics.append(extrinsic)
+        
+        # Update intrinsics based on resize factor
+        if cfgs.get("resize", 1.0) != 1.0:
+            K[0, 0] *= resize_factor  # fx
+            K[1, 1] *= resize_factor  # fy
+            K[0, 2] *= resize_factor  # cx
+            K[1, 2] *= resize_factor  # cy
+        
+    # Store intrinsics and extrinsics
+    except Exception as e:
+        print(f"[Error] Error processing R3D file: {e}")
+        return
+    finally:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+    scene_dir = Path("outputs") / key_name / "scene"
+    scene_dir.mkdir(parents=True, exist_ok=True)
+    intrinsics_path = scene_dir / "intrinsics.npy"
+    extrinsics_path = scene_dir / "extrinsics.npy"
+    np.save(intrinsics_path, K)
+    np.save(extrinsics_path, np.stack(extrinsics, axis=0))
+        
+    
+    
+
+
 def run_ffmpeg(key_name: str, cfgs: dict):
     """Run ffmpeg to extract frames from one video, scaling to reference image size."""
     input_path = Path("data") / f"{key_name}.mp4"
@@ -111,9 +254,12 @@ def run_ffmpeg(key_name: str, cfgs: dict):
 
 def run_collect_info(key_name: str):
     data_dir = Path("outputs") / key_name / "images"
+    depth_dir = Path("outputs") / key_name / "depth"
     scene_dir = Path("outputs") / key_name / "scene"
     scene_dir.mkdir(parents=True, exist_ok=True)
     scene_path = scene_dir / "scene.pkl"
+    extrinsics_path = scene_dir / "extrinsics.npy"
+    intrinsics_path = scene_dir / "intrinsics.npy"
     frame_files = sorted(data_dir.glob("frame_*.jpg"), key=lambda x: int(x.stem.split("_")[1]))
     frames = []
     for f in frame_files:
@@ -122,12 +268,41 @@ def run_collect_info(key_name: str):
     frames = np.stack(frames, axis=0)    
     n_frames = len(frame_files)
     
-    saved_dict = {
+    
+    depth_files = sorted(depth_dir.glob("frame_*.png"), key=lambda x: int(x.stem.split("_")[1]))
+    depths = []
+    for f in depth_files:
+        depth = cv2.imread(str(f), cv2.IMREAD_UNCHANGED)
+        depths.append(depth)
+    depths = np.stack(depths, axis=0)
+
+
+    if extrinsics_path.exists():
+        extrinsics = np.load(extrinsics_path)
+    else:
+        extrinsics = None
+    if intrinsics_path.exists():
+        intrinsics = np.load(intrinsics_path)
+    else:
+        intrinsics = None
+   
+
+    saved_dict = {}
+    if scene_path.exists():
+        with open(scene_path, "rb") as f:
+            saved_dict = pickle.load(f)
+    
+    # Update with image information
+    saved_dict.update({
         "images": frames,
+        "depths": depths,
+        "intrinsics": intrinsics,
+        "extrinsics": extrinsics,
         "n_frames": n_frames,
         "height": frames.shape[1],
         "width": frames.shape[2]
-    }
+    })
+    
     with open(scene_path, "wb") as f:
         pickle.dump(saved_dict, f)
 
@@ -140,11 +315,14 @@ def mode_check(key_name: str) -> Path:
     png_path = Path("data") / f"{key_name}.png"
     jpg_path = Path("data") / f"{key_name}.jpg"
     video_path = Path("data") / f"{key_name}.mp4"
+    r3d_path = Path("data") / f"{key_name}.r3d"
     mode = []
     if png_path.is_file() or jpg_path.is_file():
         mode.append("image")
     if video_path.is_file():
         mode.append("video")
+    if r3d_path.is_file():
+        mode.append("r3d")
     return mode
 
 def main(config_file: str = "config/config.yaml"):
@@ -161,6 +339,8 @@ def main(config_file: str = "config/config.yaml"):
             run_ffmpeg(key_name, key_config)
         if "image" in key_modes:
             run_image(key_name, key_config)
+        if "r3d" in key_modes:
+            run_r3d(key_name, key_config)
         run_collect_info(key_name)
 
 if __name__ == "__main__":

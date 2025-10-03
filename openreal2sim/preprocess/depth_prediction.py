@@ -12,6 +12,7 @@ Parameters:
 Note:
     - if for a single image, running monocular metric depth prediction
     - if for multiple frames, running Mega-SaM pipeline
+    - if for a r3d file, run promptda.
 """
 
 import os
