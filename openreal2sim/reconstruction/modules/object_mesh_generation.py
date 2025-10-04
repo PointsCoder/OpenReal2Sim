@@ -11,12 +11,15 @@ Outputs:
     - outputs/{key_name}/reconstruction/objects/{oid}_{name}.glb (object mesh)
     - outputs/{key_name}/reconstruction/objects/{oid}_{name}.png (object masked image)
 Note:
-    - added key "objects": a list of {
-                "oid": # object_id,
+    - added key "objects": {
+            "oid": {
+                "oid":   # object id,
                 "name": # object name,
                 "glb": # object glb path,
                 "mask": # object mask [H, W] boolean array,
-            }
+            },
+            ...
+        }
 """
 
 import os, pickle, json, random, sys
@@ -128,7 +131,7 @@ def object_mesh_generation(keys, key_scene_dicts, key_cfgs):
 
         orig_img = Image.fromarray(scene_dict["images"][0], mode="RGB")
 
-        object_meta = []
+        object_meta = {}
         # fixed seed kept (not used internally by these calls but preserved for parity)
         seed = random.randint(0, 99999)
         # generate object mesh for each object
@@ -143,29 +146,31 @@ def object_mesh_generation(keys, key_scene_dicts, key_cfgs):
             print(f"[Info] [{key}] saved crop → {png_path}")
 
             # 2) Hunyuan3D shape + texture
-            img_rgba = Image.open(png_path).convert("RGBA")
-            if img_rgba.mode == 'RGB':  # fallback: ensure RGBA
-                img_rgba = rembg(img_rgba)
-            # shape generation
-            mesh = pipeline_shapegen(image=img_rgba)[0]
-            # simplify mesh for much faster texturing
-            for cleaner in [FloaterRemover(), DegenerateFaceRemover(), FaceReducer()]:
-                mesh = cleaner(mesh)
-            print(f"[Info] [{key}] Hunyuan3D shape done for {stem}")
-            # texturing
-            mesh = pipeline_texgen(mesh, image=img_rgba)
-            print(f"[Info] [{key}] Hunyuan3D texture done for {stem}")
+            # img_rgba = Image.open(png_path).convert("RGBA")
+            # if img_rgba.mode == 'RGB':  # fallback: ensure RGBA
+            #     img_rgba = rembg(img_rgba)
+            # # shape generation
+            # mesh = pipeline_shapegen(image=img_rgba)[0]
+            # # simplify mesh for much faster texturing
+            # for cleaner in [FloaterRemover(), DegenerateFaceRemover(), FaceReducer()]:
+            #     mesh = cleaner(mesh)
+            # print(f"[Info] [{key}] Hunyuan3D shape done for {stem}")
+            # # texturing
+            # mesh = pipeline_texgen(mesh, image=img_rgba)
+            # print(f"[Info] [{key}] Hunyuan3D texture done for {stem}")
 
-            mesh.export(out_dir / f"{stem}.glb")
+            # mesh.export(out_dir / f"{stem}.glb")
+
+            # 3) update scene_dict & save mask
             mask_png = out_dir / f"{stem}_mask.jpg"
             Image.fromarray(mask.astype(np.uint8) * 255).save(mask_png)
 
-            object_meta.append({
+            object_meta[item['oid']] = {
                 "oid": item['oid'],
                 "name": name,
                 "glb": str(out_dir / f"{stem}.glb"),
                 "mask": mask,
-            })
+            }
 
             print(f"[Info] [{key}] Hunyuan3D finished for {stem}")
 

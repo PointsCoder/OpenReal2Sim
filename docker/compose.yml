@@ -22,6 +22,38 @@ services:
     tty: true
     command: bash
 
+  foundationpose:
+    image: shingarey/foundationpose_custom_cuda121
+    # container_name: foundationpose
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    network_mode: host
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - NVIDIA_DISABLE_REQUIRE=1
+      - DISPLAY=${DISPLAY}
+      - XAUTHORITY=/root/.Xauthority
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - ../:/app
+      - /home:/home
+      - /mnt:/mnt
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /tmp:/tmp
+      - ../outputs:/app/outputs
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${HOME}/.Xauthority:/root/.Xauthority:ro
+    working_dir: /app
+
   # FoundationPose Container (via SSH + XQuartz for display)
   foundationpose_ssh:
     image: wenbowen123/foundationpose

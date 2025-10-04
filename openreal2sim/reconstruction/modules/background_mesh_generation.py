@@ -15,6 +15,10 @@ Note:
         "info": {
             "background": {
                 "original": # original background mesh path,
+            },
+            "groundplane_in_cam": {
+                "point":  # a point on the ground plane [x,y,z],
+                "normal": # the normal of the ground plane [x,y,z], 
             }
         }
 """
@@ -253,6 +257,10 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         scene_dict["info"] = scene_dict.get("info", {})
         scene_dict["info"]["background"] = {
             "original": str(mesh_path),
+        }
+        scene_dict["info"]["groundplane_in_cam"] = {
+            "point": p0.tolist(),
+            "normal": normal.tolist(),
         }
         scene_dict["recon"]["normal"] = normal.astype(np.float32) # store normal direction
         key_scene_dicts[key] = scene_dict

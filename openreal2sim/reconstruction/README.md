@@ -79,3 +79,20 @@ pkl file structure:
 ```
 
 For debugging purpose, we also save the annotated images in `outputs/{key_name}/annotated_images`.
+
+**Step-7: object tracking and pose estimation**
+
+We use another docker image for this step:
+```
+docker compose -p "$USER" -f docker/compose.yml run foundationpose
+```
+
+Inside the container, run:
+```
+cd third_party/FoundationPose && bash build_all.sh
+```
+
+Then, run the tracking and pose estimation script:
+```
+python openreal2sim/reconstruction/modules/scenario_fdpose_optimization.py
+```
