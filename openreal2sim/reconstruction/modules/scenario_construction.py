@@ -21,17 +21,18 @@ Note:
                 "cx":     # principal point x,
                 "cy":     # principal point y,
             },
-            "objects": [  # a list of objects in the scene
-                {
-                    "oid": # object_id,
-                    "name": # object name,
-                    "object_center": # object center [x,y,z],
-                    "object_min":    # object aabb min [x,y,z],
-                    "object_max":    # object aabb max [x,y,z],
-                    "original":      # original object mesh path,
-                    "registered":    # registered object mesh path,
-                },
-            ]
+            "objects": {  # a list of objects in the scene
+                "oid":   {
+                        "oid":   # object id,
+                        "name": # object name,
+                        "object_center": # object center [x,y,z],
+                        "object_min":    # object aabb min [x,y,z],
+                        "object_max":    # object aabb max [x,y,z],
+                        "original":      # original object mesh path,
+                        "registered":    # registered object mesh path,
+                    },
+                ...
+            },
             "background": {
                 "original":   # original background mesh path,
                 "registered": # registered background mesh path,
@@ -339,7 +340,7 @@ def register_scene_meshes(key, fg_meshes, obj_infos, scene_dict):
 
     # transform object meshes
     base_dir = Path.cwd()
-    save_obj_infos = []
+    save_obj_infos = {}
     for obj_info, fg_mesh in zip(obj_infos, fg_meshes):
         # apply gravity and translation to each object mesh
         fg_mesh.apply_transform(T_gravity)
@@ -358,7 +359,7 @@ def register_scene_meshes(key, fg_meshes, obj_infos, scene_dict):
             "original": str(obj_info['glb']),
             "registered": str(out_path),
         }
-        save_obj_infos.append(save_obj_info)
+        save_obj_infos[obj_info['oid']] = save_obj_info
         print(f"[Info] Object {obj_info['oid']}_{obj_info['name']} aligned and saved to: {out_path}")
 
     # save transformed background mesh
@@ -369,10 +370,11 @@ def register_scene_meshes(key, fg_meshes, obj_infos, scene_dict):
     # save the entire scene as a glb
     scene = trimesh.Scene()
     scene.add_geometry(bg_mesh, node_name="background")
-    for obj_info in save_obj_infos:
+    for obj_info in save_obj_infos.values():
         fg_mesh = trimesh.load(obj_info['registered'])
         scene.add_geometry(fg_mesh, node_name=f"{obj_info['oid']}_{obj_info['name']}")
-    scene_mesh_path = base_dir / Path(f"outputs/{key}/reconstruction/scene_registered.glb")
+    scene_mesh_path = base_dir / Path(f"outputs/{key}/reconstruction/scenario/scene_registered.glb")
+    scene_mesh_path.parent.mkdir(parents=True, exist_ok=True)
     scene_mesh_path_str = str(scene_mesh_path)
     scene.export(
         file_obj=scene_mesh_path_str,
@@ -399,12 +401,12 @@ def scenario_construction(keys, key_scene_dicts, key_cfgs):
         print(f"[Info] Scenario construction for key: {key}")
         scene_dict = key_scene_dicts[key]
         cfg = key_cfgs[key]
-        object_metas = scene_dict.get("objects", [])
+        object_metas = scene_dict.get("objects", {})
         if not object_metas:
             print(f"[Warning] No objects found in scene_dict for key: {key}. Skipping.")
             continue
         fg_meshes, obj_infos = [], []
-        for obj in object_metas:
+        for obj in object_metas.values():
             print(f"[Info] Adding object {obj['name']} (oid={obj['oid']}) to scene [key={key}]")
             fg_mesh, obj_info = register_object_mesh(
                 key            = key,

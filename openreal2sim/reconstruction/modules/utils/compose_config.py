@@ -8,6 +8,9 @@ default_config = {
     "bg_mesh_target_faces": 0,  # 0 means no background mesh simplification
     "bg_mesh_thickness": 0.1,  # in meters, added thickness of the background mesh
     "fast_scene_construction": False,  # whether to use fast (but inaccurate) point cloud registration
+    "fdpose_tracking_mode": "normal",  # foundation pose tracking mode: "normal" or "perframe"
+    "fdpose_est_refine_iter": 5,  # foundation pose: number of iterations for pose estimation refinement
+    "fdpose_track_refine_iter": 2,  # foundation pose: number of iterations for pose tracking refinement
 }
 
 def compose_configs(key_name: str, config: dict) -> dict:

@@ -1,12 +1,27 @@
-# gsam_video_gui.py  ─────────────────────────────────────────────
-# Grounded-SAM-2  video annotator (mask-dict + persist + delete + single-preview)
-# ------------------------------------------------------------------
-# 1. key → LOAD  (automatically read outputs/<key>/masks/mask_dict.pkl)
-# 2. DETECT / positive/negative click → CONFIRM write into mask_dict
-# 3. SAVE mask_dict  /  DELETE Object (by oid)
-# 4. PROPAGATE: use current frame as seed for Sam-2 video propagation, keep global oid
-#    - remove duplicates if same name & IoU>0.95  - save colored visualization into annotated_images
-# ------------------------------------------------------------------
+"""
+gsam_video_gui.py  ─────────────────────────────────────────────
+Grounded-SAM-2  video annotator (mask-dict + persist + delete + single-preview)
+------------------------------------------------------------------
+1. key → LOAD  (automatically read outputs/<key>/masks/mask_dict.pkl)
+2. DETECT / positive/negative click → CONFIRM write into mask_dict
+3. SAVE mask_dict  /  DELETE Object (by oid)
+4. PROPAGATE: use current frame as seed for Sam-2 video propagation, keep global oid
+   - remove duplicates if same name & IoU>0.95  - save colored visualization into annotated_images
+------------------------------------------------------------------
+Outputs:
+    - outputs/<key>/scene/scene.pkl  (update with "mask")
+Note:
+    - "mask" : a list N frames of [
+        {
+            "oid": {
+                "name": # object name,
+                "bbox": # [x1,y1,x2,y2],
+                "mask": # [H,W] boolean array,
+            },
+            ...
+        }
+    ]
+"""
 
 from __future__ import annotations
 import re, cv2, sys, torch, pickle, gradio as gr, numpy as np

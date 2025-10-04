@@ -2,6 +2,7 @@
     "python.analysis.extraPaths": [
         "./third_party/Grounded-SAM-2",
         "./third_party/ObjectClear",
-        "./third_party/Hunyuan3D-2"
+        "./third_party/Hunyuan3D-2",
+        "./third_party/FoundationPose"
     ]
 }
