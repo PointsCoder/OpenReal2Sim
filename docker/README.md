@@ -47,20 +47,15 @@ You can also build the docker image yourself. Once the container is running, you
 **Build the container image**
    From the repository root:
    ```bash
-   docker compose -f docker/compose.yml build <image_name>
+   docker compose -f docker/compose.yml build openreal2sim
    ```
-
-`<image_name>` options
-- `openreal2sim` (for data preprocess & real-to-sim reconstruction)
-- `foundationpose_ssh` (for foundationpose with remote display)
-- `foundationpose_local` (for foundationpose with local display)
 
 Optionally, you may want to push the image to a remote registry (e.g., GitHub Container Registry) for easier sharing.
 
 If so, you can tag the image and push it:
    ```bash
-   docker tag <image_name>:dev ghcr.io/<username>/<image_name>:dev
-   docker push ghcr.io/<username>/<image_name>:dev
+   docker tag openreal2sim:dev ghcr.io/<username>/openreal2sim:dev
+   docker push ghcr.io/<username>/openreal2sim:dev
    ```
 Don't forget to change the visibility of the pushed image to public if you want others to access it.
 
@@ -70,7 +65,7 @@ Every time you want to run a script inside the repo, follow these steps:
 
 **Run the container**
    ```bash
-   docker compose -p "$USER" -f docker/compose.yml run <image_name>
+   docker compose -p "$USER" -f docker/compose.yml run openreal2sim
    ```
 
 **Execute a script inside the container**

@@ -154,22 +154,23 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
     scorer  = ScorePredictor()
     refiner = PoseRefinePredictor()
     glctx   = dr.RasterizeCudaContext()
-
-    placed_meshes: List[Tuple[str, trimesh.Trimesh]] = []
     debug_level = 1 # hard code here
-    pose_tracking_mode = key_cfgs["fdpose_tracking_mode"]
-    est_refine_iter = key_cfgs["fdpose_est_refine_iter"]
-    track_refine_iter = key_cfgs["fdpose_track_refine_iter"]
+
 
     for key in keys:
         scene_dict = key_scene_dicts[key]
+        key_cfg = key_cfgs[key]
+        pose_tracking_mode = key_cfg["fdpose_tracking_mode"]
+        est_refine_iter = key_cfg["fdpose_est_refine_iter"]
+        track_refine_iter = key_cfg["fdpose_track_refine_iter"]
         objects = scene_dict["info"]["objects"]
         debug_dir = base_dir / Path(f"outputs/{key}/reconstruction/debug")
         debug_dir.mkdir(parents=True, exist_ok=True)
+        placed_meshes: List[Tuple[str, trimesh.Trimesh]] = []
 
-        for obj_id, obj_ent in enumerate(objects):
-            oid   = int(obj_ent["oid"])
-            oname = str(obj_ent["name"])
+        for obj_id, obj_ent in objects.items():
+            oid   = obj_ent["oid"]
+            oname = obj_ent["name"]
             mesh_in_path = obj_ent["registered"]
             mask_array = build_mask_array(oid, scene_dict)
 
@@ -178,14 +179,16 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             logging.info(f"  mask(pkl-by-oid)={mask_array.shape}")
 
             droot = debug_dir / f"fdpose_obj_{oid}_{oname}"
-            (droot / "track_vis").mkdir(parents=True, exist_ok=True)
-            (droot / "ob_in_cam").mkdir(parents=True, exist_ok=True)
+            if debug_level >= 1:
+                (droot / "track_vis").mkdir(parents=True, exist_ok=True)
+                (droot / "ob_in_cam").mkdir(parents=True, exist_ok=True)
 
             imgs = scene_dict["images"]
             depths = scene_dict["depths"]
             Ks = scene_dict["intrinsics"].astype(np.float32)
             N = imgs.shape[0]
             Ks = np.repeat(Ks[None, ...], N, axis=0)
+            imageio.imwrite(droot / "track_vis" / f"{0:06d}_mask.png", mask_array[0]*255)
             reader = FoundationPoseReader(
                 imgs=imgs, depths=depths, Ks=Ks,
                 mask_array=mask_array,
@@ -233,7 +236,7 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                 all_poses.append(pose.reshape(4,4))
                 pose_prev = pose.reshape(4,4)
 
-                if debug_level >= 2:
+                if debug_level >= 1:
                     np.savetxt(droot / "ob_in_cam" / f"{i:06d}.txt", pose.reshape(4,4))
 
                 if debug_level >= 1:
@@ -241,11 +244,11 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                     vis = draw_posed_3d_box(K_i, img=color, ob_in_cam=center_pose, bbox=bbox)
                     vis = draw_xyz_axis(vis, ob_in_cam=center_pose, scale=0.1, K=K_i,
                                         thickness=3, transparency=0, is_input_rgb=True)
-                    if debug_level <= 1:
+                    imageio.imwrite(droot / "track_vis" / f"{i:06d}.png", vis)
+                 
+                    if debug_level >= 2:
                         cv2.imshow('foundationpose', vis[..., ::-1])
                         cv2.waitKey(1)
-                    if debug_level >= 2:
-                        imageio.imwrite(droot / "track_vis" / f"{i:06d}.png", vis)
 
             # record the relative object pose trajectory (w.r.t. frame-0)
             all_poses_np = np.stack(all_poses, axis=0)
@@ -269,7 +272,7 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             scene_dict["info"]["objects"][obj_id]["fdpose"] = str(fdpose_path)
             logging.info(f"[object {oid}] fdpose -> {fdpose_path}")
 
-            placed_meshes.append((f"{oid}_{oname}_fdpose", m_fd))
+            placed_meshes.append((f"{oid}_{oname}", m_fd))
 
             if tmpdir is not None and Path(tmpdir).exists():
                 shutil.rmtree(tmpdir, ignore_errors=True)
@@ -286,9 +289,9 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
         scene_fdpose_path.parent.mkdir(parents=True, exist_ok=True)
         sc.export(str(scene_fdpose_path), file_type="glb")
         logging.info(f"[scene] scene_fdpose -> {scene_fdpose_path}")
-        scene_dict["info"]["scene_mesh"] = str(scene_fdpose_path)
+        scene_dict["info"]["scene_mesh"]["scene_fdpose"] = str(scene_fdpose_path)
 
-        if debug_level <= 1:
+        if debug_level >= 3:
             shutil.rmtree(Path(debug_dir), ignore_errors=True)
             logging.info(f"Clear up the debug directory: {debug_dir}")
         

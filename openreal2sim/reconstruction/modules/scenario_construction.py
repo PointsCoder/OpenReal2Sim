@@ -43,6 +43,14 @@ Note:
             },
             "scene_mesh": {
                 "registered": # registered scene mesh path,
+            },
+            "groundplane_in_cam": {
+                "point":  # a point on the ground plane [x,y,z],
+                "normal": # the normal of the ground plane [x,y,z],
+            },
+            "groundplane_in_sim": {
+                "point":  # a point on the ground plane [x,y,z],
+                "normal": # the normal of the ground plane [x,y,z],
             }
         }
 """
@@ -325,6 +333,18 @@ def register_scene_meshes(key, fg_meshes, obj_infos, scene_dict):
     R_c2w_new = T_gravity[:3, :3]
     C_new = -aabb_center
 
+    # update plane info
+    p0 = np.array(scene_dict["info"]["groundplane_in_cam"]["point"], dtype=np.float64)
+    normal = np.array(scene_dict["info"]["groundplane_in_cam"]["normal"], dtype=np.float64)
+    p0 = (T_to_origin @ T_gravity @ np.hstack([p0, 1.0]))[:3]
+    normal = (T_gravity @ np.hstack([normal, 0.0]))[:3]
+    normal = normal / np.linalg.norm(normal)
+    assert abs(np.dot(normal, np.array([0,0,1], dtype=np.float64)) - 1.0) < 1e-6, "Plane normal not aligned with z-axis after gravity alignment"
+    plane_info = {
+        "point": p0.tolist(),
+        "normal": normal.tolist(),
+    }
+
     # add camera info
     cam_info = {}
     cam_info["camera_heading_wxyz"] = list(transforms3d.quaternions.mat2quat(R_c2w_new))
@@ -383,6 +403,7 @@ def register_scene_meshes(key, fg_meshes, obj_infos, scene_dict):
     print(f"[Info] Scene mesh saved to: {scene_mesh_path}")
 
     # save scene info
+    scene_dict["info"]["groundplane_in_sim"] = plane_info
     scene_dict["info"]["camera"] = cam_info
     scene_dict["info"]["objects"] = save_obj_infos
     scene_dict["info"]["background"] = {

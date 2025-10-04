@@ -11,6 +11,9 @@ default_config = {
     "fdpose_tracking_mode": "normal",  # foundation pose tracking mode: "normal" or "perframe"
     "fdpose_est_refine_iter": 5,  # foundation pose: number of iterations for pose estimation refinement
     "fdpose_track_refine_iter": 2,  # foundation pose: number of iterations for pose tracking refinement
+    "collision_optimization_mode": "plane",  # collision checking mode: "sdf" or "plane"
+    "collision_clearance": 0.002,  # in meters, minimum clearance distance for collision optimization
+    "collision_sdf_resolution": 192,  # resolution for SDF grid if using "sdf" mode
 }
 
 def compose_configs(key_name: str, config: dict) -> dict:
