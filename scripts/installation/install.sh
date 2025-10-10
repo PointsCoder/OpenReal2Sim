@@ -19,7 +19,7 @@ gdown --folder 1DFezOAD0oD1BblsXVxqDsl8fj0qzB82i -O third_party/FoundationPose/w
 
 # foundation pose compile
 cd /app/third_party/FoundationPose/mycpp && \
-  rm -r build && \
+  rm -rf build && \
   mkdir -p build && cd build && \
   cmake .. -DPYTHON_EXECUTABLE=$(which python) && make -j11 && \
   cd /app
