@@ -53,9 +53,17 @@ RUN git clone https://github.com/NVIDIA/MinkowskiEngine.git "$HOME/MinkowskiEngi
 RUN cd "$HOME/MinkowskiEngine" && export CUDA_HOME=/usr/local/cuda; python setup.py install --user --blas=openblas --force_cuda
 
 # checkpoints
+RUN pip install gdown
 RUN mkdir -p "$HOME/third_party/graspness_unofficial/ckpt"
 RUN gdown 10o5fc8LQsbI8H0pIC2RTJMNapW9eczqF -O "$HOME/third_party/graspness_unofficial/ckpt/minkuresunet_kinect.tar"
 RUN gdown 1RfdpEM2y0x98rV28d7B2Dg8LLFKnBkfL -O "$HOME/third_party/graspness_unofficial/ckpt/minkuresunet_realsense.tar"
+
+# curobo
+RUN git clone https://github.com/NVlabs/curobo.git "$HOME/curobo"
+RUN cd "$HOME/curobo" && pip install -e . --no-build-isolation --user
+
+# curobo changes the numpy version from 1.23.4 to 2.x, need to get it back
+RUN pip install numpy==1.23.4
 
 
 ENV PYTHONPATH=/app:$HOME/third_party:$HOME/third_party/graspness_unofficial/pointnet2
