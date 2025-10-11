@@ -9,8 +9,3 @@ Current supported physics simulators:
 - [ ] Maniskills
 
 
-## Simulation Inputs
-
-In `outputs/{key_name}/simulation/`:
-
-
