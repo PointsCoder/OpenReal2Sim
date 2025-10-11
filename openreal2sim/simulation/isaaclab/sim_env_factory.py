@@ -1,16 +1,6 @@
-# sim_scene_env.py
 # -*- coding: utf-8 -*-
 """
-Scheme A: Use a single global SceneCtx object (instead of many globals).
-Unified scene + env factory utilities for Isaac Lab:
-- Scene config builders and helpers (from sim_scene.py)
-- ManagerBasedRLEnv factory (from sim_env_factory.py)
-
-You can:
-  - init_scene_configs(cam_dict, obj_paths, background_path, robot_pos, robot_rot, ...)
-  - OR init_scene_from_scene_dict(scene, ...)
-  - build_tabletop_scene_cfg() -> InteractiveSceneCfg subclass
-  - make_env(key=..., num_envs=..., device=...) -> (env, cfg)
+Isaac Lab-based simulation environment factory.
 """
 
 from __future__ import annotations
@@ -60,7 +50,6 @@ class SceneCtx:
     robot_rot: List[float]
     bg_physics: Optional[Dict] = None
     obj_physics: List[Dict] = None
-    # NEW: use a simple horizontal ground plane at given z
     use_ground_plane: bool = False
     ground_z: Optional[float] = None
 
@@ -247,25 +236,6 @@ def build_tabletop_scene_cfg():
 # --------------------------------------------------------------------------------------
 # Build cam_dict & init directly from a raw scene dict
 # --------------------------------------------------------------------------------------
-def _build_cam_dict_from_scene(scene: dict) -> dict:
-    cam = scene["camera"]
-    return {
-        "width": int(cam["width"]),
-        "height": int(cam["height"]),
-        "fx": float(cam["fx"]),
-        "fy": float(cam["fy"]),
-        "cx": float(cam["cx"]),
-        "cy": float(cam["cy"]),
-        "cam_orientation": tuple(cam.get("orientation_wxyz", cam["cam_orientation"])),
-        "scene_info": {
-            "move_to": list(scene.get("range", {}).get("move_to", cam["position"])),
-            "scene_min": list(scene["range"]["scene_min"]),
-            "scene_max": list(scene["range"]["scene_max"]),
-            "object_center": list(scene["objects"][0]["object_center"]),
-        },
-    }
-
-
 def init_scene_from_scene_dict(
     scene: dict,
     cfgs: dict,

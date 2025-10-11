@@ -1,13 +1,16 @@
-# heuristic_manip.py
+"""
+Heuristic manipulation policy in Isaac Lab simulation.
+Using grasping and motion planning to perform object manipulation tasks.
+"""
 from __future__ import annotations
 
-# ─────────── 标准依赖 & AppLauncher ───────────
+# ─────────── AppLauncher ───────────
 import argparse, os, json, random, transforms3d
 from pathlib import Path
 import numpy as np
 import torch
 import yaml
-from isaaclab.app import AppLauncher  # 必须最先
+from isaaclab.app import AppLauncher
 
 # ─────────── CLI ───────────
 parser = argparse.ArgumentParser("sim_policy")
@@ -30,31 +33,28 @@ from isaaclab.utils.math import subtract_frame_transforms
 
 from graspnetAPI.grasp import GraspGroup
 
-# ★★★ 基类 ★★★
-from sim_base import BaseSimulator, get_next_demo_id
 
-# ★★★ 环境/场景工具 ★★★
+# ─────────── Simulation environments ───────────
+from sim_base import BaseSimulator, get_next_demo_id
 from sim_env_factory import make_env
-from utils.grasping_utils import get_best_grasp_with_hints
+from preprocess.grasping_utils import get_best_grasp_with_hints
 from utils.transform_utils import pose_to_mat, mat_to_pose, grasp_to_world, grasp_approach_axis_batch
 from utils.sim_utils import load_sim_parameters
 
-# ─────────── 读取 scene.json ───────────
 BASE_DIR   = Path.cwd()
 img_folder = args_cli.key
 out_dir    = BASE_DIR / "outputs"
 
 
-# ──────────────────────────── 子类（策略，Batch版） ────────────────────────────
+# ──────────────────────────── Heuristic Manipulation ────────────────────────────
 class HeuristicManipulation(BaseSimulator):
     """
-    Physical trial-and-error grasping with approach-axis perturbation, now batched:
-      • Multiple proposals × per-env jitters in parallel;
+    Physical trial-and-error grasping with approach-axis perturbation:
+      • Multiple grasp proposals executed in parallel;
       • Every attempt does reset → pre → grasp → close → lift → check;
       • Early stops when any env succeeds; then re-exec for logging.
     """
     def __init__(self, sim, scene, sim_cfgs: dict):
-        # initial base pose; you can set a [B,7] later if needed
         robot_pose = torch.tensor(
             sim_cfgs["robot_cfg"]["robot_pose"],
             dtype=torch.float32,
@@ -304,7 +304,7 @@ class HeuristicManipulation(BaseSimulator):
 
     def build_grasp_info(
         self,
-        grasp_pos_w_batch: np.ndarray,   # (B,3)  GraspNet 世界系(不含 env origin 偏移)
+        grasp_pos_w_batch: np.ndarray,   # (B,3)  GraspNet proposal in world frame
         grasp_quat_w_batch: np.ndarray,  # (B,4)  wxyz
         pre_dist_batch: np.ndarray,      # (B,)
         delta_batch: np.ndarray          # (B,)
@@ -348,7 +348,6 @@ class HeuristicManipulation(BaseSimulator):
 
         rng = np.random.default_rng()
 
-        # 固定的 pre-grasp 距离（不是超参暴露，只是实现细节）
         pre_dist_const = 0.12  # m
 
         success = False
@@ -356,13 +355,12 @@ class HeuristicManipulation(BaseSimulator):
         chosen_pre    = None
         chosen_delta  = None
 
-        # 分块：每轮给每个 env 一个不同 proposal（最后一块不足则重复最后一个补齐）
+        # assign different grasp proposals to different envs
         for start in range(0, len(idx_all), B):
             block = idx_all[start : start + B]
             if len(block) < B:
                 block = block + [block[-1]] * (B - len(block))
 
-            # 为每个 env 取各自的 proposal（世界系，未加 env origin）
             grasp_pos_w_batch, grasp_quat_w_batch = [], []
             for idx in block:
                 p_w, q_w = grasp_to_world(gg[int(idx)])
@@ -371,7 +369,7 @@ class HeuristicManipulation(BaseSimulator):
             grasp_pos_w_batch  = np.stack(grasp_pos_w_batch,  axis=0)  # (B,3)
             grasp_quat_w_batch = np.stack(grasp_quat_w_batch, axis=0)  # (B,4)
             self.show_goal(grasp_pos_w_batch, grasp_quat_w_batch)
-            # 仅一个随机样本：沿 approach 轴的位移扰动 ~ N(0, std)
+            # random disturbance along approach axis
             pre_dist_batch = np.full((B,), pre_dist_const, dtype=np.float32)
             delta_batch    = rng.normal(0.0, std, size=(B,)).astype(np.float32)
 
@@ -425,19 +423,19 @@ class HeuristicManipulation(BaseSimulator):
             jp = self.wait(gripper_open=g_b, steps=3)
         return True
 
-    # ========= 新增：并行搜索(每个 env 不同 grasp) → 选赢家 → 广播执行 + 跟随目标 =========
     def inference(self, std: float = 0.0) -> bool:
         """
-        并行搜索（每个 env 分到不同 proposal），仅在 grasp 的 approach 轴上做 N(0,std) 位移扰动。
-        找到任一 env 成功的 grasp 后，将其广播到所有 env 执行：pre→grasp→close→follow_object_goals。
-        仅保留一个可调参数：std（单位：米）。
+        Main function of the heuristic manipulation policy.
+        Physical trial-and-error grasping with approach-axis perturbation:
+          • Multiple grasp proposals executed in parallel;
+          • Every attempt does reset → pre → grasp → close → lift → check;
+          • Early stops when any env succeeds; then re-exec for logging.
         """
         B = self.scene.num_envs
 
-        # 预热
         self.wait(gripper_open=True, steps=10)
 
-        # 读取 & 预筛选 grasp proposals
+        # read grasp proposals
         npy_path = self.grasp_path
         if npy_path is None or (not os.path.exists(npy_path)):
             print(f"[ERR] grasps npy not found: {npy_path}")
@@ -461,7 +459,6 @@ class HeuristicManipulation(BaseSimulator):
         else:
             ret = self.grasp_trials(gg, std=std)
 
-        # 赢家出现：广播到所有 env，统一执行
         print("[INFO] Re-exec all envs with the winning grasp, then follow object goals.")
 
         p_win, q_win = ret["chosen_pose_w"]
@@ -472,10 +469,9 @@ class HeuristicManipulation(BaseSimulator):
 
         info_all = self.build_grasp_info(p_all, q_all, pre_all, del_all)
 
-        # 重置并执行：open→pre→grasp→close→follow_object_goals
+        # reset and conduct main process: open→pre→grasp→close→follow_object_goals
         self.reset()
 
-        # 记录相机系位姿（与原 inference 一致）
         cam_p = self.camera.data.pos_w
         cam_q = self.camera.data.quat_w_ros
         gp_w  = torch.as_tensor(info_all["p_w"],     dtype=torch.float32, device=self.sim.device)
@@ -486,11 +482,10 @@ class HeuristicManipulation(BaseSimulator):
         self.save_dict["grasp_pose_cam"]    = torch.cat([gp_cam,  gq_cam],  dim=1).unsqueeze(0).cpu().numpy()
         self.save_dict["pregrasp_pose_cam"] = torch.cat([pre_cam, pre_qcm], dim=1).unsqueeze(0).cpu().numpy()
 
-        # open 缓冲
         jp = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
         self.wait(gripper_open=True, steps=4)
 
-        # pre → grasp（张开）
+        # pre → grasp
         jp, success = self.move_to(info_all["pre_p_b"], info_all["pre_q_b"], gripper_open=True)
         if torch.any(success==False): return False
         self.save_dict["actions"].append(np.concatenate([info_all["pre_p_b"].cpu().numpy(), info_all["pre_q_b"].cpu().numpy(), np.zeros((B, 1))], axis=1))
@@ -500,20 +495,18 @@ class HeuristicManipulation(BaseSimulator):
         if torch.any(success==False): return False
         self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.zeros((B, 1))], axis=1))
 
-
-        # 闭合手爪
+        # close gripper
         jp = self.wait(gripper_open=False, steps=50)
         self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.ones((B, 1))], axis=1))
 
-
+        # object goal following
         # self.lift_up(height=0.05, gripper_open=False)
-
         jp = self.follow_object_goals(jp, sample_step=5, visualize=True)
 
         self.save_data(ignore_keys=["segmask", "depth"])
         return True
 
-# ──────────────────────────── 运行入口 ────────────────────────────
+# ──────────────────────────── Entry Point ────────────────────────────
 def main():
     sim_cfgs = load_sim_parameters(BASE_DIR, args_cli.key)
     env, _ = make_env(

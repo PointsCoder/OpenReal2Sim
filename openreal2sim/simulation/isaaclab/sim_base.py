@@ -1,4 +1,4 @@
-# base_simulator.py
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import os
@@ -45,13 +45,9 @@ def get_next_demo_id(demo_root: Path) -> int:
 
 class BaseSimulator:
     """
-    可复用仿真基类，封装通用初始化与 I/O / 控制 / 存储逻辑。
+    Base class for robot simulation.
 
-    子类需要的典型实现/覆盖：
-      • is_success(self) -> bool
-      • （可选）策略/规划/感知相关方法，如 inference(), act(), motion_planning() 等
-
-    初始化时会设置以下成员，供通用方法使用：
+    Attributes:
       self.sim, self.scene, self.sim_dt
       self.robot, self.object_prim, self.background_prim
       self.teleop_interface, self.sim_state_machine
@@ -63,7 +59,6 @@ class BaseSimulator:
       self.camera, self.save_dict
       self.selected_object_id, self.obj_rel_traj, self.debug_level
       self._goal_vis, self._traj_vis
-      以及：self.out_dir, self.img_folder, self.cam_dict
     """
 
     def __init__(
@@ -71,7 +66,7 @@ class BaseSimulator:
         sim: sim_utils.SimulationContext,
         scene: Any,  # InteractiveScene
         *,
-        args,                            # CLI args（含 teleop_device / sensitivity / device / num_envs）
+        args,
         robot_pose: torch.Tensor,
         cam_dict: Dict,
         out_dir: Path,
@@ -80,23 +75,20 @@ class BaseSimulator:
         enable_motion_planning: bool = True,
         debug_level: int = 1,
     ) -> None:
-        # ---- 基本引用 ----
+        # basic simulation setup
         self.sim: sim_utils.SimulationContext = sim
         self.scene = scene
         self.sim_dt = sim.get_physics_dt()
 
-        # CHANGED: parallel — keep num_envs and all env_ids
         self.num_envs: int = int(scene.num_envs)
         self._all_env_ids = torch.arange(self.num_envs, device=sim.device, dtype=torch.long)
 
-        # ---- 外部上下文（用于存盘/重置）----
         self.cam_dict = cam_dict
         self.out_dir: Path = out_dir
         self.img_folder: str = img_folder
 
-        # ---- 取场景实体 ----
+        # scene entities
         self.robot = scene["robot"]
-        # CHANGED: robot_pose can be [7] for broadcast or [B,7] per-env
         if robot_pose.ndim == 1:
             self.robot_pose = robot_pose.view(1, -1).repeat(self.num_envs, 1).to(self.robot.device)
         else:
@@ -109,7 +101,7 @@ class BaseSimulator:
         self.background_prim = scene["background"]
         self.camera: Camera = scene["camera"]
 
-        # ---- 物理属性（可关）----
+        # physics properties
         if set_physics_props:
             static_friction = 5.0
             dynamic_friction = 5.0
@@ -133,7 +125,7 @@ class BaseSimulator:
                 bg_mats[:] = vals_bg
                 bg_view.set_material_properties(bg_mats, self._all_env_ids.to(bg_mats.device))
 
-        # ---- IK 控制器 ----
+        # ik controller
         self.diff_ik_cfg = DifferentialIKControllerCfg(
             command_type="pose", use_relative_mode=False, ik_method="dls"
         )
@@ -141,7 +133,7 @@ class BaseSimulator:
             self.diff_ik_cfg, num_envs=self.num_envs, device=sim.device
         )
 
-        # ---- Robot: joints / gripper / jacobian 下标 ----
+        # robot: joints / gripper / jacobian indices
         self.robot_entity_cfg = SceneEntityCfg("robot", joint_names=["panda_joint.*"], body_names=["panda_hand"])
         self.robot_gripper_cfg = SceneEntityCfg("robot", joint_names=["panda_finger_joint.*"], body_names=["panda_hand"])
         self.robot_entity_cfg.resolve(scene)
@@ -157,7 +149,7 @@ class BaseSimulator:
         else:
             self.ee_jacobi_idx = self.robot_entity_cfg.body_ids[0]
 
-        # ---- 计数 & 录制缓存 ----
+        # demo count and data saving
         self.count = 0
         self.demo_id = 0
         self.save_dict = {
@@ -166,7 +158,7 @@ class BaseSimulator:
             "gripper_pos": [], "gripper_cmd": []
         }
 
-        # ---- 其他状态 ----
+        # visualization
         self.selected_object_id = 0
         self.debug_level = debug_level
 
@@ -185,13 +177,14 @@ class BaseSimulator:
                 )
                 self.goal_vis_list.append(VisualizationMarkers(cfg))
 
+        # curobo motion planning
         self.enable_motion_planning = enable_motion_planning
         if self.enable_motion_planning:
             print(f"prepare curobo motion planning: {enable_motion_planning}")
             self.prepare_curobo()
             print("curobo motion planning ready.")
 
-    # ---------- Curobo Motion Planning----------
+    # -------- Curobo Motion Planning ----------
     def prepare_curobo(self):
         setup_curobo_logger("error")
         # tensor_args = TensorDeviceType()
@@ -243,14 +236,14 @@ class BaseSimulator:
     # ---------- Planning / Execution (Single) ----------
     def motion_planning_single(self, position, quaternion, max_attempts=1, use_graph=True):
         """
-        单环境规划：优先用 plan_single（支持 graph / CUDA graph warmup 更好）。
-        返回 [1, T, 7]，失败返回 None。
+        single environment planning: prefer plan_single (supports graph / CUDA graph warmup better).
+        Returns [1, T, 7], returns None on failure.
         """
-        # 当前关节
+        # current joint position
         joint_pos0 = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids][0:1].contiguous()  # [1,7]
         start_state = JointState.from_position(joint_pos0)
 
-        # 目标（确保是 [1,3]/[1,4]）
+        # goal (ensure [1,3]/[1,4])
         pos_b, quat_b = self._ensure_batch_pose(position, quaternion)
         pos_b  = pos_b[0:1]
         quat_b = quat_b[0:1]
@@ -274,9 +267,9 @@ class BaseSimulator:
     # ---------- Planning / Execution (Batched) ----------
     def motion_planning_batch(self, position, quaternion, max_attempts=1, allow_graph=False):
         """
-        多环境规划：用 plan_batch。
-        默认 require_all=True：若有任一 env 失败，返回 None（保持你原来的语义）。
-        返回 [B, T, 7]。
+        multi-environment planning: use plan_batch.
+        Default require_all=True: if any env fails, return None (keep your original semantics).
+        Returns [B, T, 7].
         """
         B = self.scene.num_envs
         joint_pos = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids].contiguous()  # [B,7]
@@ -333,7 +326,7 @@ class BaseSimulator:
 
     def move_to_motion_planning(self, position: torch.Tensor, quaternion: torch.Tensor, gripper_open: bool = True, record: bool = True) -> torch.Tensor:
         """
-        Cartesian space control: Move the end effector to the desired position and orientation using inverse kinematics.
+        Cartesian space control: Move the end effector to the desired position and orientation using motion planning.
         Works with batched envs. If inputs are 1D, they will be broadcast to all envs.
         """
         traj, success = self.motion_planning(position, quaternion)
@@ -349,6 +342,7 @@ class BaseSimulator:
             last = joint_pos_des
         return last, success
 
+    # ---------- Visualization ----------
     def show_goal(self, pos, quat):
         """
         show a pose with visual marker(s).
@@ -388,6 +382,7 @@ class BaseSimulator:
                 f"robot_pose must be [B,7], got {robot_pose.shape}"
             self.robot_pose = robot_pose.to(self.robot.device).contiguous()
 
+    # ---------- Environment Step ----------
     def step(self):
         self.scene.write_data_to_sim()
         self.sim.step()
@@ -395,6 +390,7 @@ class BaseSimulator:
         self.count += 1
         self.scene.update(self.sim_dt)
 
+    # ---------- Apply actions to robot joints ----------
     def apply_actions(self, joint_pos_des, gripper_open: bool = True):
         # joint_pos_des: [B, n_joints]
         self.robot.set_joint_position_target(joint_pos_des, joint_ids=self.robot_entity_cfg.joint_ids)
@@ -404,6 +400,7 @@ class BaseSimulator:
             self.robot.set_joint_position_target(self.gripper_close_tensor, joint_ids=self.robot_gripper_cfg.joint_ids)
         self.step()
 
+    # ---------- EE control ----------
     def move_to(self, position: torch.Tensor, quaternion: torch.Tensor, gripper_open: bool = True, record: bool = True) -> torch.Tensor:
         if self.enable_motion_planning:
             return self.move_to_motion_planning(position, quaternion, gripper_open=gripper_open, record=record)
@@ -475,7 +472,7 @@ class BaseSimulator:
 
         return joint_pos_des
 
-
+    # ---------- Robot Waiting ----------
     def wait(self, gripper_open, steps: int, record: bool = True):
         joint_pos_des = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids].clone()
         for _ in range(steps):
@@ -485,6 +482,7 @@ class BaseSimulator:
                 self.record_data(obs)
         return joint_pos_des
 
+    # ---------- Reset Envs ----------
     def reset(self, env_ids=None):
         """
         Reset all envs or only those in env_ids.
@@ -537,13 +535,13 @@ class BaseSimulator:
         # housekeeping
         self.clear_data()
 
+    # ---------- Get Observations ----------
     def get_observation(self, gripper_open) -> Dict[str, torch.Tensor]:
         # camera outputs (already batched)
         rgb = self.camera.data.output["rgb"]                           # [B,H,W,3]
         depth = self.camera.data.output["distance_to_image_plane"]     # [B,H,W]
         ins_all = self.camera.data.output["instance_id_segmentation_fast"]  # [B,H,W]
 
-        # CHANGED: build fg_mask / obj_mask per-env (idToLabels is per env)
         B, H, W, _ = ins_all.shape
         fg_mask_list = []
         obj_mask_list = []
@@ -599,11 +597,12 @@ class BaseSimulator:
             "object_center": object_center,
         }
 
+    # ---------- Task Completion Verifier ----------
     def is_success(self) -> bool:
         raise NotImplementedError("BaseSimulator.is_success() should be implemented in subclass.")
 
+    # ---------- Data Recording & Saving & Clearing ----------
     def record_data(self, obs: Dict[str, torch.Tensor]):
-        # CHANGED: append batched tensors (no env slicing)
         self.save_dict["rgb"].append(obs["rgb"].cpu().numpy())          # [B,H,W,3]
         self.save_dict["depth"].append(obs["depth"].cpu().numpy())      # [B,H,W]
         self.save_dict["segmask"].append(obs["fg_mask"].cpu().numpy())  # [B,H,W]
