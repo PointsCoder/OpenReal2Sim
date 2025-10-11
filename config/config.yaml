@@ -22,7 +22,9 @@ local:
   demo_video:
     preprocess: # stage
       resize: 0.5
-  
+    simulation:
+      physics: "default"
+
   demo_genvideo:
     preprocess: # stage
       resize: 1.0

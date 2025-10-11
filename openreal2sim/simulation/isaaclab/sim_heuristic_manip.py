@@ -14,7 +14,7 @@ from isaaclab.app import AppLauncher
 
 # ─────────── CLI ───────────
 parser = argparse.ArgumentParser("sim_policy")
-parser.add_argument("--key", type=str, default="lab16", help="scene key (outputs/<key>)")
+parser.add_argument("--key", type=str, default="demo_video", help="scene key (outputs/<key>)")
 parser.add_argument("--robot", type=str, default="franka")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--num_trials", type=int, default=1)
@@ -37,9 +37,9 @@ from graspnetAPI.grasp import GraspGroup
 # ─────────── Simulation environments ───────────
 from sim_base import BaseSimulator, get_next_demo_id
 from sim_env_factory import make_env
-from preprocess.grasping_utils import get_best_grasp_with_hints
-from utils.transform_utils import pose_to_mat, mat_to_pose, grasp_to_world, grasp_approach_axis_batch
-from utils.sim_utils import load_sim_parameters
+from sim_preprocess.grasp_utils import get_best_grasp_with_hints
+from sim_utils.transform_utils import pose_to_mat, mat_to_pose, grasp_to_world, grasp_approach_axis_batch
+from sim_utils.sim_utils import load_sim_parameters
 
 BASE_DIR   = Path.cwd()
 img_folder = args_cli.key
@@ -529,9 +529,9 @@ def main():
         print(f"[INFO] start simulation demo_{my_sim.demo_id}")
         # Note: if you set viz_object_goals(), remember to disable gravity and collision for object
         # my_sim.viz_object_goals(sample_step=10, hold_steps=40)
-        # my_sim.inference()
-        actions = np.load("outputs/lab16/demos/demo_5/env_000/actions.npy")
-        my_sim.replay_actions(actions)
+        my_sim.inference()
+        # actions = np.load("outputs/lab16/demos/demo_5/env_000/actions.npy")
+        # my_sim.replay_actions(actions)
 
     env.close()
     simulation_app.close()

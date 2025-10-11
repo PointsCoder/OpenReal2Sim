@@ -247,7 +247,7 @@ def init_scene_from_scene_dict(
     If robot pose not provided, sample one with robot_placement_candidates_v2().
     """
     cam_dict = cfgs["cam_cfg"]
-    obj_paths = [o["usd"] for o in scene["objects"]]
+    obj_paths = [o["usd"] for o in scene["objects"].values()]
     background_path = scene["background"]["usd"]
 
     # overwrite physics
@@ -255,9 +255,9 @@ def init_scene_from_scene_dict(
     obj_physics = cfgs["physics_cfg"]["obj_physics"]
     bg_physics = cfgs["physics_cfg"]["bg_physics"]
     if obj_physics is None:
-        obj_physics = [o.get("physics", None) for o in scene["objects"]]
+        obj_physics = [o.get("physics", None) for o in scene["objects"].values()]
     elif isinstance(obj_physics, dict):
-        obj_physics = [obj_physics for _ in scene["objects"]]
+        obj_physics = [obj_physics for _ in scene["objects"].values()]
     elif isinstance(obj_physics, list):
         assert len(obj_physics) == len(scene["objects"]), \
             "obj_physics must be a list of the same length as scene['objects'] if provided."

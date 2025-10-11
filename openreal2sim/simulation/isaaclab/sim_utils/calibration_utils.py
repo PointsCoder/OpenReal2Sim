@@ -23,7 +23,7 @@ def load_extrinsics(config: dict, key: str) -> np.ndarray:
     Load the extrinsic parameters from the scene JSON.
     """
 
-    E_list = config["specs"][key].get("extrinsics", None)
+    E_list = config.get("extrinsics", None)
     if E_list is None:
         print(f"Warning: No calibrated extrinsics found for {key}. Use random robot poses.")
         return None
@@ -45,7 +45,7 @@ def calibration_to_robot_pose(scene_js: dict, T_camopencv_to_robotbase_m) -> tup
         meta: A dictionary containing additional information about the calibration
     """
 
-    T_camopencv_to_world = _as_homo(scene_js["camera"]["c2w"])
+    T_camopencv_to_world = _as_homo(scene_js["camera"]["camera_opencv_to_world"])
 
     T_camopencv_to_robotbase = _as_homo(T_camopencv_to_robotbase_m)
 
@@ -68,7 +68,7 @@ def calibration_to_robot_pose_deprecated(scene_js: dict, T_camisaac_to_robotbase
         meta: A dictionary containing additional information about the calibration
     """
 
-    T_camopencv_to_world = _as_homo(scene_js["camera"]["c2w"])
+    T_camopencv_to_world = _as_homo(scene_js["camera"]["camera_opencv_to_world"])
 
     T_camisaac_to_robotbase = _as_homo(T_camisaac_to_robotbase_m)
 

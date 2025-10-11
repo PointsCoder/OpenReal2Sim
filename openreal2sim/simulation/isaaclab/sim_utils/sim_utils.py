@@ -6,12 +6,13 @@ import random
 import numpy as np
 import transforms3d
 
-from utils.calibration_utils import calibration_to_robot_pose, load_extrinsics
+from sim_utils.calibration_utils import calibration_to_robot_pose, load_extrinsics
 
 def load_sim_parameters(basedir, key) -> dict:
     scene_json_path = Path(basedir) / "outputs" / key / "scene" / "scene.json"
     scene_json   = json.load(open(scene_json_path, "r"))
     exp_config = yaml.load(open(Path(basedir) / "config/config.yaml"), Loader=yaml.FullLoader)
+    exp_config = exp_config["local"][key]["simulation"]
 
     # cam configs
     cam_cfg = {
@@ -21,14 +22,12 @@ def load_sim_parameters(basedir, key) -> dict:
         "fy": float(scene_json["camera"]["fy"]),
         "cx": float(scene_json["camera"]["cx"]),
         "cy": float(scene_json["camera"]["cy"]),
-        "cam_orientation": tuple(scene_json["camera"].get("orientation_wxyz",
-                                                        scene_json["camera"]["cam_orientation"])),
+        "cam_orientation": tuple(scene_json["camera"]["camera_heading_wxyz"]),
         "scene_info": {
-            "move_to":      list(scene_json.get("range", {}).get("move_to",
-                                                               scene_json["camera"]["position"])),
-            "scene_min":    list(scene_json["range"]["scene_min"]),
-            "scene_max":    list(scene_json["range"]["scene_max"]),
-            "object_center":list(scene_json["objects"][0]["object_center"]),
+            "move_to":      list(scene_json["camera"]["camera_position"]),
+            "scene_min":    list(scene_json["aabb"]["scene_min"]),
+            "scene_max":    list(scene_json["aabb"]["scene_max"]),
+            "object_center":list(scene_json["objects"]["1"]["object_center"]),
         },
     }
 
@@ -45,12 +44,12 @@ def load_sim_parameters(basedir, key) -> dict:
     }
 
     # demo configs
-    goal_offset = exp_config["specs"][key].get("goal_offset", 0)
-    grasp_idx = exp_config["specs"][key].get("grasp_idx", -1)
-    grasp_pre = exp_config["specs"][key].get("grasp_pre", None)
-    grasp_delta = exp_config["specs"][key].get("grasp_delta", None)
-    traj_key = exp_config["specs"][key].get("traj_key", "trajs_hybrid") # "trajs", "trajs_simple", "trajs_hybrid"
-    manip_object_id = exp_config["specs"][key].get("manip_object_id", 0)
+    goal_offset = exp_config.get("goal_offset", 0)
+    grasp_idx = exp_config.get("grasp_idx", -1)
+    grasp_pre = exp_config.get("grasp_pre", None)
+    grasp_delta = exp_config.get("grasp_delta", None)
+    traj_key = exp_config.get("traj_key", "fdpose_trajs") # "fdpose_trajs", "simple_trajs", "hybrid_trajs"
+    manip_object_id = exp_config.get("manip_object_id", "1")
     traj_path = scene_json["objects"][manip_object_id][traj_key]
     grasp_path = scene_json["objects"][manip_object_id].get("grasps", None)
     demo_cfg = {
@@ -65,7 +64,7 @@ def load_sim_parameters(basedir, key) -> dict:
     }
 
     # physics configs
-    physics_key = exp_config["specs"][key].get("physics", "default")
+    physics_key = exp_config.get("physics", "default")
     physics_cfg = {}
     if physics_key == "default":
         physics_cfg["bg_physics"] = default_bg_physics
