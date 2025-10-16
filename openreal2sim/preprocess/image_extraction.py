@@ -99,8 +99,27 @@ def to_tensor_func(arr):
     arr = deepcopy(arr)
     return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
 
+def judge_picture_side(depth: np.ndarray) -> str:
+    h, w = depth.shape
+    
+    mid_point = h // 2
+    upper_half = depth[:mid_point, :]
+    lower_half = depth[mid_point:, :]
+
+    upper_avg_depth = np.mean(upper_half)
+    lower_avg_depth = np.mean(lower_half)
+    #import pdb; pdb.set_trace()
+    if upper_avg_depth > lower_avg_depth:
+        return False
+    else:
+        
+        return True
+
 def run_r3d(key_name: str, cfgs: dict):
     """Extract frames and depth from R3D file."""
+    import sys
+    repo_dir = Path.cwd() / "third_party/PromptDA"
+    sys.path.append(str(repo_dir))
     from promptda.promptda import PromptDA
     from promptda.utils.io_wrapper import load_image
     import torch
@@ -139,7 +158,7 @@ def run_r3d(key_name: str, cfgs: dict):
         # Process RGB and depth data
         rgbd_dir = temp_dir / 'rgbd'
         rgb_path_list = list(rgbd_dir.glob('*.jpg'))
-        rgb_path_list.sort()
+        rgb_path_list.sort(key = lambda x: int(x.stem))
         
         assert len(poses) == len(rgb_path_list), f"Pose count ({len(poses)}) != RGB count ({len(rgb_path_list)})"
         
@@ -149,7 +168,6 @@ def run_r3d(key_name: str, cfgs: dict):
 
         H_dc, W_dc = int(H/downscale_factor), int(W/downscale_factor)
                 
-        print(f"[Info] Processing {len(rgb_path_list)} frames...")
         
         # Store extrinsics and depth paths for scene info
         extrinsics = []
@@ -157,48 +175,88 @@ def run_r3d(key_name: str, cfgs: dict):
         resize_factor = cfgs.get("resize", 1.0)
         new_width = int(W * resize_factor)
         new_height = int(H * resize_factor)
-
-        for frame_idx, rgb_path in enumerate(rgb_path_list):
+        flip = False
+        depth0 = rgb_path_list[0].with_suffix('.depth')
+        depth0 = load_depth(str(depth0), H_dc, W_dc)
+        if judge_picture_side(depth0):
+            flip = True
+        images = []
+        import tqdm
+        print(f"[Info] Processing {len(rgb_path_list)} frames...")
+        for frame_idx, rgb_path in tqdm.tqdm(enumerate(rgb_path_list)):
             fname = rgb_path.stem
             
             # Copy RGB image to images directory with frame naming
             rgb_output_path = output_dir / f"frame_{frame_idx:05d}.jpg"
             
             # Load and resize RGB image
-            with Image.open(rgb_path) as im:
-                rgb = im.convert("RGB")
-
-                if resize_factor != 1.0:
-                    rgb = rgb.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                rgb.save(rgb_output_path, format="JPEG", quality=100, subsampling=0, optimize=True)
+            # with Image.open(rgb_path) as im:
+            #     rgb = np.array(im.convert("RGB"))
+            #     if flip:
+            #         #import pdb; pdb.set_trace()
+            #         rgb = rgb[::-1, :, :]
+            #     rgb = Image.fromarray(rgb)
+            #     if resize_factor != 1.0:
+            #         rgb = rgb.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            #     rgb.save(rgb_output_path, format="JPEG", quality=100, subsampling=0, optimize=True)
             # Process depth if available
             depth_path = rgb_path.with_suffix('.depth')
             depth_output_path = depth_dir / f"frame_{frame_idx:05d}.png"
+            ###TODO: could be batched;
             
-            if depth_path.exists():
-                depth = load_depth(str(depth_path), H_dc, W_dc)
-                depth = to_tensor_func(depth).to(device)
-                image = load_image(str(rgb_path)).to(device)
-                depth = model.predict(image, depth).cpu().numpy()[0,0]
-                depth = cv2.resize(depth, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
-                depth = depth * 1000.
-                cv2.imwrite(str(depth_output_path), depth.astype(np.uint16))
- 
-            # Convert camera pose (cam2world) to extrinsic matrix (world2cam)
+            depth = load_depth(str(depth_path), H_dc, W_dc)
+            if flip:   
+                depth = depth[::-1, ::-1]
+            depth = to_tensor_func(depth).to(device)
+            image = load_image(str(rgb_path)).to(device)
+            if flip:
+                # 翻转图像的高度维度 (1, 3, H, W) -> 翻转H维度
+                image = torch.flip(image, dims=[2,3])  # 翻转第2维（高度）
+            
+            depth = model.predict(image, depth).cpu().numpy()[0,0]
+            #depth = cv2.resize(depth, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+            cv2.imwrite(str(depth_output_path), (depth * 1000.).astype(np.uint16))
+            image = image.cpu().numpy()[0].transpose(1, 2, 0)*255.0
+            images.append(image.astype(np.uint8))
+            image = Image.fromarray(image.astype(np.uint8))
+            image.save(rgb_output_path, format="JPEG", quality=100, subsampling=0, optimize=True)
+            new_height = image.height
+            new_width = image.width
+            # cam2world
             pose = poses[frame_idx]  # cam2world
             pose_mat = np.eye(4)
-            pose_mat[:3, :3] = Rotation.from_quat(pose[3:]).as_matrix()
-            pose_mat[:3, 3] = pose[:3]
-            extrinsic = np.linalg.inv(pose_mat)  # world2cam
-            extrinsics.append(extrinsic)
+            pose_mat[:3, :3] = Rotation.from_quat(pose[:4]).as_matrix()
+            pose_mat[:3, 3] = pose[4:]
+            pose_mat[1,:] *= -1
+            pose_mat[2,:] *= -1
+            
+            flip_transform = np.array([
+                [1,  0,  0,  0],
+                [0, -1,  0,  0], 
+                [0,  0, -1,  0], 
+                [0,  0,  0,  1]
+            ])
+            if flip:
+                pose_mat = pose_mat @ flip_transform
+            
+            extrinsics.append(pose_mat)
         
+        rescale_factor = new_height / H
+        
+        rescale_factor *= resize_factor
         # Update intrinsics based on resize factor
-        if cfgs.get("resize", 1.0) != 1.0:
-            K[0, 0] *= resize_factor  # fx
-            K[1, 1] *= resize_factor  # fy
-            K[0, 2] *= resize_factor  # cx
-            K[1, 2] *= resize_factor  # cy
-        
+        K[0, 0] *= rescale_factor  # fx
+        K[1, 1] *= rescale_factor  # fy
+        K[0, 2] *= rescale_factor  # cx
+        K[1, 2] *= rescale_factor  # cy
+            
+        if flip:
+            K[1,2] = new_height - K[1,2]
+            K[0,2] = new_width - K[0,2]
+        video_writer = cv2.VideoWriter(str(output_dir / "video.mp4"), cv2.VideoWriter_fourcc(*'mp4v'), 30, (new_width, new_height))
+        for image in images[:10]:
+            video_writer.write(cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        video_writer.release()
     # Store intrinsics and extrinsics
     except Exception as e:
         print(f"[Error] Error processing R3D file: {e}")
@@ -268,13 +326,15 @@ def run_collect_info(key_name: str):
     frames = np.stack(frames, axis=0)    
     n_frames = len(frame_files)
     
-    
-    depth_files = sorted(depth_dir.glob("frame_*.png"), key=lambda x: int(x.stem.split("_")[1]))
-    depths = []
-    for f in depth_files:
-        depth = cv2.imread(str(f), cv2.IMREAD_UNCHANGED)
-        depths.append(depth)
-    depths = np.stack(depths, axis=0)
+    if depth_dir.exists():
+        depth_files = sorted(depth_dir.glob("frame_*.png"), key=lambda x: int(x.stem.split("_")[1]))
+        depths = []
+        for f in depth_files:
+            depth = cv2.imread(str(f), cv2.IMREAD_UNCHANGED)
+            depths.append(depth / 1000.0)
+        depths = np.stack(depths, axis=0).astype(np.float32)
+    else:
+        depths = None
 
 
     if extrinsics_path.exists():

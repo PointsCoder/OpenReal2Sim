@@ -108,13 +108,24 @@ def depth_to_points(depth: np.ndarray, K: np.ndarray) -> np.ndarray:
     y = (jj.reshape(-1) - cy) * z / fy
     return np.stack([x, y, z], 1)
 
+
+
 def plane_fill(depth0, K, ground, obj):
     H,W=depth0.shape; fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
 
-    # fit plane on ground region
-    pts_ground = depth_to_points(depth0, K)[ground.ravel()]
+
+    from scipy.ndimage import distance_transform_edt
+
+    ground_border = (ground > 0).astype(np.uint8)
+    dist = distance_transform_edt(ground_border)
+    mask_inner = dist >= 10
+    ground_filtered = np.zeros_like(ground, dtype=bool)
+    ground_filtered[ground & mask_inner] = True
+
+
+    pts_ground = depth_to_points(depth0, K)[ground_filtered.ravel()]
     pc = o3d.geometry.PointCloud(); pc.points = o3d.utility.Vector3dVector(pts_ground)
-    plane,_ = pc.segment_plane(distance_threshold=0.01, ransac_n=3, num_iterations=1000)
+    plane,_ = pc.segment_plane(distance_threshold=0.02, ransac_n=3, num_iterations=2000)
     a,b,c,d = plane
 
     # intersect rays with plane inside the object mask
@@ -128,8 +139,130 @@ def plane_fill(depth0, K, ground, obj):
     z_new = t[valid] * dz[valid]
 
     depth0_filled = depth0.copy()
-    depth0_filled[ys[valid], xs[valid]] = np.clip(z_new, 0, depth0.max())
+    
+    depth0_filled[ys[valid], xs[valid]] = np.clip(z_new, 0, 5 * depth0.max())
     return depth0_filled
+
+
+def get_ground_mask_from_existing_mask(img: np.ndarray, existing_ground_mask: np.ndarray) -> np.ndarray:
+    # Import SAM modules
+    import sys
+    from pathlib import Path
+    ROOT = Path.cwd()
+    THIRD = ROOT / "third_party/Grounded-SAM-2"
+    sys.path.append(str(THIRD))
+    
+    from sam2.build_sam import build_sam2
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    import torch
+    
+    # Initialize Hydra
+    import hydra
+    from omegaconf import DictConfig
+    
+    # Initialize SAM model
+    DEV = "cuda" if torch.cuda.is_available() else "cpu"
+    CFG = "configs/sam2.1/sam2.1_hiera_l.yaml"
+    CKPT = "third_party/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt"
+    
+    img_predictor = SAM2ImagePredictor(build_sam2(CFG, CKPT))
+    img_predictor.set_image(img)
+    
+    H, W = img.shape[:2]
+    
+
+    ground_points = []
+    ground_labels = []
+
+    for y in range(0, H, 8):  # Every 8 pixels
+        for x in range(0, W, 8):  # Every 8 pixels
+            ground_points.append([x, y])
+            ground_labels.append(True)  # Positive points
+    
+    
+    ground_mask = np.zeros((H, W), dtype=bool)
+    if len(ground_points) > 0:
+        point_coords = np.array(ground_points)
+        point_labels = np.array(ground_labels)
+        
+        try:
+            masks, scores, logits = img_predictor.predict(
+                point_coords=point_coords,
+                point_labels=point_labels,
+                multimask_output=True
+            )
+            
+
+            best_idx = np.argmax(scores)
+            ground_mask = masks[best_idx]
+            
+            ground_mask = ground_mask.astype(bool)
+            existing_ground_mask = existing_ground_mask.astype(bool)
+            ground_mask = ground_mask & existing_ground_mask
+            
+        except Exception as e:
+            print(f"[SAM Ground] Error in SAM prediction: {e}")
+            ground_mask = np.zeros((H, W), dtype=bool)
+    
+    return ground_mask
+
+    
+
+def hybrid_fill(depth0: np.ndarray, fg_img: np.ndarray, bg_img: np.ndarray, K: np.ndarray, 
+                           obj_msk: np.ndarray, device: torch.device, 
+                           existing_ground_mask: np.ndarray = None) -> np.ndarray:
+    """
+    Generate depth using hybrid approach: 
+    - Ground regions use plane fill
+    - Other regions use MoGe depth prediction
+    
+    Args:
+        depth0: Original depth map
+        bg_img: Inpainted background image
+        K: Camera intrinsic matrix
+        obj_msk: Object mask
+        device: PyTorch device
+        existing_ground_mask: Existing ground mask to sample points from (H, W)
+        
+    Returns:
+        depth_bg: Generated background depth
+    """
+    print(f"[Hybrid] Starting hybrid depth generation...")
+
+    ground_mask = get_ground_mask_from_existing_mask(fg_img, existing_ground_mask)
+
+    print(f"[Hybrid] Running MoGe depth prediction...")
+    depth_moge = run_moge_depth(bg_img, device)
+    kernel = np.ones((9, 9), np.uint8)  # prevent boundaries problem.
+    obj_msk = cv2.dilate(obj_msk.astype(np.uint8), kernel, iterations=1).astype(bool)
+    depth_ground = plane_fill(depth0, K,existing_ground_mask, obj_msk)
+
+    depth_bg = depth0.copy()
+    obj_msk =obj_msk.astype(bool)
+    ground_mask = ground_mask.astype(bool)
+    
+    obj_ground = obj_msk & ground_mask
+    obj_non_ground = obj_msk & (~ground_mask)
+
+    if obj_ground.sum() > 0:
+        depth_bg[obj_ground] = depth_ground[obj_ground]
+    
+    
+    if obj_non_ground.sum() > 0:
+        a, b = robust_scale_shift_align(
+                pred_depth=depth_moge,
+                ref_depth=depth0,
+                mask= ~obj_msk.astype(np.uint8),
+                iters=5,
+                huber_delta=0.02
+            )
+        depth_align = (a * depth_moge + b).astype(np.float32)
+        depth_bg[obj_non_ground] = depth_align[obj_non_ground]
+    
+    
+    
+
+    return depth_bg
 
 
 def export_cloud(pts: np.ndarray, colors: np.ndarray, out_path: Path):
@@ -159,7 +292,7 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
             print(f"[Warning] [{key}] 'recon' key missing 'ground_mask' or 'object_mask'; run background_pixel_inpainting first.")
             continue
 
-        ground_mask = scene_dict["recon"]["ground_mask"]  # H x W, bool
+        ground_mask = scene_dict["recon"]["plane_mask"] if scene_dict["recon"]["plane_mask"] is not None else scene_dict["recon"]["ground_mask"]  # H x W, bool
         object_mask   = scene_dict["recon"]["object_mask"]  # H x W, bool
          # dilate the masks a bit more to remove boundary outliers
         object_mask = dilate_mask(object_mask, pixels=key_cfg["obj_dilate_pixels"], shape="ellipse") 
@@ -169,16 +302,17 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
         depth0 = scene_dict["depths"][0]  # H x W, float32
         K      = scene_dict["intrinsics"].astype(np.float32)  # 3 x 3, float32
         H, W = depth0.shape
-
+        gpu_id = key_cfg["gpu"]
+        device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
         completion_mode = key_cfg["bg_completion_mode"]
         if completion_mode == "plane":
             # assume the masked region is the ground, and using ground plane for geometry completion
             depth_bg = plane_fill(depth0, K, ground_mask, object_mask)
+        elif completion_mode == "hybrid":
+            depth_bg = hybrid_fill(depth0, fg_img, bg_img, K, object_mask, device, ground_mask)
         else:
             # use monocular depth prediction for geometry completion
             print(f"[Info] [{key}] predicting depth with MoGe-2 ...")
-            gpu_id = key_cfg["gpu"]
-            device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
             depth_pd = run_moge_depth(bg_img, device)
 
             # align the depth scale of current bg depth prediction and original image depth prediction
@@ -212,6 +346,7 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
         export_cloud(fg_pts, fg_colors, recon_dir / "foreground_points.ply")
         export_cloud(bg_pts, bg_colors, recon_dir / "background_points.ply")
         print(f"[Info] [{key}] geometry inpainting done.\n")
+    return key_scene_dicts
 
 if __name__ == "__main__":
     cfg_path = base_dir / "config" / "config.yaml"

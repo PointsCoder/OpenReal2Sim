@@ -124,9 +124,9 @@ def save_dynamic_pcd(
     # Load data directly, keep your original naming
     with open(scene_path, "rb") as f:
         data = pickle.load(f)
-    imgs, depths = data["images"], data["depths"]        # imgs: (T,H,W,3) uint8; depths: (T,H,W) float16
+    imgs, depths = data["images"], data["depths"]  # imgs: (T,H,W,3) uint8; depths: (T,H,W) float16
     K = data["intrinsics"]                                # (3,3)
-    c2ws = data["extrinsics"]                               # (T,4,4)
+    c2ws = data["extrinsics"]                             # (T,4,4)
 
     # Camera intrinsics
     H, W = depths.shape[1], depths.shape[2]

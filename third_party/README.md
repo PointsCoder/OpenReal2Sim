@@ -8,7 +8,7 @@ Please note that these repositories have been modified to fit our needs, so plea
 |------------------------------------------------------------------------|--------------------------------------------------|--------------------|
 | [mega-sam](https://github.com/PointsCoder/mega-sam)                    | for depth and camera motion estimation           | preprocessing      |
 | [promptDA](https://github.com/dynamoduan/promptDA)                     |
-for depth refinement in r3d processing           | preprocessing      |       
+for depth refinement in r3d processing           | preprocessing      |
 | [Grounded-SAM-2](https://github.com/PointsCoder/Grounded-SAM-2)        | for object segmentation                          | reconstruction     |
 | [Hunyuan3D-2](https://github.com/PointsCoder/Hunyuan3D-2)              | for object mesh reconstruction                   | reconstruction     |
 | [FoundationPose](https://github.com/PointsCoder/FoundationPose)        | for object pose estimation                       | reconstruction     |

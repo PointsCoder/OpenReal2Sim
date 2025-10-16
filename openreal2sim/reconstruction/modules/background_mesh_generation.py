@@ -166,6 +166,7 @@ def visualize_mesh_thickness_with_pointmap(scene_dir: Path,
 
 # ──────────────────── core ─────────────────────
 def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
+    base_dir = Path.cwd()
     for key in keys:
         scene_dict = key_scene_dicts[key]
         cfg = key_cfgs[key]
@@ -188,8 +189,9 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         plane_pts = plane_pts[np.all(np.isfinite(plane_pts), axis=1)]
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(plane_pts)
+        # 使用更多的点进行RANSAC平面拟合，提高准确性
         plane_model, _ = pcd.segment_plane(distance_threshold=0.01,
-                                           ransac_n=3, num_iterations=1000)
+                                           ransac_n=10, num_iterations=2000)
         a, b, c, d = plane_model
         normal = np.array([a, b, c], np.float64)
         normal /= (np.linalg.norm(normal) + 1e-12)
@@ -243,6 +245,15 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         uv = np.stack([uu, vv], -1).reshape(-1, 2)
 
         mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+        
+        face_normals = mesh.face_normals
+        if len(face_normals) > 0:
+            dot_products = np.dot(face_normals, normal)
+            avg_dot = np.mean(dot_products)
+            if avg_dot < 0:
+                print("[Info] Flipping face orientation to align with ground normal")
+                mesh.faces = np.flip(mesh.faces, axis=1)
+        
         mesh.visual = trimesh.visual.TextureVisuals(uv=uv, image=img)
 
         thickness = cfg["bg_mesh_thickness"]

@@ -418,6 +418,7 @@ def register_scene_meshes(key, fg_meshes, obj_infos, scene_dict):
 
 
 def scenario_construction(keys, key_scene_dicts, key_cfgs):
+    base_dir = Path.cwd()
     for key in keys:
         print(f"[Info] Scenario construction for key: {key}")
         scene_dict = key_scene_dicts[key]

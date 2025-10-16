@@ -146,20 +146,20 @@ def object_mesh_generation(keys, key_scene_dicts, key_cfgs):
             print(f"[Info] [{key}] saved crop → {png_path}")
 
             # 2) Hunyuan3D shape + texture
-            # img_rgba = Image.open(png_path).convert("RGBA")
-            # if img_rgba.mode == 'RGB':  # fallback: ensure RGBA
-            #     img_rgba = rembg(img_rgba)
-            # # shape generation
-            # mesh = pipeline_shapegen(image=img_rgba)[0]
-            # # simplify mesh for much faster texturing
-            # for cleaner in [FloaterRemover(), DegenerateFaceRemover(), FaceReducer()]:
-            #     mesh = cleaner(mesh)
-            # print(f"[Info] [{key}] Hunyuan3D shape done for {stem}")
-            # # texturing
-            # mesh = pipeline_texgen(mesh, image=img_rgba)
-            # print(f"[Info] [{key}] Hunyuan3D texture done for {stem}")
+            img_rgba = Image.open(png_path).convert("RGBA")
+            if img_rgba.mode == 'RGB':  # fallback: ensure RGBA
+                img_rgba = rembg(img_rgba)
+            # shape generation
+            mesh = pipeline_shapegen(image=img_rgba)[0]
+            # simplify mesh for much faster texturing
+            for cleaner in [FloaterRemover(), DegenerateFaceRemover(), FaceReducer()]:
+                mesh = cleaner(mesh)
+            print(f"[Info] [{key}] Hunyuan3D shape done for {stem}")
+            # texturing
+            mesh = pipeline_texgen(mesh, image=img_rgba)
+            print(f"[Info] [{key}] Hunyuan3D texture done for {stem}")
 
-            # mesh.export(out_dir / f"{stem}.glb")
+            mesh.export(out_dir / f"{stem}.glb")
 
             # 3) update scene_dict & save mask
             mask_png = out_dir / f"{stem}_mask.jpg"
@@ -181,6 +181,7 @@ def object_mesh_generation(keys, key_scene_dicts, key_cfgs):
 
         print(f"[Info] [{key}] scene_dict updated.")
 
+    return key_scene_dicts
 
 if __name__ == "__main__":
     base_dir = Path.cwd()

@@ -18,7 +18,7 @@ Note:
         },
         "scene_mesh": {
             ...
-            "scene_fdpose": # entire scene with fdpose placed object meshes [glb],
+            "fdpose": # entire scene with fdpose placed object meshes [glb],
         }
     }
 """
@@ -95,6 +95,103 @@ def convert_glb_to_obj_temp(glb_path: str) -> Tuple[str, Optional[str]]:
     m.export(str(obj_path))
     logging.info(f"[convert_glb_to_obj_temp] export to OBJ: {obj_path}")
     return str(obj_path), tmpdir
+
+# def export_debug_track_as_video(
+#     track_vis_dir: Path,
+#     output_mp4_path: Path,
+#     fps: int = 20
+# ) -> None:
+#     """
+#     Stitch per-frame debug images under `track_vis_dir` into an MP4 video.
+
+#     - Supports both .jpg and .png files named as zero-padded indices (e.g., 000000.jpg).
+#     - Writes the video to `output_mp4_path` (parents are created if missing).
+#     - If no images are found, it logs and returns without raising.
+
+#     Args:
+#         track_vis_dir (Path): Directory containing per-frame debug images.
+#         output_mp4_path (Path): Target MP4 path to write.
+#         fps (int): Frames per second for the output video.
+#     """
+#     try:
+#         jpg_list = sorted(track_vis_dir.glob("*.jpg"))
+#         png_list = sorted(track_vis_dir.glob("*.png"))
+#         img_files = jpg_list if len(jpg_list) > 0 else png_list
+
+#         if len(img_files) == 0:
+#             logging.info(f"[export_debug_track_as_video] No images found in: {track_vis_dir}")
+#             return
+
+#         # Read first frame to get frame size (W, H). cv2 reads in BGR, which suits VideoWriter.
+#         first_img = cv2.imread(str(img_files[0]), cv2.IMREAD_COLOR)
+#         if first_img is None:
+#             logging.warning(f"[export_debug_track_as_video] Failed to read first image: {img_files[0]}")
+#             return
+#         frame_height, frame_width = first_img.shape[:2]
+
+#         # Prepare writer (mp4v is widely supported)
+#         output_mp4_path.parent.mkdir(parents=True, exist_ok=True)
+#         fourcc = cv2.VideoWriter_fourcc(*'avc1')
+#         writer = cv2.VideoWriter(str(output_mp4_path), fourcc, float(fps), (frame_width, frame_height))
+
+#         # Sequentially write all frames
+#         for img_path in img_files:
+#             frame_bgr = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+#             if frame_bgr is None:
+#                 logging.warning(f"[export_debug_track_as_video] Skip unreadable image: {img_path}")
+#                 continue
+#             # If sizes mismatch for any reason, resize to (W, H) to avoid writer failure.
+#             if (frame_bgr.shape[1] != frame_width) or (frame_bgr.shape[0] != frame_height):
+#                 frame_bgr = cv2.resize(frame_bgr, (frame_width, frame_height), interpolation=cv2.INTER_AREA)
+#             writer.write(frame_bgr)
+
+#         writer.release()
+#         logging.info(f"[export_debug_track_as_video] Wrote video: {output_mp4_path} ({len(img_files)} frames @ {fps} FPS)")
+#     except Exception as e:
+#         logging.warning(f"[export_debug_track_as_video] Failed to export video due to: {e}")
+
+def export_debug_track_as_video(
+    track_vis_dir: Path,
+    output_mp4_path: Path,
+    fps: int = 20
+) -> None:
+    """
+    Stitch per-frame debug images under `track_vis_dir` into an MP4 video using ffmpeg.
+    Assumes frames are zero-padded and in numeric order (e.g., 000000.png/.jpg).
+    No backups or fallbacks; simplest pipeline only.
+
+    Args:
+        track_vis_dir (Path): Directory containing per-frame images.
+        output_mp4_path (Path): Target MP4 path to write.
+        fps (int): Frames per second for the output video.
+    """
+    # Choose extension: prefer .jpg, otherwise .png
+    jpg_list = sorted(track_vis_dir.glob("*.jpg"))
+    png_list = sorted(track_vis_dir.glob("*.png"))
+    ext = "jpg" if len(jpg_list) > 0 else ("png" if len(png_list) > 0 else None)
+    if ext is None:
+        logging.info(f"[export_debug_track_as_video] No images found in: {track_vis_dir}")
+        return
+
+    # Ensure output directory exists
+    output_mp4_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Use ffmpeg to encode H.264 + yuv420p for maximum compatibility (VS Code / browsers)
+    # Pattern uses glob; assumes zero-padded names ensure correct lexicographic order.
+    import subprocess
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-framerate", str(fps),
+        "-pattern_type", "glob",
+        "-i", str(track_vis_dir / f"*.{ext}"),
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        str(output_mp4_path),
+    ]
+    subprocess.run(cmd, check=True)
+    logging.info(f"[export_debug_track_as_video] Wrote video: {output_mp4_path}")
 
 # ------------------------- Reader -------------------------
 def resize_rgb(rgb: np.ndarray, W: int, H: int) -> np.ndarray:
@@ -178,7 +275,7 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             logging.info(f"  mesh={mesh_in_path}")
             logging.info(f"  mask(pkl-by-oid)={mask_array.shape}")
 
-            droot = debug_dir / f"fdpose_obj_{oid}_{oname}"
+            droot = debug_dir / f"{oid}_{oname}_fdpose"
             if debug_level >= 1:
                 (droot / "track_vis").mkdir(parents=True, exist_ok=True)
                 (droot / "ob_in_cam").mkdir(parents=True, exist_ok=True)
@@ -188,7 +285,7 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             Ks = scene_dict["intrinsics"].astype(np.float32)
             N = imgs.shape[0]
             Ks = np.repeat(Ks[None, ...], N, axis=0)
-            imageio.imwrite(droot / "track_vis" / f"{0:06d}_mask.png", mask_array[0]*255)
+            # imageio.imwrite(droot / "track_vis" / f"{0:06d}_mask.png", mask_array[0]*255)
             reader = FoundationPoseReader(
                 imgs=imgs, depths=depths, Ks=Ks,
                 mask_array=mask_array,
@@ -250,6 +347,10 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                         cv2.imshow('foundationpose', vis[..., ::-1])
                         cv2.waitKey(1)
 
+            track_vis_dir = droot / "track_vis"
+            genvideo_out = base_dir / f"outputs/{key}/reconstruction/objects/{oid}_{oname}_fdpose.mp4"
+            export_debug_track_as_video(track_vis_dir=track_vis_dir, output_mp4_path=genvideo_out, fps=20)
+
             # record the relative object pose trajectory (w.r.t. frame-0)
             all_poses_np = np.stack(all_poses, axis=0)
             T_c2w = np.array(scene_dict["info"]["camera"]["camera_opencv_to_world"]).astype(np.float64).reshape(4,4) 
@@ -289,9 +390,9 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
         scene_fdpose_path.parent.mkdir(parents=True, exist_ok=True)
         sc.export(str(scene_fdpose_path), file_type="glb")
         logging.info(f"[scene] scene_fdpose -> {scene_fdpose_path}")
-        scene_dict["info"]["scene_mesh"]["scene_fdpose"] = str(scene_fdpose_path)
+        scene_dict["info"]["scene_mesh"]["fdpose"] = str(scene_fdpose_path)
 
-        if debug_level >= 3:
+        if debug_level >= 1:
             shutil.rmtree(Path(debug_dir), ignore_errors=True)
             logging.info(f"Clear up the debug directory: {debug_dir}")
         

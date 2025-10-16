@@ -17,7 +17,7 @@ Note:
         },
         "scene_mesh": {
             ...
-            "scene_optimized": # entire scene with collision optimized object meshes [glb],
+            "optimized": # entire scene with collision optimized object meshes [glb],
         }
     }
 """
@@ -158,7 +158,7 @@ def refine_by_plane_clearance(mesh_path, plane_point, plane_normal, clearance=0.
 
 # ──────────────── main function ──────────────── #
 def scenario_collision_optimization(keys, key_scene_dicts, key_cfgs):
-
+    base_dir = Path.cwd()
     for key in keys:
         scene_dict = key_scene_dicts[key]
         key_cfg = key_cfgs[key]
@@ -215,7 +215,7 @@ def scenario_collision_optimization(keys, key_scene_dicts, key_cfgs):
             scene.add_geometry(trimesh_single(obj["optimized"]), f"obj{oid}_{name}")
         merged = base_dir / Path(f"outputs/{key}/reconstruction/scenario") / "scene_optimized.glb"
         scene.export(str(merged))
-        scene_dict["info"]["scene_mesh"]["scene_optimized"] = str(merged)
+        scene_dict["info"]["scene_mesh"]["optimized"] = str(merged)
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)

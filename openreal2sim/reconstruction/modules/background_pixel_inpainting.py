@@ -46,7 +46,7 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
     # Set up ObjectClear pipeline once
     torch_dtype = torch.float16 if USE_FP16 else torch.float32
     variant = "fp16" if USE_FP16 else None
-    gpu_id = key_cfgs[0]["gpu"] # it has to be running on the same GPU
+    gpu_id = key_cfgs[keys[0]]["gpu"] # it has to be running on the same GPU
     device = torch.device(f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu')
     generator = torch.Generator(device=device).manual_seed(SEED)
     pipe = ObjectClearPipeline.from_pretrained_with_custom_modules(
@@ -81,19 +81,24 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
 
         mask_accum = None
         ground_accum = None
+        plane_accum = None
 
         for oid, obj in frame_objs.items():
             name = obj["name"].lower()
             mask = obj["mask"]  # bool array
 
-            if "ground" not in name:
+            if "ground" not in name and "plane" not in name:
                 if mask_accum is None:
                     mask_accum = np.zeros_like(mask, dtype=bool)
                 mask_accum |= mask
-            else:
+            elif "ground" in name:
                 if ground_accum is None:
                     ground_accum = np.zeros_like(mask, dtype=bool)
                 ground_accum |= mask
+            elif "plane" in name:
+                if plane_accum is None:
+                    plane_accum = np.zeros_like(mask, dtype=bool)
+                plane_accum |= mask
 
         if mask_accum is not None:
             cv2.imwrite(mask_img_path, (mask_accum.astype(np.uint8)) * 255)
@@ -150,6 +155,7 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
         scene_dict["recon"]["background"] = np.ascontiguousarray(np.array(fused_img_pil, dtype=np.uint8))
         scene_dict["recon"]["foreground"] = np.ascontiguousarray(np.array(image_orig,   dtype=np.uint8))
         scene_dict["recon"]["ground_mask"] = ground_accum if ground_accum is not None else None # H x W, bool
+        scene_dict["recon"]["plane_mask"] = plane_accum if plane_accum is not None else None # H x W, bool
         scene_dict["recon"]["object_mask"] = mask_accum if mask_accum is not None else None   # H x W, bool
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
