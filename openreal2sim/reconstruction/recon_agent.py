@@ -113,7 +113,6 @@ if __name__ == '__main__':
     args.add_argument('--label', type=str, default=None, help='Optional label for notifications')
     args = args.parse_args()
 
-    # Notify that reconstruction has started
     if args.label:
         notify_started(args.label)
 
@@ -121,11 +120,9 @@ if __name__ == '__main__':
         agent = ReconAgent(args.stage)
         scene_dicts = agent.run()
 
-        # Notify successful completion
         if args.label:
             notify_success(args.label)
     except Exception as e:
-        # Notify failure
         if args.label:
             notify_failed(args.label)
         raise
