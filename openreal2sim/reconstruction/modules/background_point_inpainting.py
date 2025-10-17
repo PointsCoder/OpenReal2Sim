@@ -108,13 +108,12 @@ def depth_to_points(depth: np.ndarray, K: np.ndarray) -> np.ndarray:
     y = (jj.reshape(-1) - cy) * z / fy
     return np.stack([x, y, z], 1)
 
-
-
 def plane_fill(depth0, K, ground, obj):
     H,W=depth0.shape; fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
 
-
     from scipy.ndimage import distance_transform_edt
+    from scipy.interpolate import griddata
+
 
     ground_border = (ground > 0).astype(np.uint8)
     dist = distance_transform_edt(ground_border)
@@ -122,8 +121,54 @@ def plane_fill(depth0, K, ground, obj):
     ground_filtered = np.zeros_like(ground, dtype=bool)
     ground_filtered[ground & mask_inner] = True
 
-
     pts_ground = depth_to_points(depth0, K)[ground_filtered.ravel()]
+    pc = o3d.geometry.PointCloud()
+    pc.points = o3d.utility.Vector3dVector(pts_ground)
+    plane, _ = pc.segment_plane(distance_threshold=0.02, ransac_n=3, num_iterations=2000)
+    a, b, c, d = plane
+
+    from scipy.ndimage import binary_dilation
+
+    obj_edge = binary_dilation(obj, iterations=2) 
+    candidate_mask = obj_edge & ground
+
+    ys, xs = np.where(candidate_mask)
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    dx = (xs - cx) / fx
+    dy = (ys - cy) / fy
+    dz = np.ones_like(dx)
+    denom = a * dx + b * dy + c * dz
+    valid = np.abs(denom) > 1e-6
+    t = np.full_like(dx, np.nan, dtype=np.float32)
+    t[valid] = -d / denom[valid]
+    plane_z = t * dz
+    dist_to_plane = np.abs(a * (dx * t) + b * (dy * t) + c * (dz * t) + d) / np.linalg.norm([a, b, c])
+    plane_dist_th = 0.02
+    mask_valid = (t > 0) & np.isfinite(t) & (dist_to_plane < plane_dist_th)
+    z_plane = plane_z[mask_valid]
+    xs_plane = xs[mask_valid]
+    ys_plane = ys[mask_valid]
+
+    fill_mask = obj
+    fill_ys, fill_xs = np.where(fill_mask)
+
+    depth0_filled = depth0.copy()
+    if len(z_plane) > 0:
+        z_fill = griddata(
+            (ys_plane, xs_plane),
+            z_plane,
+            (fill_ys, fill_xs),
+            method="linear",
+            fill_value=np.mean(z_plane)
+        )
+        depth0_filled[fill_ys, fill_xs] = np.clip(z_fill, 0, 5 * depth0.max())
+    return depth0_filled
+
+
+def vanilla_plane_fill(depth0, K, ground, obj):
+    H,W=depth0.shape; fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
+
+    pts_ground = depth_to_points(depth0, K)[ground.ravel()]
     pc = o3d.geometry.PointCloud(); pc.points = o3d.utility.Vector3dVector(pts_ground)
     plane,_ = pc.segment_plane(distance_threshold=0.02, ransac_n=3, num_iterations=2000)
     a,b,c,d = plane

@@ -189,7 +189,6 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         plane_pts = plane_pts[np.all(np.isfinite(plane_pts), axis=1)]
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(plane_pts)
-        # 使用更多的点进行RANSAC平面拟合，提高准确性
         plane_model, _ = pcd.segment_plane(distance_threshold=0.01,
                                            ransac_n=10, num_iterations=2000)
         a, b, c, d = plane_model

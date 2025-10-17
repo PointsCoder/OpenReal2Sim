@@ -103,8 +103,8 @@ def judge_picture_side(depth: np.ndarray) -> str:
     h, w = depth.shape
     
     mid_point = h // 2
-    upper_half = depth[:mid_point, :]
-    lower_half = depth[mid_point:, :]
+    upper_half = np.nan_to_num(depth[:mid_point, :], nan=0)
+    lower_half = np.nan_to_num(depth[mid_point:, :], nan=0)
 
     upper_avg_depth = np.mean(upper_half)
     lower_avg_depth = np.mean(lower_half)
@@ -128,7 +128,8 @@ def run_r3d(key_name: str, cfgs: dict):
     input_path = Path("data") / f"{key_name}.r3d"
     output_dir = Path("outputs") / key_name / "images"
     depth_dir = Path("outputs") / key_name / "depth"
-    
+    video_dir = Path("outputs") / key_name / "video"
+    video_dir.mkdir(parents=True, exist_ok=True)
     # Create output directories
     output_dir.mkdir(parents=True, exist_ok=True)
     depth_dir.mkdir(parents=True, exist_ok=True)
@@ -163,7 +164,7 @@ def run_r3d(key_name: str, cfgs: dict):
         assert len(poses) == len(rgb_path_list), f"Pose count ({len(poses)}) != RGB count ({len(rgb_path_list)})"
         
         # Get image dimensions
-        downscale_factor = 3.75  # 1.0 for front and 3.75 for rear camera set by iOS.
+        downscale_factor = 7.5  # 1.0 for front and 3.75 for rear camera set by iOS, 7.5 for r3d high-res
         H, W = cv2.imread(str(rgb_path_list[0])).shape[:2]
 
         H_dc, W_dc = int(H/downscale_factor), int(W/downscale_factor)
@@ -215,6 +216,7 @@ def run_r3d(key_name: str, cfgs: dict):
             
             depth = model.predict(image, depth).cpu().numpy()[0,0]
             #depth = cv2.resize(depth, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+
             cv2.imwrite(str(depth_output_path), (depth * 1000.).astype(np.uint16))
             image = image.cpu().numpy()[0].transpose(1, 2, 0)*255.0
             images.append(image.astype(np.uint8))
@@ -253,7 +255,7 @@ def run_r3d(key_name: str, cfgs: dict):
         if flip:
             K[1,2] = new_height - K[1,2]
             K[0,2] = new_width - K[0,2]
-        video_writer = cv2.VideoWriter(str(output_dir / "video.mp4"), cv2.VideoWriter_fourcc(*'mp4v'), 30, (new_width, new_height))
+        video_writer = cv2.VideoWriter(str(video_dir / "video.mp4"), cv2.VideoWriter_fourcc(*'mp4v'), 30, (new_width, new_height))
         for image in images[:10]:
             video_writer.write(cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
         video_writer.release()
