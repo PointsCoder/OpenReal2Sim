@@ -308,7 +308,7 @@ with gr.Blocks(title="Grounded-SAM-2 Annotator", css=css_prevent_image_drag) as 
         del_btn = gr.Button("Delete Object")
 
     slider = gr.Slider(0,1,1,label="Frame",interactive=False)
-    imgbox = gr.Image(type="numpy",label="Preview")
+    imgbox = gr.Image(type="numpy",label="Preview", elem_id="sam-image-box")
 
     prop_btn, logbox = gr.Button("PROPAGATE & SAVE"), gr.Textbox(label="Log")
 
