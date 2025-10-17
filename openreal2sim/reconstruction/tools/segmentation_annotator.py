@@ -323,7 +323,7 @@ if __name__=="__main__":
     import argparse, os
     ap=argparse.ArgumentParser()
     ap.add_argument("--key",type=str,default="")
-    ap.add_argument("--share",type=bool,default=True)
+    ap.add_argument("--share",type=bool,default=False)
     ap.add_argument("--port",type=int,default=7860)
     args=ap.parse_args()
 

@@ -12,6 +12,8 @@ Note:
             "oid": {
                 ...
                 "fdpose_trajs": # object relative trajs [N,4,4],
+                "simple_trajs":  # trajectory from mask+depth only [N,4,4],
+                "hybrid_trajs":  # rotation from fdpose, translation from mask+depth [N,4,4],
                 "fdpose":      # object placement at using foundation pose estimation [glb],
             },
             ...
@@ -56,6 +58,59 @@ def build_mask_array(
         out[i] = m.astype(np.uint8)
     return out
 
+def masked_center_cam(
+    depth: np.ndarray,
+    mask: np.ndarray,
+    K: np.ndarray,
+    method: str = "mean"
+) -> Optional[np.ndarray]:
+    """
+    Compute object center in the camera frame from masked depth.
+    Returns p_cam (3,) or None if insufficient valid pixels.
+
+    - Unprojects all valid (u,v,z) to 3D using intrinsics K.
+    - Aggregates by mean/median for robustness.
+    """
+    # Valid pixels: depth > 0 within the binary mask
+    valid = (mask.astype(bool)) & (depth > 0)
+    if not np.any(valid):
+        return None
+
+    v_idx, u_idx = np.where(valid)  # row (y), col (x)
+    z_vals = depth[v_idx, u_idx]
+
+    fx = float(K[0, 0]); fy = float(K[1, 1])
+    cx = float(K[0, 2]); cy = float(K[1, 2])
+
+    # Back-project to camera frame
+    x = (u_idx.astype(np.float64) - cx) / fx * z_vals
+    y = (v_idx.astype(np.float64) - cy) / fy * z_vals
+    pts = np.stack([x, y, z_vals.astype(np.float64)], axis=1)  # [M,3]
+
+    if method == "mean":
+        center = pts.mean(axis=0)
+    else:
+        center = np.median(pts, axis=0)
+    return center.astype(np.float64)
+
+def nearest_valid_fill_inplace(seq: List[Optional[np.ndarray]]) -> None:
+    """
+    In-place nearest valid value fill. First forward, then backward pass.
+    Each element is either None or a numpy array of identical shape.
+    """
+    last = None
+    for i in range(len(seq)):
+        if seq[i] is not None:
+            last = seq[i]
+        else:
+            seq[i] = last
+    last = None
+    for i in range(len(seq) - 1, -1, -1):
+        if seq[i] is not None:
+            last = seq[i]
+        else:
+            seq[i] = last
+
 def convert_glb_to_obj_temp(glb_path: str) -> Tuple[str, Optional[str]]:
     import tempfile
     from PIL import Image
@@ -96,59 +151,6 @@ def convert_glb_to_obj_temp(glb_path: str) -> Tuple[str, Optional[str]]:
     logging.info(f"[convert_glb_to_obj_temp] export to OBJ: {obj_path}")
     return str(obj_path), tmpdir
 
-# def export_debug_track_as_video(
-#     track_vis_dir: Path,
-#     output_mp4_path: Path,
-#     fps: int = 20
-# ) -> None:
-#     """
-#     Stitch per-frame debug images under `track_vis_dir` into an MP4 video.
-
-#     - Supports both .jpg and .png files named as zero-padded indices (e.g., 000000.jpg).
-#     - Writes the video to `output_mp4_path` (parents are created if missing).
-#     - If no images are found, it logs and returns without raising.
-
-#     Args:
-#         track_vis_dir (Path): Directory containing per-frame debug images.
-#         output_mp4_path (Path): Target MP4 path to write.
-#         fps (int): Frames per second for the output video.
-#     """
-#     try:
-#         jpg_list = sorted(track_vis_dir.glob("*.jpg"))
-#         png_list = sorted(track_vis_dir.glob("*.png"))
-#         img_files = jpg_list if len(jpg_list) > 0 else png_list
-
-#         if len(img_files) == 0:
-#             logging.info(f"[export_debug_track_as_video] No images found in: {track_vis_dir}")
-#             return
-
-#         # Read first frame to get frame size (W, H). cv2 reads in BGR, which suits VideoWriter.
-#         first_img = cv2.imread(str(img_files[0]), cv2.IMREAD_COLOR)
-#         if first_img is None:
-#             logging.warning(f"[export_debug_track_as_video] Failed to read first image: {img_files[0]}")
-#             return
-#         frame_height, frame_width = first_img.shape[:2]
-
-#         # Prepare writer (mp4v is widely supported)
-#         output_mp4_path.parent.mkdir(parents=True, exist_ok=True)
-#         fourcc = cv2.VideoWriter_fourcc(*'avc1')
-#         writer = cv2.VideoWriter(str(output_mp4_path), fourcc, float(fps), (frame_width, frame_height))
-
-#         # Sequentially write all frames
-#         for img_path in img_files:
-#             frame_bgr = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
-#             if frame_bgr is None:
-#                 logging.warning(f"[export_debug_track_as_video] Skip unreadable image: {img_path}")
-#                 continue
-#             # If sizes mismatch for any reason, resize to (W, H) to avoid writer failure.
-#             if (frame_bgr.shape[1] != frame_width) or (frame_bgr.shape[0] != frame_height):
-#                 frame_bgr = cv2.resize(frame_bgr, (frame_width, frame_height), interpolation=cv2.INTER_AREA)
-#             writer.write(frame_bgr)
-
-#         writer.release()
-#         logging.info(f"[export_debug_track_as_video] Wrote video: {output_mp4_path} ({len(img_files)} frames @ {fps} FPS)")
-#     except Exception as e:
-#         logging.warning(f"[export_debug_track_as_video] Failed to export video due to: {e}")
 
 def export_debug_track_as_video(
     track_vis_dir: Path,
@@ -242,6 +244,7 @@ class FoundationPoseReader:
     def get_color(self, i: int) -> np.ndarray: return self.colors[i]
     def get_depth(self, i: int) -> np.ndarray: return self.depths[i]
     def get_mask(self, i: int) -> np.ndarray:  return self._masks[i]
+    def get_K(self, i: int) -> np.ndarray: return self.Ks[i]
 
 
 # ------------------------- main function -------------------------
@@ -374,6 +377,49 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             logging.info(f"[object {oid}] fdpose -> {fdpose_path}")
 
             placed_meshes.append((f"{oid}_{oname}", m_fd))
+
+            ####  add simple trajs (from mask+depth only) ####
+            logging.info(f"[object] oid={oid}, name={oname} - simple trajs from mask+depth only")
+            centers_cam: List[Optional[np.ndarray]] = []
+            for i in range(N):
+                m_i = reader.get_mask(i)
+                c_i = masked_center_cam(
+                    depth=reader.get_depth(i),
+                    mask=m_i,
+                    K=reader.get_K(i),
+                )
+                centers_cam.append(c_i)            
+
+            # Fill in gaps using nearest valid values
+            nearest_valid_fill_inplace(centers_cam)
+            # camera->world: p_w(t) = R_cw @ p_c(t) + t_w
+            R_cw = T_c2w[:3, :3]; t_w = T_c2w[:3, 3]
+            pc_stack = np.stack(centers_cam, axis=0).astype(np.float64)  # [N,3]
+            pw_stack = (R_cw @ pc_stack.T).T + t_w[None, :]              # [N,3]
+            p0_w = pw_stack[0].copy()
+            # assemble simple Δ(t): rotation = I, translation = p_w(t) - p_w(0)
+            simple_rel = np.repeat(np.eye(4, dtype=np.float32)[None, ...], N, axis=0)  # [N,4,4]
+            simple_rel[:, :3, 3] = (pw_stack - p0_w[None, :]).astype(np.float32)
+
+            simple_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_simple_trajs.npy"
+            np.save(simple_save_path, simple_rel.astype(np.float32))
+            scene_dict["info"]["objects"][obj_id]["simple_trajs"] = str(simple_save_path)
+            logging.info(f"[object {oid}] simple trajs(mask+depth only) -> {simple_save_path}")
+
+            ####  add hybrid trajs (using object center + foundation pose object headings) ####
+            logging.info(f"[object] oid={oid}, name={oname} - hybrid trajs (fd-rot + mask/depth-trans)")
+            R_fd = rel_w[:, :3, :3].astype(np.float64)        # [N,3,3]
+            t_hyb = np.stack([pw_stack[i] - (R_fd[i] @ p0_w) for i in range(N)], axis=0).astype(np.float32)  # [N,3]
+
+            hybrid_rel = rel_w.copy().astype(np.float32)
+            hybrid_rel[:, :3, 3] = t_hyb
+            hybrid_rel[0] = np.eye(4, dtype=np.float32)        # exact identity at t=0
+
+            hybrid_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_hybrid_trajs.npy"
+            np.save(hybrid_save_path, hybrid_rel.astype(np.float32))
+            scene_dict["info"]["objects"][obj_id]["hybrid_trajs"] = str(hybrid_save_path)
+            logging.info(f"[object {oid}] hybrid trajs(fd-rot + mask/depth-trans) -> {hybrid_save_path}")
+
 
             if tmpdir is not None and Path(tmpdir).exists():
                 shutil.rmtree(tmpdir, ignore_errors=True)

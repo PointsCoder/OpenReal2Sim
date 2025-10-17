@@ -22,9 +22,11 @@ services:
     tty: true
     command: bash
 
-  foundationpose:
-    image: shingarey/foundationpose_custom_cuda121
-    # container_name: foundationpose
+  isaaclab:
+    build:
+      context: ..
+      dockerfile: Dockerfile_isaac
+    image: isaaclab:dev
     deploy:
       resources:
         reservations:
@@ -32,84 +34,27 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    network_mode: host
-    ipc: host
-    cap_add:
-      - SYS_PTRACE
-    security_opt:
-      - seccomp:unconfined
-    environment:
-      - NVIDIA_DISABLE_REQUIRE=1
-      - DISPLAY=${DISPLAY}
-      - XAUTHORITY=/root/.Xauthority
-      - QT_X11_NO_MITSHM=1
+    working_dir: /app
     volumes:
       - ../:/app
-      - /home:/home
-      - /mnt:/mnt
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - /tmp:/tmp
-      - ../outputs:/app/outputs
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ${HOME}/.Xauthority:/root/.Xauthority:ro
-    working_dir: /app
-
-  # FoundationPose Container (via SSH + XQuartz for display)
-  foundationpose_ssh:
-    image: wenbowen123/foundationpose
-    # container_name: foundationpose
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    network_mode: host
-    ipc: host
-    cap_add:
-      - SYS_PTRACE
-    security_opt:
-      - seccomp:unconfined
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw        # forward X11 socket
+      - ${XAUTHORITY:-$HOME/.Xauthority}:/home/isaac/.Xauthority:ro  # X auth cookie
+      - /dev:/dev                                # add: expose input/gpu devices if needed
     environment:
-      - NVIDIA_DISABLE_REQUIRE=1
-      - DISPLAY=${DISPLAY}
-      - XAUTHORITY=/root/.Xauthority
-      - QT_X11_NO_MITSHM=1
-    volumes:
-      - /home:/home
-      - /mnt:/mnt
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - /tmp:/tmp
-      - ../outputs:/app/outputs
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ${HOME}/.Xauthority:/root/.Xauthority:ro
-    working_dir: /home/ubuntu/repos/pi-I
-
-    # FoundationPose Container (using local display)
-  foundationpose_local:
-    image: wenbowen123/foundationpose
-    # container_name: foundationpose
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    network_mode: host
-    ipc: host
-    cap_add:
-      - SYS_PTRACE
-    security_opt:
-      - seccomp:unconfined
-    environment:
-      - NVIDIA_DISABLE_REQUIRE=1
-      - DISPLAY=${DISPLAY:-:0}
-    volumes:
-      - /home:/home
-      - /mnt:/mnt
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - /tmp:/tmp
-      - ../outputs:/app/outputs
-    working_dir: /home/ubuntu/repos/pi-I
+      - DISPLAY=${DISPLAY}            # add: pass host DISPLAY
+      - XAUTHORITY=/home/isaac/.Xauthority  # add: where the cookie is mounted in container
+      - QT_X11_NO_MITSHM=1            # add: avoid MIT-SHM issues for GUI apps
+      - NVIDIA_VISIBLE_DEVICES=all    # add: be explicit
+      - NVIDIA_DRIVER_CAPABILITIES=all # add: include graphics/display
+      - OMNI_KIT_DISABLE_EXTS=isaacsim.ros2.bridge
+      # (Optional Wayland; uncomment if you run Wayland)
+      # - WAYLAND_DISPLAY=${WAYLAND_DISPLAY}
+      # - XDG_RUNTIME_DIR=/run/user/${UID}
+      # - XDG_SESSION_TYPE=wayland
+    devices:
+      - /dev/dri:/dev/dri             # add: direct rendering device (helps GUI/GL)
+    # ipc: host                          # add: larger /dev/shm helps Isaac
+    shm_size: "16g"                    # add: extra SHM for stability
+    stdin_open: true
+    tty: true
+    command: bash

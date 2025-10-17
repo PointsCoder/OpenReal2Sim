@@ -1,0 +1,69 @@
+FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-dev python3-pip python3-venv python-is-python3 \
+    python3-distutils \
+    libopenblas-dev \
+    build-essential cmake ninja-build pkg-config \
+    git curl wget ffmpeg bash libspatialindex-dev \
+    ncurses-bin ncurses-term \
+    libglu1-mesa libxkbcommon-x11-0 libegl1 libgl1 libgles2 \
+    libxinerama1 libxcursor1 libsm6 libice6 libxrender1 libxrandr2 \
+    libxt6 libxmu6 \
+    && python3 -m pip install --upgrade --no-cache-dir pip wheel setuptools packaging \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+SHELL ["/bin/bash", "-lc"]
+
+ENV CUDA_HOME=/usr/local/cuda
+ENV FORCE_CUDA=1
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0"
+
+RUN useradd -ms /bin/bash isaac && chown -R isaac:isaac /app
+ENV HOME=/home/isaac
+USER isaac
+ENV PATH=$HOME/.local/bin:$PATH
+
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 \
+    torch==2.5.1+cu118 torchvision==0.20.1+cu118 torchaudio==2.5.1+cu118
+
+RUN pip install 'isaacsim[all,extscache]==4.5.0' --extra-index-url https://pypi.nvidia.com
+
+ENV TERM=xterm-256color
+RUN git clone https://github.com/PointsCoder/IsaacLab.git "$HOME/IsaacLab"
+RUN cd "$HOME/IsaacLab" && ./isaaclab.sh --install
+
+# usd conversion
+RUN pip install loguru rich
+
+# graspnetapi (will install open3d & change numpy version from 1.26.4 to 1.23.4)
+RUN git clone https://github.com/PointsCoder/graspnetAPI.git "$HOME/graspnetAPI"
+RUN cd "$HOME/graspnetAPI" && pip install -e .
+
+# graspness (will compile pointnet2, knn)
+RUN git clone https://github.com/PointsCoder/graspness_unofficial.git "$HOME/third_party/graspness_unofficial"
+RUN cd "$HOME/third_party/graspness_unofficial/pointnet2" && python -m pip install --user -v --no-build-isolation .
+# RUN cd "$HOME/third_party/graspness_unofficial/knn" && python -m pip install --user -v --no-build-isolation . # (knn is not necessary)
+
+# MinkowskiEngine
+RUN git clone https://github.com/NVIDIA/MinkowskiEngine.git "$HOME/MinkowskiEngine"
+RUN cd "$HOME/MinkowskiEngine" && export CUDA_HOME=/usr/local/cuda; python setup.py install --user --blas=openblas --force_cuda
+
+# checkpoints
+RUN pip install gdown
+RUN mkdir -p "$HOME/third_party/graspness_unofficial/ckpt"
+RUN gdown 10o5fc8LQsbI8H0pIC2RTJMNapW9eczqF -O "$HOME/third_party/graspness_unofficial/ckpt/minkuresunet_kinect.tar"
+RUN gdown 1RfdpEM2y0x98rV28d7B2Dg8LLFKnBkfL -O "$HOME/third_party/graspness_unofficial/ckpt/minkuresunet_realsense.tar"
+
+# curobo
+RUN git clone https://github.com/NVlabs/curobo.git "$HOME/curobo"
+RUN cd "$HOME/curobo" && pip install -e . --no-build-isolation --user
+
+# curobo changes the numpy version from 1.23.4 to 2.x, need to get it back
+RUN pip install numpy==1.23.4
+
+
+ENV PYTHONPATH=/app:$HOME/third_party:$HOME/third_party/graspness_unofficial/pointnet2

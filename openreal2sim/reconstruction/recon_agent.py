@@ -6,6 +6,7 @@ import json
 import argparse
 
 from modules.utils.compose_config import compose_configs
+from utils.notification import notify_started, notify_failed, notify_success
 
 class ReconAgent:
     def __init__(self, stage=None):
@@ -109,6 +110,22 @@ class ReconAgent:
 if __name__ == '__main__':
     args = argparse.ArgumentParser()
     args.add_argument('--stage', type=str, default=None, help='Starting from a certain stage')
+    args.add_argument('--label', type=str, default=None, help='Optional label for notifications')
     args = args.parse_args()
-    agent = ReconAgent(args.stage)
-    scene_dicts = agent.run()
+
+    if args.label:
+        notify_started(args.label)
+
+    try:
+        args = argparse.ArgumentParser()
+    args.add_argument('--stage', type=str, default=None, help='Starting from a certain stage')
+    args = args.parse_args()
+    agent = ReconAgent(args.stageargs.stage)
+        scene_dicts = agent.run()
+
+        if args.label:
+            notify_success(args.label)
+    except Exception as e:
+        if args.label:
+            notify_failed(args.label)
+        raise

@@ -90,6 +90,27 @@ RUN cd /app/third_party/FoundationPose/bundlesdf/mycuda && \
     cd /app
 
 RUN cd /app/third_party/Grounded-SAM-2 && python setup.py build_ext --inplace
+
+# FoundationPose
+RUN apt-get update && apt-get install -y libboost-dev libboost-system-dev libboost-program-options-dev
+COPY third_party/FoundationPose /app/third_party/FoundationPose
+RUN python -m pip install --no-build-isolation --no-cache-dir git+https://github.com/NVlabs/nvdiffrast.git
+RUN python -m pip install --no-cache-dir kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu118.html
+RUN pip install "git+https://github.com/facebookresearch/pytorch3d.git"
+
+RUN cd / && git clone https://github.com/pybind/pybind11 &&\
+    cd pybind11 && git checkout v2.10.0 &&\
+    mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DPYBIND11_INSTALL=ON -DPYBIND11_TEST=OFF &&\
+    make -j6 && make install
+
+RUN cd / && wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz &&\
+    tar xvzf ./eigen-3.4.0.tar.gz &&\
+    cd eigen-3.4.0 &&\
+    mkdir build &&\
+    cd build &&\
+    cmake .. &&\
+    make install
+
 # -------------------------------------------------------------------------
 # Runtime env
 # -------------------------------------------------------------------------

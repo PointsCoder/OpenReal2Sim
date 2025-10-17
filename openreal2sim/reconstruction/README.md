@@ -60,6 +60,10 @@ Specifically, we resize and register the object mesh to the correct position in 
 
 We use Foundation Pose to futher optimize the object placement and track the object trajectory in a video. (See `modules/scenario_fdpose_optimization.py`)
 
+### scenario collision optimization
+
+We optimize the object placement to avoid collisions between objects and the background. (See `modules/scenario_collision_optimization.py`)
+
 ## How to Use
 
 Make sure you have `scene.pkl` (from preprocess steps) in the `outputs/{key_name}/scene` folder.

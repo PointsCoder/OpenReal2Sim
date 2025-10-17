@@ -2,6 +2,7 @@
 data/
 outputs/
 .gradio/
+third_party/IsaacLab
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

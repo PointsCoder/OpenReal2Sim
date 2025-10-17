@@ -12,7 +12,7 @@ tqdm==4.67.1
 opencv-python-headless==4.9.0.80
 PyYAML==6.0.2
 einops==0.8.1
-huggingface-hub==0.29.2
+huggingface-hub[cli]==0.29.2
 imageio==2.36.0
 timm==1.0.19
 safetensors==0.6.2
