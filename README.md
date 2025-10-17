@@ -24,7 +24,7 @@ docker compose -p "$USER" -f docker/compose.yml run --rm openreal2sim
 bash scripts/installation/install.sh
 ```
 
-**note**, on the previous script sometimes gdwon fails download the files. Alternatively the followind python script can be used 
+**note**, on the previous script sometimes gdwon fails download the files. Alternatively the following python script can be used: 
 
 ```
 python scripts/installation/install.py
