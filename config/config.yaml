@@ -9,7 +9,8 @@ global:
   preprocess: # stage
     fps: 25
     quality: 1
-    resize: 1
+    resize: 0.5
+    interval: 1
     gpu: "0" 
     depth_refinement: true
   

@@ -100,16 +100,23 @@ def robust_scale_shift_align(
     return float(a), float(b)
 
 def depth_to_points(depth: np.ndarray, K: np.ndarray) -> np.ndarray:
+    """
+    Convert a depth map to 3D points and exclude pixels with zero or non-finite depth.
+    Returns an (N,3) array containing only valid points (z>0 and finite).
+    """
     H, W = depth.shape
-    fx, fy, cx, cy = K[0,0], K[1,1], K[0,2], K[1,2]
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
     ii, jj = np.meshgrid(np.arange(W), np.arange(H), indexing="xy")
-    z = depth.reshape(-1)
+    z = depth.reshape(-1).astype(np.float32)
     x = (ii.reshape(-1) - cx) * z / fx
     y = (jj.reshape(-1) - cy) * z / fy
-    return np.stack([x, y, z], 1)
+    pts = np.stack([x, y, z], axis=1)
+    valid = (z > 0) & (z < np.inf)
+    pts[~valid] = np.nan
+    return pts
 
 def plane_fill(depth0, K, ground, obj):
-    H,W=depth0.shape; fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
+    fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
 
     from scipy.ndimage import distance_transform_edt
     from scipy.interpolate import griddata
@@ -117,10 +124,14 @@ def plane_fill(depth0, K, ground, obj):
 
     ground_border = (ground > 0).astype(np.uint8)
     dist = distance_transform_edt(ground_border)
-    mask_inner = dist >= 10
+    mask_inner = dist >= 3
     ground_filtered = np.zeros_like(ground, dtype=bool)
     ground_filtered[ground & mask_inner] = True
-
+    z = depth0.reshape(-1).astype(np.float32)
+    nan_mask = (z <= 0) | np.isnan(z) | np.isinf(z)
+    nan_mask = nan_mask.reshape(depth0.shape)
+    ground_filtered = ground_filtered & (~nan_mask)
+    #import pdb; pdb.set_trace()
     pts_ground = depth_to_points(depth0, K)[ground_filtered.ravel()]
     pc = o3d.geometry.PointCloud()
     pc.points = o3d.utility.Vector3dVector(pts_ground)
@@ -133,6 +144,7 @@ def plane_fill(depth0, K, ground, obj):
     candidate_mask = obj_edge & ground
 
     ys, xs = np.where(candidate_mask)
+    #import pdb; pdb.set_trace()
     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
     dx = (xs - cx) / fx
     dy = (ys - cy) / fy
@@ -272,13 +284,13 @@ def hybrid_fill(depth0: np.ndarray, fg_img: np.ndarray, bg_img: np.ndarray, K: n
     Returns:
         depth_bg: Generated background depth
     """
-    print(f"[Hybrid] Starting hybrid depth generation...")
+    print(f"[Info] Starting hybrid depth generation...")
 
     ground_mask = get_ground_mask_from_existing_mask(fg_img, existing_ground_mask)
 
-    print(f"[Hybrid] Running MoGe depth prediction...")
+    print(f"[Info] Running MoGe depth prediction...")
     depth_moge = run_moge_depth(bg_img, device)
-    kernel = np.ones((9, 9), np.uint8)  # prevent boundaries problem.
+    kernel = np.ones((25, 25), np.uint8)  # prevent boundaries problem.
     obj_msk = cv2.dilate(obj_msk.astype(np.uint8), kernel, iterations=1).astype(bool)
     depth_ground = plane_fill(depth0, K,existing_ground_mask, obj_msk)
 
@@ -292,7 +304,7 @@ def hybrid_fill(depth0: np.ndarray, fg_img: np.ndarray, bg_img: np.ndarray, K: n
     if obj_ground.sum() > 0:
         depth_bg[obj_ground] = depth_ground[obj_ground]
     
-    
+     
     if obj_non_ground.sum() > 0:
         a, b = robust_scale_shift_align(
                 pred_depth=depth_moge,
@@ -317,6 +329,10 @@ def export_cloud(pts: np.ndarray, colors: np.ndarray, out_path: Path):
     pcd.points = o3d.utility.Vector3dVector(pts)
     pcd.colors = o3d.utility.Vector3dVector(colors)
     o3d.io.write_point_cloud(str(out_path), pcd)
+
+def clear_nan(pts: np.ndarray, colors: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    valid_mask = np.isfinite(pts).all(axis=1)
+    return pts[valid_mask], colors[valid_mask]
 
 def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
 
@@ -376,11 +392,14 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
         scene_dict["recon"]["bg_depth"] = depth_bg.astype(np.float32)
         scene_dict["recon"]["fg_depth"] = depth0.astype(np.float32)
         bg_pts = depth_to_points(depth_bg, K)
+
         bg_colors = bg_img.reshape(-1,3) / 255.
         bg_color_pts = np.concatenate([bg_pts.reshape(H,W,3), bg_colors.reshape(H,W,3)], -1)
         fg_pts = depth_to_points(depth0, K)
         fg_colors = fg_img.reshape(-1,3) / 255.
         fg_color_pts = np.concatenate([fg_pts.reshape(H,W,3), fg_colors.reshape(H,W,3)], -1)
+        bg_pts, bg_colors = clear_nan(bg_pts, bg_colors)
+        fg_pts, fg_colors = clear_nan(fg_pts, fg_colors)
         scene_dict["recon"]["bg_pts"] = bg_color_pts.astype(np.float32) # (H, W, 6) xyzrgb rgb in [0,1]
         scene_dict["recon"]["fg_pts"] = fg_color_pts.astype(np.float32) # (H, W, 6) xyzrgb rgb in [0,1]
         key_scene_dicts[key] = scene_dict

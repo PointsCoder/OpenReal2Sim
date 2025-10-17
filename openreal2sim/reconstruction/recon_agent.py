@@ -117,10 +117,7 @@ if __name__ == '__main__':
         notify_started(args.label)
 
     try:
-        args = argparse.ArgumentParser()
-    args.add_argument('--stage', type=str, default=None, help='Starting from a certain stage')
-    args = args.parse_args()
-    agent = ReconAgent(args.stageargs.stage)
+        agent = ReconAgent(args.stage)
         scene_dicts = agent.run()
 
         if args.label:

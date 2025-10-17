@@ -57,7 +57,7 @@ bash scripts/running/preprocess.sh
 We first need to segment objects that needs to be reconstructed. We provide a GUI for this purpose:
 ```
 python openreal2sim/reconstruction/tools/segmentation_annotator.py
-```
+```  
 
 **How to use the GUI annotator:**
 
@@ -71,30 +71,7 @@ python openreal2sim/reconstruction/tools/segmentation_annotator.py
 
 **Please note that we must have a `ground` mask annotated, since we need this to find the ground plane for reconstruction.**
 
-**If the `ground` is not the same plane that the object is lied on, another mask called `plane` is needed to annotate which ground the object lies in.**
-
-Then, run the whole physical scene reconstruction pipeline:
-```
-python openreal2sim/reconstruction/recon_agent.py
-```
-### Reconstruction
-
-We first need to segment objects that needs to be reconstructed. We provide a GUI for this purpose:
-```
-python openreal2sim/reconstruction/tools/segmentation_annotator.py
-```
-
-**How to use the GUI annotator:**
-
-1. Input `key_name` (e.g. `demo_image`) in the `Output-key` textbox and press `load` to load image frames
-
-2. Select the objects you want to segment by simply clicking on the image
-
-3. Modify the object name from the default `pc_obj` to the class name in the `Point-click name` and press `Confirm mask` and `Save mask_dict`.
-
-4. If you are processing a video, press the `PROPAGATE & SAVE` button to propagate the segmentation masks across frames.
-
-**Please note that we must have a `ground` mask annotated, since we need this to find the ground plane for reconstruction.**
+**If the `ground` is not the same plane that the object is lay on, another mask called `plane` is needed to annotate which ground the object lies in.**
 
 Then, run the whole physical scene reconstruction pipeline:
 ```
