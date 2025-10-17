@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # Real To Sim [Master Container]
   openreal2sim:
@@ -14,11 +12,17 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu]
+              capabilities: [ gpu ]
+    environment:
+      - Home=/tmp
     working_dir: /app
     volumes:
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+      - ${HOME}:${HOME}
       - ../:/app
     stdin_open: true
+    user: "${HOST_UID}:${HOST_GID}"
     tty: true
     command: bash
 
@@ -33,18 +37,18 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu]
+              capabilities: [ gpu ]
     working_dir: /app
     volumes:
       - ../:/app
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw        # forward X11 socket
-      - ${XAUTHORITY:-$HOME/.Xauthority}:/home/isaac/.Xauthority:ro  # X auth cookie
-      - /dev:/dev                                # add: expose input/gpu devices if needed
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw # forward X11 socket
+      - ${XAUTHORITY:-$HOME/.Xauthority}:/home/isaac/.Xauthority:ro # X auth cookie
+      - /dev:/dev # add: expose input/gpu devices if needed
     environment:
-      - DISPLAY=${DISPLAY}            # add: pass host DISPLAY
-      - XAUTHORITY=/home/isaac/.Xauthority  # add: where the cookie is mounted in container
-      - QT_X11_NO_MITSHM=1            # add: avoid MIT-SHM issues for GUI apps
-      - NVIDIA_VISIBLE_DEVICES=all    # add: be explicit
+      - DISPLAY=${DISPLAY} # add: pass host DISPLAY
+      - XAUTHORITY=/home/isaac/.Xauthority # add: where the cookie is mounted in container
+      - QT_X11_NO_MITSHM=1 # add: avoid MIT-SHM issues for GUI apps
+      - NVIDIA_VISIBLE_DEVICES=all # add: be explicit
       - NVIDIA_DRIVER_CAPABILITIES=all # add: include graphics/display
       - OMNI_KIT_DISABLE_EXTS=isaacsim.ros2.bridge
       # (Optional Wayland; uncomment if you run Wayland)
@@ -52,9 +56,9 @@ services:
       # - XDG_RUNTIME_DIR=/run/user/${UID}
       # - XDG_SESSION_TYPE=wayland
     devices:
-      - /dev/dri:/dev/dri             # add: direct rendering device (helps GUI/GL)
+      - /dev/dri:/dev/dri # add: direct rendering device (helps GUI/GL)
     # ipc: host                          # add: larger /dev/shm helps Isaac
-    shm_size: "16g"                    # add: extra SHM for stability
+    shm_size: "16g" # add: extra SHM for stability
     stdin_open: true
     tty: true
     command: bash
