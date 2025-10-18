@@ -65,7 +65,7 @@ Every time you want to run a script inside the repo, follow these steps:
 
 **Run the container**
    ```bash
-   docker compose -p "$USER" -f docker/compose.yml run openreal2sim
+   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run openreal2sim
    ```
 
 **Execute a script inside the container**

@@ -6,7 +6,7 @@ import json
 import argparse
 
 from modules.utils.compose_config import compose_configs
-from utils.notification import notify_started, notify_failed, notify_success
+from modules.utils.notification import notify_started, notify_failed, notify_success
 
 class ReconAgent:
     def __init__(self, stage=None):
