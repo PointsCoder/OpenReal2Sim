@@ -376,7 +376,7 @@ def run_r3d(key_name: str, cfgs: dict):
             flip = True
         images = []
         import tqdm
-        print(f"[Info] Processing {len(rgb_path_list)} frames...")
+        print(f"[Info] Processing {len(rgb_path_list)} frames..., R3D with refinement: {r3d_with_estimation}")
         for frame_idx in tqdm.tqdm(range(0, len(rgb_path_list), interval), desc="Loading frames"):
             
             rgb_path = rgb_path_list[frame_idx]
@@ -391,7 +391,7 @@ def run_r3d(key_name: str, cfgs: dict):
             image = load_image(str(rgb_path)).to(device)
             if flip:
                 image = torch.flip(image, dims=[2,3])
-
+            
             if not r3d_with_estimation or frame_idx == 0:
                 depth = load_depth(str(depth_path), H_dc, W_dc)
 
@@ -516,11 +516,14 @@ def run_collect_info(key_name: str):
     
     if depth_dir.exists():
         depth_files = sorted(depth_dir.glob("frame_*.png"), key=lambda x: int(x.stem.split("_")[1]))
-        depths = []
-        for f in depth_files:
-            depth = cv2.imread(str(f), cv2.IMREAD_UNCHANGED)
-            depths.append(depth / 1000.0)
-        depths = np.stack(depths, axis=0).astype(np.float32)
+        if len(depth_files) > 0:
+            depths = []
+            for f in depth_files:
+                depth = cv2.imread(str(f), cv2.IMREAD_UNCHANGED)
+                depths.append(depth / 1000.0)
+            depths = np.stack(depths, axis=0).astype(np.float32)
+        else:
+            depths = None
     else:
         depths = None
 

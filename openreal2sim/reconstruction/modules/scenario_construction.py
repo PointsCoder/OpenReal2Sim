@@ -179,7 +179,19 @@ def slow_registration(target_pcd_o3d, obj_info, object_dir):
     distance_mesh = float(np.linalg.norm(max_m - min_m))
 
     scale_factor = distance_points / max(distance_mesh, 1e-12)
-    fg_mesh_register = center_and_scale_mesh(fg_mesh_register, scale_factor)
+
+
+    # Optional：use z axis to compute scale
+    distance_points_z = max_p[2] - min_p[2]
+    distance_mesh_z = max_m[2] - min_m[2]
+    scale_factor_z = distance_points_z / max(distance_mesh_z, 1e-12)
+    fg_mesh_register = center_and_scale_mesh(fg_mesh_register, scale_factor_z)
+
+
+    # use z axis to compute scale
+    distance_points_z = max_p[2] - min_p[2]
+    distance_mesh_z = max_m[2] - min_m[2]
+    scale_factor_z = distance_points_z / max(distance_mesh_z, 1e-12)
 
     # using trimesh registration to place the object mesh in correct position
     print(f"[Info] Running trimesh registration ...")
@@ -445,6 +457,8 @@ def scenario_construction(keys, key_scene_dicts, key_cfgs):
             pickle.dump(scene_dict, f)
 
     return key_scene_dicts
+
+
 
 if __name__ == "__main__":
     base_dir = Path.cwd()

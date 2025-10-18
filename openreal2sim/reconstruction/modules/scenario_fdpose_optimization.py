@@ -39,7 +39,7 @@ REPO_DIR = str(BASE_DIR / Path('third_party/FoundationPose'))
 sys.path.append(REPO_DIR)
 
 # FoundationPose 依赖
-from estimater import *  # FoundationPose, ScorePredictor, PoseRefinePredictor, draw_posed_3d_box, draw_xyz_axis, set_seed
+from estimater import *  # FoundationPose, ScorePredictor, PoseRtuefinePredictor, draw_posed_3d_box, draw_xyz_axis, set_seed
 import nvdiffrast.torch as dr
 
 # ------------------------- utils -------------------------
@@ -205,6 +205,16 @@ def resize_depth(depth: np.ndarray, W: int, H: int) -> np.ndarray:
 def resize_mask(msk: np.ndarray, W: int, H: int) -> np.ndarray:
     return cv2.resize(msk, (W, H), interpolation=cv2.INTER_NEAREST)
 
+def calculate_pos_change(
+    pose_prev: np.ndarray,
+    pose_curr: np.ndarray
+) -> Tuple[float, float]:
+    trans_prev = pose_prev[:3, 3]
+    trans_curr = pose_curr[:3, 3]
+    trans_change = np.linalg.norm(trans_curr - trans_prev)
+    rot_change = np.degrees(np.arccos(np.clip((np.trace(pose_curr[:3, :3] @ pose_prev[:3, :3].T) - 1) / 2, -1.0, 1.0)))
+    return trans_change, rot_change
+
 class FoundationPoseReader:
     def __init__(self,
                  imgs: np.ndarray, # (N, H, W, 3) uint8
@@ -319,7 +329,7 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                 K_i   = reader.Ks[i].astype(np.float64, copy=False)
                 color = reader.get_color(i)
                 depth = reader.get_depth(i)
-
+                
                 if pose_tracking_mode == "perframe":
                     ob_mask_i = reader.get_mask(i).astype(bool)
                     pose = est.register(K=K_i, rgb=color, depth=depth, ob_mask=ob_mask_i,
@@ -330,8 +340,22 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                         pose = est.register(K=K_i, rgb=color, depth=depth,
                                             ob_mask=ob_mask_0, iteration=est_refine_iter)
                     else:
-                        pose = est.track_one(rgb=color, depth=depth, K=K_i,
+                        if pose_tracking_mode == 'spatrack' and len(scene_dict["recon"]["spatrack_trans"]) > 0:
+                            trans = scene_dict["recon"]["spatrack_trans"][i-1]
+                            present_guess = trans @ pose_prev.reshape(4,4)
+                            pose = est.track_one(rgb=color, depth=depth, K=K_i,
+                                             iteration=track_refine_iter, last_pose = present_guess)
+                        else:  
+                            pose = est.track_one(rgb=color, depth=depth, K=K_i,
                                              iteration=track_refine_iter)
+                        
+                        trans_change, rot_change = calculate_pos_change(pose_prev, pose)
+                        if trans_change > 0.10 or rot_change > 30.0:
+                            pose = est.register(K=K_i, rgb=color, depth=depth,
+                                                ob_mask=reader.get_mask(i).astype(bool),
+                                                iteration=est_refine_iter)
+                            present_guess = pose.reshape(4, 4)
+                            print("[Warning] Large translation or rotation detected, re-registering...")
 
                 all_poses.append(pose.reshape(4,4))
                 pose_prev = pose.reshape(4,4)

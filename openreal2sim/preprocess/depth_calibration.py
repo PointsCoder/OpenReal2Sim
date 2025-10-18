@@ -226,9 +226,8 @@ def process_key(key: str, key_cfgs: dict) -> None:
     depth_scale = key_cfgs.get("depth_scale")
     # assert depth_scale is not None, \
     #     f"Please provide depth_scale for the GT depth image in config.yaml for {key}"
-    ### FIXME: This might have prob.
-    if max(depth0_raw.flatten()) > 1000:
-        depth_scale = 1000 if depth_scale is None else depth_scale
+    if depth0_raw.dtype == np.uint16:
+        depth_scale = 1/1000 if depth_scale is None else depth_scale
     depth0_m = depth0_raw.astype(np.float32) * float(depth_scale)
     # clip the real depth for outlier removal
     depth0_m = filter_depths(depth0_m, min_val=key_cfgs.get("depth_min"), max_val=key_cfgs.get("depth_max"))

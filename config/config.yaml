@@ -2,7 +2,7 @@ keys:
   # - demo_image
   # - demo_video
   # - demo_genvideo
-  - demo
+  - 2025-10-18--23-04-28
   # 
 # global settings, can be overridden by local settings
 global:
@@ -10,13 +10,14 @@ global:
     fps: 25
     quality: 1
     resize: 0.5
-    interval: 1
-    gpu: "0" 
-    depth_refinement: true
+    interval: 2
+    gpu: "2" 
+    r3d_refinement: True
   
   reconstruction:
-    gpu: "0" 
+    gpu: "2"
     bg_completion_mode: "hybrid"
+    fdpose_tracking_mode: "spatrack"
 
 
 # local settings for each key

@@ -28,6 +28,7 @@ class ReconAgent:
             "background_mesh_generation",
             "object_mesh_generation",
             "scenario_construction",
+            "object_spatracker_cal",
             "scenario_fdpose_optimization",
             "scenario_collision_optimization"
         ]
@@ -78,6 +79,11 @@ class ReconAgent:
         self.key_scene_dicts = scenario_construction(self.keys, self.key_scene_dicts, self.key_cfgs)
         print('[Info] Scenario construction completed.')
 
+    def object_spatracker_cal(self):
+        from modules.object_spatracker_cal import object_spatracker_cal
+        self.key_scene_dicts = object_spatracker_cal(self.keys, self.key_scene_dicts, self.key_cfgs)
+        print('[Info] Object spatracker calibration completed.')
+
     def scenario_fdpose_optimization(self):
         from modules.scenario_fdpose_optimization import scenario_fdpose_optimization
         self.key_scene_dicts = scenario_fdpose_optimization(self.keys, self.key_scene_dicts, self.key_cfgs)
@@ -99,6 +105,8 @@ class ReconAgent:
             self.object_mesh_generation()
         if "scenario_construction" in self.stages:
             self.scenario_construction()
+        if "object_spatracker_cal" in self.stages:
+            self.object_spatracker_cal()
         if "scenario_fdpose_optimization" in self.stages:
             self.scenario_fdpose_optimization()
         if "scenario_collision_optimization" in self.stages:

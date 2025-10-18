@@ -12,6 +12,8 @@ default_config = {
     "depth_scale": None,
     "depth_min": None,
     "depth_max": None,
+    "r3d_refinement": False,
+    "interval": 1,
 }
 
 def compose_configs(key_name: str, config: dict) -> dict:

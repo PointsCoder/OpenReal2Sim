@@ -290,9 +290,9 @@ def hybrid_fill(depth0: np.ndarray, fg_img: np.ndarray, bg_img: np.ndarray, K: n
 
     print(f"[Info] Running MoGe depth prediction...")
     depth_moge = run_moge_depth(bg_img, device)
-    kernel = np.ones((25, 25), np.uint8)  # prevent boundaries problem.
-    obj_msk = cv2.dilate(obj_msk.astype(np.uint8), kernel, iterations=1).astype(bool)
-    depth_ground = plane_fill(depth0, K,existing_ground_mask, obj_msk)
+    # kernel = np.ones((25, 25), np.uint8)  # prevent boundaries problem.
+    # obj_msk = cv2.dilate(obj_msk.astype(np.uint8), kernel, iterations=1).astype(bool)
+    depth_ground = vanilla_plane_fill(depth0, K,existing_ground_mask, obj_msk)
 
     depth_bg = depth0.copy()
     obj_msk =obj_msk.astype(bool)
