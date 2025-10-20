@@ -246,6 +246,9 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
         mesh.visual = trimesh.visual.TextureVisuals(uv=uv, image=img)
 
+        # flipping mesh normals for correct texturing
+        mesh.faces = mesh.faces[:, ::-1]
+
         thickness = cfg["bg_mesh_thickness"]
         mesh_thick = add_thickness_below_mesh_preserve_texture(mesh, thickness, direction)
 
