@@ -9,19 +9,19 @@ using the GUI viewer or run random actions.
 Usage:
     python visualize_env.py                    # Use default scene
     python visualize_env.py --scene PATH       # Use custom scene
-    python visualize_env.py --interactive      # Manual control mode
+    python visualize_env.py --mode static      # Static inspection mode
 """
 
 import argparse
 from pathlib import Path
 import gymnasium as gym
-import numpy as np
 
-# Import to register the environment
 import sys
 
-sys.path.append("/home/haoyang/project/haoyang/OpenReal2Sim")
-from openreal2sim.simulation.maniskill import OpenReal2SimEnv
+# Make the project root directory available to the python path
+project_root = Path(__file__).resolve().parents[3]
+sys.path.append(str(project_root))
+from openreal2sim.simulation.maniskill.env import OpenReal2SimEnv  # noqa
 
 
 def visualize_random_actions(scene_path: str, num_steps: int = 1000):
@@ -36,19 +36,18 @@ def visualize_random_actions(scene_path: str, num_steps: int = 1000):
     print("OpenReal2Sim ManiSkill Visualization")
     print("=" * 80)
     print(f"\nScene: {scene_path}")
-    print(f"Mode: Random Actions")
+    print("Mode: Random Actions")
     print(f"Steps: {num_steps}")
     print("\nPress 'q' in the viewer window to quit.")
     print("=" * 80)
 
-    # Create environment with human rendering
     env = gym.make(
         "OpenReal2Sim-v0",
         scene_json_path=scene_path,
         num_envs=1,
         obs_mode="state",  # Use state for faster rendering
         control_mode="pd_ee_delta_pose",  # End-effector control
-        render_mode="human",  # This opens the GUI viewer
+        render_mode="human",
     )
 
     print("\nEnvironment created successfully!")
@@ -56,10 +55,8 @@ def visualize_random_actions(scene_path: str, num_steps: int = 1000):
     print(f"Action space: {env.action_space}")
     print()
 
-    # Reset environment
     obs, info = env.reset(seed=0, options=dict(reconfigure=True))
 
-    # Run random actions
     step_count = 0
     episode_count = 0
 
@@ -69,25 +66,20 @@ def visualize_random_actions(scene_path: str, num_steps: int = 1000):
     viewer.paused = True
     try:
         while step_count < num_steps:
-            # Sample random action
             action = 0.2 * env.action_space.sample()
 
-            # Step environment
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            # Render (this updates the viewer)
             env.render()
 
             step_count += 1
 
-            # Print progress every 50 steps
             if step_count % 50 == 0:
                 print(
                     f"Step {step_count}/{num_steps} | Episode {episode_count} | Reward: {reward.item():.3f}"
                 )
 
-            # Reset if episode ends
             if done:
                 episode_count += 1
                 obs, info = env.reset(options=dict(reconfigure=True))
@@ -117,7 +109,6 @@ def visualize_static(scene_path: str):
     print("Close the viewer window when done.")
     print("=" * 80)
 
-    # Create environment
     env = gym.make(
         "OpenReal2Sim-v0",
         scene_json_path=scene_path,
@@ -126,7 +117,6 @@ def visualize_static(scene_path: str):
         render_mode="human",
     )
 
-    # Reset to initial state
     obs, info = env.reset(seed=42, options=dict(reconfigure=True))
 
     print("\nEnvironment initialized. Viewer should be open.")
@@ -136,7 +126,6 @@ def visualize_static(scene_path: str):
         print(f"    - {obj_config.name}")
     print()
 
-    # Keep rendering until user closes
     input("Press Enter to close the visualization...")
 
     env.close()
@@ -144,13 +133,15 @@ def visualize_static(scene_path: str):
 
 
 def main():
+    project_root = Path(__file__).resolve().parents[3]
+    default_scene_path = project_root / "outputs/demo_image/scene/scene.json"
     parser = argparse.ArgumentParser(
         description="Visualize OpenReal2Sim ManiSkill environment"
     )
     parser.add_argument(
         "--scene",
         type=str,
-        default="/home/haoyang/project/haoyang/OpenReal2Sim/outputs/demo_image/scene/scene.json",
+        default=str(default_scene_path),
         help="Path to scene.json file",
     )
     parser.add_argument(
@@ -159,16 +150,21 @@ def main():
         default=10000,
         help="Number of steps to run (for random action mode)",
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="random",
+        choices=["random", "static"],
+        help="Visualization mode: 'random' for random actions, 'static' for static scene inspection.",
+    )
 
     args = parser.parse_args()
 
-    # Validate scene path
     scene_path = Path(args.scene)
     if not scene_path.exists():
         print(f"Error: Scene not found at {scene_path}")
         print(f"Current directory: {Path.cwd()}")
 
-        # Show available scenes
         outputs_dir = Path.cwd() / "outputs"
         if outputs_dir.exists():
             print("\nAvailable scenes:")
@@ -177,13 +173,13 @@ def main():
 
         return 1
 
-    # Run visualization
-    visualize_random_actions(str(scene_path), num_steps=args.steps)
+    if args.mode == "random":
+        visualize_random_actions(str(scene_path), num_steps=args.steps)
+    elif args.mode == "static":
+        visualize_static(str(scene_path))
 
     return 0
 
 
 if __name__ == "__main__":
-    import sys
-
     sys.exit(main())

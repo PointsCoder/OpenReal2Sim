@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
+import numpy as np
 
 
 @dataclass
@@ -19,6 +20,7 @@ class CameraConfig:
     cx: float
     cy: float
     extrinsic_matrix: list  # 4x4 matrix as nested list
+    intrinsic_matrix: list  # 3x3 matrix as nested list
     position: list  # [x, y, z]
     orientation_wxyz: list  # [w, x, y, z]
 
@@ -74,6 +76,13 @@ def load_scene_config(scene_json_path: str | Path) -> SceneConfig:
 
     # Parse camera configuration
     cam_data = data.get("camera", {})
+    intrinsic_matrix = np.array(
+        [
+            [cam_data["fx"], 0, cam_data["cx"]],
+            [0, cam_data["fy"], cam_data["cy"]],
+            [0, 0, 1],
+        ]
+    )
     camera = CameraConfig(
         width=int(cam_data["width"]),
         height=int(cam_data["height"]),
@@ -82,6 +91,7 @@ def load_scene_config(scene_json_path: str | Path) -> SceneConfig:
         cx=float(cam_data["cx"]),
         cy=float(cam_data["cy"]),
         extrinsic_matrix=cam_data["camera_opencv_to_world"],
+        intrinsic_matrix=intrinsic_matrix.tolist(),
         position=cam_data["camera_position"],
         orientation_wxyz=cam_data["camera_heading_wxyz"],
     )

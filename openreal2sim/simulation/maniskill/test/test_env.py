@@ -15,7 +15,7 @@ import gymnasium as gym
 import sys
 
 sys.path.append("/home/haoyang/project/haoyang/OpenReal2Sim")
-from openreal2sim.simulation.maniskill import OpenReal2SimEnv
+from openreal2sim.simulation.maniskill.env import OpenReal2SimEnv
 
 
 def test_environment_creation(scene_json_path: str):
