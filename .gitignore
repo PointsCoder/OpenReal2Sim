@@ -225,3 +225,6 @@ __marimo__/
 *.img
 *.cab
 *.arj
+
+# Maniskill
+openreal2sim/simulation/maniskill/ref
