@@ -296,42 +296,36 @@ def get_ground_mask_from_existing_mask(img: np.ndarray, existing_ground_mask: np
     
     img_predictor = SAM2ImagePredictor(build_sam2(CFG, CKPT))
     img_predictor.set_image(img)
-    
     H, W = img.shape[:2]
-    
-
     ground_points = []
     ground_labels = []
-
-    for y in range(0, H, 8):  # Every 8 pixels
-        for x in range(0, W, 8):  # Every 8 pixels
+    existing_ground_mask = existing_ground_mask.astype(bool)
+    ground_indices = np.where(existing_ground_mask)
+    if len(ground_indices[0]) > 0:
+        sample_indices = np.random.choice(len(ground_indices[0]), 
+                                        min(20, len(ground_indices[0])), 
+                                        replace=False)
+        for idx in sample_indices:
+            y, x = ground_indices[0][idx], ground_indices[1][idx]
             ground_points.append([x, y])
-            ground_labels.append(True)  # Positive points
-    
+            ground_labels.append(1)
     
     ground_mask = np.zeros((H, W), dtype=bool)
     if len(ground_points) > 0:
         point_coords = np.array(ground_points)
         point_labels = np.array(ground_labels)
+    
+        masks, scores, logits = img_predictor.predict(
+            point_coords=point_coords,
+            point_labels=point_labels,
+            multimask_output=True
+        )
         
-        try:
-            masks, scores, logits = img_predictor.predict(
-                point_coords=point_coords,
-                point_labels=point_labels,
-                multimask_output=True
-            )
-            
 
-            best_idx = np.argmax(scores)
-            ground_mask = masks[best_idx]
-            
-            ground_mask = ground_mask.astype(bool)
-            existing_ground_mask = existing_ground_mask.astype(bool)
-            ground_mask = ground_mask & existing_ground_mask
-            
-        except Exception as e:
-            print(f"[SAM Ground] Error in SAM prediction: {e}")
-            ground_mask = np.zeros((H, W), dtype=bool)
+        best_idx = np.argmax(scores)
+        ground_mask = masks[best_idx]
+        
+        ground_mask = ground_mask.astype(bool)
     
     return ground_mask
 

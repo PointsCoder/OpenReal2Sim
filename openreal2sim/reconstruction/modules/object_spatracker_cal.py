@@ -19,12 +19,23 @@ import tqdm
 from models.SpaTrackV2.models.utils import get_points_on_a_grid
 import glob
 from rich import print
-import decord
 import pickle
 import torchvision
 from models.SpaTrackV2.models.vggt4track.models.vggt_moe import VGGT4Track
 from models.SpaTrackV2.models.vggt4track.utils.load_fn import preprocess_image
 from models.SpaTrackV2.models.vggt4track.utils.pose_enc import pose_encoding_to_extri_intri
+
+def build_mask_array(
+    oid: int,
+    scene_dict: Dict[str, Any]
+) -> np.ndarray:
+
+    H, W, N = scene_dict["height"], scene_dict["width"], scene_dict["n_frames"]
+    out = np.zeros((N, H, W), dtype=np.uint8)
+    for i in range(N):
+        m = scene_dict["mask"][i][oid]["mask"]
+        out[i] = m.astype(np.uint8)
+    return out
 
 def compute_tracks(single_scene_dict, key_cfg: dict): 
     gpu_id = key_cfg["gpu"]
@@ -48,40 +59,54 @@ def compute_tracks(single_scene_dict, key_cfg: dict):
     intrs = torch.from_numpy(intrs).float().to(device)
     extrs = np.linalg.inv(single_scene_dict["extrinsics"]).astype(np.float32)
     extrs = torch.from_numpy(extrs).float().to(device)
-
-    unc_metric = None
-    first_frame_mask = single_scene_dict["recon"]["object_mask"]
-    first_frame_mask = torch.from_numpy(first_frame_mask).to(device)
-    first_frame_mask = torchvision.transforms.Resize((resize_h, resize_w))(first_frame_mask.unsqueeze(0))
-    first_frame_mask = first_frame_mask.squeeze(0)
-    first_frame_mask = first_frame_mask > 0
-    model = Predictor.from_pretrained("Yuxihenry/SpatialTrackerV2-Offline")
     grid_size = key_cfg.get("grid_size", 100)
     model.spatrack.track_num = grid_size
     model.eval()
     model =model.to(device)
+    unc_metric = None
 
-    frame_H, frame_W = video_tensor.shape[2:]
-    grid_pts = get_points_on_a_grid(grid_size, (frame_H, frame_W), device="cpu")
-    grid_pts_int = grid_pts[0].long()
-    mask_values = first_frame_mask[grid_pts_int[...,1], grid_pts_int[...,0]].cpu().numpy()
-    grid_pts = grid_pts[:, mask_values]
-    query_xyt = torch.cat([torch.zeros_like(grid_pts[:, :, :1]), grid_pts], dim=2)[0].numpy().astype(np.float32)
+    for obj_id, obj_ent in single_scene_dict["info"]["objects"].items():
+        oid   = obj_ent["oid"]
+        oname = obj_ent["name"]
+        omask = build_mask_array(oid, single_scene_dict)
+        omask = torch.from_numpy(omask).to(device)
+        omask = torchvision.transforms.Resize((resize_h, resize_w))(omask.unsqueeze(0))
+        omask = omask.squeeze(0)
+        omask = omask > 0
+        frame_H, frame_W = video_tensor.shape[2:]
+        grid_pts = get_points_on_a_grid(grid_size, (frame_H, frame_W), device="cpu")
+        grid_pts_int = grid_pts[0].long()
+        mask_values = omask[grid_pts_int[...,1], grid_pts_int[...,0]].cpu().numpy()
+        grid_pts = grid_pts[:, mask_values]
+        query_xyt = torch.cat([torch.zeros_like(grid_pts[:, :, :1]), grid_pts], dim=2)[0].numpy().astype(np.float32)
+        with torch.no_grad():
+            (
+                c2w_traj, intrs, point_map, conf_depth,
+                track3d_pred, track2d_pred, vis_pred, conf_pred, video
+            ) = model.forward(video_tensor, depth=depth_tensor,
+                                intrs=intrs, extrs=extrs, 
+                                queries=query_xyt,
+                                fps=1, full_point=False, iters_track=4,
+                                query_no_BA=True, fixed_cam=False, stage=1, unc_metric=unc_metric,
+                                support_frame=len(video_tensor)-1, replace_ratio=0.2) 
+        start_frame_idx, end_frame_idx = compute_start_end_frame(track3d_pred, offset=key_cfg["startend_offset"])
+        scene_dict["info"]["objects"][obj_id]["start_frame_idx"] = start_frame_idx
+        scene_dict["info"]["objects"][obj_id]["end_frame_idx"] = end_frame_idx
+        scene_dict["info"]["max_velocity"] = max(scene_dict["info"]["max_velocity"], np.max(np.linalg.norm(track3d_pred[1:][...,:3] - track3d_pred[:-1][...,:3], axis=2))/ track3d_pred.shape[1])
+        spatrack_trans = compute_trans(track3d_pred, vis_pred)
+        scene_dict["info"]["objects"][obj_id]["spatrack_trans"] = spatrack_trans
+        if scene_dict["info"]["max_velocity"] < 0.005:
+            scene_dict["info"]["objects"][obj_id]["type"] = "static"
+        else:
+            scene_dict["info"]["objects"][obj_id]["type"] = "dynamic"
+    
+    earliest_start_oid = min(scene_dict["info"]["objects"].keys(), key=lambda x: scene_dict["info"]["objects"][x]["start_frame_idx"])
+    scene_dict["info"]["objects"][earliest_start_oid]["type"] = "manipulated"
+    scene_dict["recon"]["manipulated_oid"] = earliest_start_oid
+    scene_dict["recon"][start_frame_idx] = scene_dict["info"]["objects"][earliest_start_oid]["start_frame_idx"]
+    scene_dict["recon"][end_frame_idx] = scene_dict["info"]["objects"][earliest_start_oid]["end_frame_idx"]
 
-    with torch.no_grad():
-        (
-            c2w_traj, intrs, point_map, conf_depth,
-            track3d_pred, track2d_pred, vis_pred, conf_pred, video
-        ) = model.forward(video_tensor, depth=depth_tensor,
-                            intrs=intrs, extrs=extrs, 
-                            queries=query_xyt,
-                            fps=1, full_point=False, iters_track=4,
-                            query_no_BA=True, fixed_cam=False, stage=1, unc_metric=unc_metric,
-                            support_frame=len(video_tensor)-1, replace_ratio=0.2) 
-
-    ### it's also feasible to compute using pred2dtracks.
-        
-    return track2d_pred.cpu().numpy(), track3d_pred.cpu().numpy(), vis_pred.cpu().numpy()
+    return scene_dict
 
 
 def optimize_trans(prev_coords, curr_coords):
@@ -168,12 +193,7 @@ def object_spatracker_cal(keys, key_scene_dicts, key_cfgs):
     for key in keys:
         scene_dict = key_scene_dicts[key]
         key_cfg = key_cfgs[key]
-        track2d_pred, track3d_pred, vis_pred = compute_tracks(scene_dict, key_cfg)
-        spatrack_trans = compute_trans(track3d_pred, vis_pred)
-        start_frame_idx, end_frame_idx = compute_start_end_frame(track3d_pred, offset=key_cfg["startend_offset"])
-        scene_dict["recon"]["spatrack_trans"] = spatrack_trans
-        scene_dict["recon"]["start_frame_idx"] = start_frame_idx
-        scene_dict["recon"]["end_frame_idx"] = end_frame_idx
+        scene_dict = compute_tracks(scene_dict, key_cfg)
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)
         key_scene_dicts[key] = scene_dict

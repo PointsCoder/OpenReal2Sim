@@ -23,7 +23,7 @@ class ReconAgent:
                 scene_dict = pickle.load(f)
             self.key_scene_dicts[key] = scene_dict
         self.stages = [
-            "background_pixel_inpainting",
+            "background_pixel_inpainting", 
             "background_point_inpainting",
             "background_mesh_generation",
             "object_mesh_generation",
