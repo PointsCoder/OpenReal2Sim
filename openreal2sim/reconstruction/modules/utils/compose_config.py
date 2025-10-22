@@ -15,6 +15,7 @@ default_config = {
     "collision_clearance": 0.002,  # in meters, minimum clearance distance for collision optimization
     "collision_sdf_resolution": 192,  # resolution for SDF grid if using "sdf" mode
     "grid_size": 100,  # grid size for spatrack
+    "startend_offset": 5,  # offset for start and end frame of spatrack
 }
 
 def compose_configs(key_name: str, config: dict) -> dict:

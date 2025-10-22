@@ -1,8 +1,8 @@
 keys:
   # - demo_image
-  # - demo_video
+ - demo_video
   # - demo_genvideo
-  - 2025-10-18--23-04-28
+
   # 
 # global settings, can be overridden by local settings
 global:
@@ -13,12 +13,15 @@ global:
     interval: 2
     gpu: "2" 
     r3d_refinement: True
-  
+    startend_offset: 5
+    
   reconstruction:
     gpu: "2"
-    bg_completion_mode: "hybrid"
+    bg_completion_mode: "plane"
     fdpose_tracking_mode: "spatrack"
 
+  simulation:
+    gpu: "0"
 
 # local settings for each key
 local:

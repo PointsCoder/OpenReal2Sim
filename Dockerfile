@@ -82,13 +82,14 @@ RUN cd / && wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.t
 RUN cd /app/third_party/FoundationPose/mycpp && \
     rm -r build && \
     mkdir -p build && cd build && \
-    cmake .. -DPYTHON_EXECUTABLE=$(which python) && make -j11 && \
+    cmake .. -DPYTHON_EXECUTABLE=$(which python) && make -j11
 
 RUN cd /app/third_party/FoundationPose/bundlesdf/mycuda && \
     rm -rf build *egg* && \
     python -m pip install . --no-build-isolation && \
     cd /app
 
+COPY third_party/Grounded-SAM-2 /app/third_party/Grounded-SAM-2
 RUN cd /app/third_party/Grounded-SAM-2 && python setup.py build_ext --inplace
 
 # -------------------------------------------------------------------------

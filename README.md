@@ -16,6 +16,7 @@ Now only `openreal2sim` is required, which contains all dependencies.
 
 Launching the docker container:
 ```
+sudo usermod -aG docker $USER
 docker compose -p "$USER" -f docker/compose.yml run --rm openreal2sim
 ```
 
@@ -71,7 +72,7 @@ python openreal2sim/reconstruction/tools/segmentation_annotator.py
 
 **Please note that we must have a `ground` mask annotated, since we need this to find the ground plane for reconstruction.**
 
-**If the `ground` is not the same plane that the object is lay on, another mask called `plane` is needed to annotate which ground the object lies in.**
+<!-- **If the `ground` is not the same plane that the object is lay on, another mask called `plane` is needed to annotate which ground the object lies in.** -->
 
 Then, run the whole physical scene reconstruction pipeline:
 ```

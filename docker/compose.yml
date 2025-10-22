@@ -21,6 +21,7 @@ services:
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
       - ../:/app
+      - /dev:/dev # add: expose input/gpu devices if needed
     stdin_open: true
     user: "${HOST_UID}:${HOST_GID}"
     tty: true

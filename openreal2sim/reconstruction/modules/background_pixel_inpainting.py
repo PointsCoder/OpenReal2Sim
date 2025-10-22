@@ -82,15 +82,18 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
         mask_accum = None
         ground_accum = None
         plane_accum = None
+        bbox_accum = None
 
         for oid, obj in frame_objs.items():
             name = obj["name"].lower()
             mask = obj["mask"]  # bool array
-
+            bbox = obj["bbox"]
             if "ground" not in name and "plane" not in name:
                 if mask_accum is None:
                     mask_accum = np.zeros_like(mask, dtype=bool)
                 mask_accum |= mask
+                bbox_accum = np.zeros_like(mask, dtype=np.bool_)
+                bbox_accum[bbox[1]:bbox[3], bbox[0]:bbox[2]] = True
             elif "ground" in name:
                 if ground_accum is None:
                     ground_accum = np.zeros_like(mask, dtype=bool)
@@ -157,6 +160,7 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
         scene_dict["recon"]["ground_mask"] = ground_accum if ground_accum is not None else None # H x W, bool
         scene_dict["recon"]["plane_mask"] = plane_accum if plane_accum is not None else None # H x W, bool
         scene_dict["recon"]["object_mask"] = mask_accum if mask_accum is not None else None   # H x W, bool
+        scene_dict["recon"]["bbox_mask"] = bbox_accum if bbox_accum is not None else None   # H x W, bool
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)

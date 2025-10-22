@@ -81,36 +81,27 @@ def compute_tracks(single_scene_dict, key_cfg: dict):
 
     ### it's also feasible to compute using pred2dtracks.
         
-    return track3d_pred.cpu().numpy(), vis_pred.cpu().numpy()
+    return track2d_pred.cpu().numpy(), track3d_pred.cpu().numpy(), vis_pred.cpu().numpy()
+
 
 def optimize_trans(prev_coords, curr_coords):
-
     import numpy as np
     assert prev_coords.shape == curr_coords.shape
     N = prev_coords.shape[0]
-
-
     prev_mean = prev_coords.mean(axis=0)
     curr_mean = curr_coords.mean(axis=0)
-
     prev_centered = prev_coords - prev_mean
     curr_centered = curr_coords - curr_mean
-
-
     H = prev_centered.T @ curr_centered
     U, S, Vt = np.linalg.svd(H)
     R = Vt.T @ U.T
-
     if np.linalg.det(R) < 0:
         Vt[-1, :] *= -1
         R = Vt.T @ U.T
-
     T = curr_mean - R @ prev_mean
-
     P = np.eye(4, dtype=np.float32)
     P[:3, :3] = R
     P[:3, 3] = T
-
     assert P.shape == (4, 4)
     return P
 
@@ -129,18 +120,60 @@ def compute_trans(track3d_pred, vis_pred):
         prev_coords = curr_coords
         prev_vis = curr_vis
         Ps.append(P)
-    import pdb; pdb.set_trace()
     return Ps
-    
+
+
+
+def compute_start_end_frame(track3d_pred, offset = 5):
+    """
+    track3d_pred: np.ndarray of shape (num_frames, num_points, 3)
+    Returns:
+        start_frame_idx, end_frame_idx (both are integers)
+    """
+    # Convert to numpy array if not already
+    track3d_pred = np.asarray(track3d_pred)
+    num_frames = track3d_pred.shape[0]
+
+    # Compute velocities (frame-to-frame displacement)
+    # velocity[fi] means velocity from frame fi-1 to fi
+    velocities = np.linalg.norm(track3d_pred[1:][...,:3] - track3d_pred[:-1][...,:3], axis=2) # (num_frames-1, num_points)
+
+    # Find first frame where at least 100 points velocity > 0.005 (5mm = 0.5cm)
+    start_frame_idx = None
+    for i in range(velocities.shape[0]):
+        if np.sum(velocities[i] > 0.005) >= 100:
+            start_frame_idx = i
+            break
+    if start_frame_idx is None:
+        start_frame_idx = 0
+
+    # Find last frame where all points velocity < 0.01 (1cm)
+    end_frame_idx = None
+    for i in range(velocities.shape[0]-1, -1, -1):
+        if np.all(velocities[i] < 0.01):
+            end_frame_idx = i+1 # i+1 is the "end" frame
+            break
+    if end_frame_idx is None:
+        end_frame_idx = num_frames - 1
+
+
+    start_frame_idx = max(0, start_frame_idx - offset)
+    end_frame_idx = min(num_frames - 1, end_frame_idx + offset)
+
+    return start_frame_idx, end_frame_idx
+
 
 def object_spatracker_cal(keys, key_scene_dicts, key_cfgs):
     base_dir = Path.cwd()
     for key in keys:
         scene_dict = key_scene_dicts[key]
         key_cfg = key_cfgs[key]
-        track3d_pred, vis_pred = compute_tracks(scene_dict, key_cfg)
+        track2d_pred, track3d_pred, vis_pred = compute_tracks(scene_dict, key_cfg)
         spatrack_trans = compute_trans(track3d_pred, vis_pred)
+        start_frame_idx, end_frame_idx = compute_start_end_frame(track3d_pred, offset=key_cfg["startend_offset"])
         scene_dict["recon"]["spatrack_trans"] = spatrack_trans
+        scene_dict["recon"]["start_frame_idx"] = start_frame_idx
+        scene_dict["recon"]["end_frame_idx"] = end_frame_idx
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)
         key_scene_dicts[key] = scene_dict

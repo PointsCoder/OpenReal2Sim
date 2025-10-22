@@ -9,9 +9,14 @@ wget -O third_party/mega-sam/cvd_opt/raft-things.pth \
 wget -O third_party/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt \
   https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt
 
+
+# wilor
+wget https://huggingface.co/spaces/rolpotamias/WiLoR/resolve/main/pretrained_models/detector.pt -P /app/third_party/WiLoR/pretrained_models/
+wget https://huggingface.co/spaces/rolpotamias/WiLoR/resolve/main/pretrained_models/wilor_final.ckpt -P /app/third_party/WiLoR/pretrained_models/
+
 # segmentation cuda extension
 cd /app/third_party/Grounded-SAM-2 && \
-  python build_cuda.py build_ext --inplace -v && \
+  python setup.py build_ext --inplace -v && \
   cd /app
 
 # foundation pose
@@ -28,4 +33,4 @@ cd /app/third_party/FoundationPose/mycpp && \
 cd /app/third_party/FoundationPose/bundlesdf/mycuda && \
   rm -rf build *egg* && \
   python -m pip install . --no-build-isolation && \
-  cd /app
+  cd /app 

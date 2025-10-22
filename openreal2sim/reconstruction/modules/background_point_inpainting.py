@@ -43,6 +43,21 @@ def dilate_mask(binary_mask: np.ndarray, pixels: int = 4, shape: str = "ellipse"
     out = cv2.dilate(binary_mask.astype(np.uint8), k, iterations=1)
     return out.astype(bool)
 
+def fill_mask(mask: np.ndarray) -> np.ndarray:
+    """
+    Fill the mask with the flood fill algorithm.
+    """
+    mask = mask.astype(np.uint8)
+    filled = mask.copy()
+    inv_mask = 1 - mask
+    h, w = mask.shape
+    floodfilled = inv_mask.copy()
+    floodfilled_pad = np.pad(floodfilled, 1, mode='constant', constant_values=0)
+    cv2.floodFill(floodfilled_pad, None, (0,0), 255)
+    floodfilled_nohole = floodfilled_pad[1:-1,1:-1]
+    out_mask = ((floodfilled_nohole == 0) | (mask == 1)).astype(bool)
+    return out_mask
+
 # ─────────────────────────── Depth prediction  ──────────────────────────
 def run_moge_depth(img_rgb: np.ndarray, device: torch.device) -> np.ndarray:
     """MoGe-2 inference (unchanged). Returns float32 depth (H,W)."""
@@ -115,6 +130,61 @@ def depth_to_points(depth: np.ndarray, K: np.ndarray) -> np.ndarray:
     pts[~valid] = np.nan
     return pts
 
+def handcraft_segment_plane(pts_ground: np.ndarray, distance_threshold: float = 0.02, ransac_n: int = 3, num_iterations: int = 1000) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Handcraft plane segmentation using RANSAC.
+    """
+    pc = o3d.geometry.PointCloud()
+    pc.points = o3d.utility.Vector3dVector(pts_ground)
+    
+    # Fix random number generation issues
+    import random
+    import os
+    try:
+        # Try to set multiple random seeds for better entropy
+        random.seed(42)
+        np.random.seed(42)
+        os.environ['PYTHONHASHSEED'] = '42'
+        
+        # Try RANSAC plane segmentation with error handling
+        try:
+            plane, _ = pc.segment_plane(distance_threshold=distance_threshold, ransac_n=ransac_n, num_iterations=num_iterations)
+        except RuntimeError as e:
+            if "random_device" in str(e):
+                print(f"[Warning] RANSAC failed due to random device issue, using fallback method...")
+                # Fallback: Use simple plane fitting without RANSAC
+                if len(pts_ground) >= 3:
+                    # Use least squares to fit a plane
+                    A = np.column_stack([pts_ground[:, 0], pts_ground[:, 1], np.ones(len(pts_ground))])
+                    b = pts_ground[:, 2]
+                    try:
+                        coeffs = np.linalg.lstsq(A, b, rcond=None)[0]
+                        a, b, c = coeffs[0], coeffs[1], -1.0
+                        d = coeffs[2]
+                        plane = [a, b, c, d]
+                    except np.linalg.LinAlgError:
+                        # Ultimate fallback: use horizontal plane at median depth
+                        median_z = np.median(pts_ground[:, 2])
+                        plane = [0, 0, 1, -median_z]
+                else:
+                    # Not enough points, use horizontal plane at median depth
+                    median_z = np.median(pts_ground[:, 2])
+                    plane = [0, 0, 1, -median_z]
+            else:
+                raise e
+    except Exception as e:
+        print(f"[Warning] Plane fitting failed: {e}, using horizontal plane fallback...")
+        # Ultimate fallback: horizontal plane at median depth
+        median_z = np.median(pts_ground[:, 2])
+        plane = [0, 0, 1, -median_z]
+    finally:
+        # Cleanup point cloud to prevent memory leaks
+        del pc
+        import gc
+        gc.collect()
+    
+    return plane
+
 def plane_fill(depth0, K, ground, obj):
     fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
 
@@ -135,12 +205,14 @@ def plane_fill(depth0, K, ground, obj):
     pts_ground = depth_to_points(depth0, K)[ground_filtered.ravel()]
     pc = o3d.geometry.PointCloud()
     pc.points = o3d.utility.Vector3dVector(pts_ground)
-    plane, _ = pc.segment_plane(distance_threshold=0.02, ransac_n=3, num_iterations=2000)
+  
+    np.random.seed(42) 
+    plane = handcraft_segment_plane(pts_ground, distance_threshold=0.02, ransac_n=3, num_iterations=1000)
     a, b, c, d = plane
 
     from scipy.ndimage import binary_dilation
 
-    obj_edge = binary_dilation(obj, iterations=2) 
+    obj_edge = binary_dilation(obj, iterations=5) 
     candidate_mask = obj_edge & ground
 
     ys, xs = np.where(candidate_mask)
@@ -181,9 +253,9 @@ def vanilla_plane_fill(depth0, K, ground, obj):
     H,W=depth0.shape; fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
 
     pts_ground = depth_to_points(depth0, K)[ground.ravel()]
-    pc = o3d.geometry.PointCloud(); pc.points = o3d.utility.Vector3dVector(pts_ground)
-    plane,_ = pc.segment_plane(distance_threshold=0.02, ransac_n=3, num_iterations=2000)
-    a,b,c,d = plane
+    
+    
+    a,b,c,d = handcraft_segment_plane(pts_ground)
 
     # intersect rays with plane inside the object mask
     ys,xs = np.where(obj)
@@ -356,7 +428,7 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
         ground_mask = scene_dict["recon"]["plane_mask"] if scene_dict["recon"]["plane_mask"] is not None else scene_dict["recon"]["ground_mask"]  # H x W, bool
         object_mask   = scene_dict["recon"]["object_mask"]  # H x W, bool
          # dilate the masks a bit more to remove boundary outliers
-        object_mask = dilate_mask(object_mask, pixels=key_cfg["obj_dilate_pixels"], shape="ellipse") 
+        object_mask = fill_mask(object_mask)
         ground_mask = dilate_mask(ground_mask, pixels=key_cfg["ground_dilate_pixels"], shape="ellipse")
         fg_img = scene_dict["recon"]["foreground"]  # H x W x 3, uint8
         bg_img = scene_dict["recon"]["background"]  # H x W x 3, uint8

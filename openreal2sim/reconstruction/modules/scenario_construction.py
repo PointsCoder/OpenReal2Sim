@@ -182,8 +182,10 @@ def slow_registration(target_pcd_o3d, obj_info, object_dir):
 
 
     # Optional：use z axis to compute scale
+    
     distance_points_z = max_p[2] - min_p[2]
     distance_mesh_z = max_m[2] - min_m[2]
+    if distance_mesh_z > 0.3 * distance_mesh:
     scale_factor_z = distance_points_z / max(distance_mesh_z, 1e-12)
     fg_mesh_register = center_and_scale_mesh(fg_mesh_register, scale_factor_z)
 
