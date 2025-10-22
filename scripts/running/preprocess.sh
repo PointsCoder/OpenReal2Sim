@@ -1,4 +1,0 @@
-#preprocess
-python openreal2sim/preprocess/image_extraction.py
-python openreal2sim/preprocess/depth_prediction.py
-python openreal2sim/preprocess/depth_calibration.py

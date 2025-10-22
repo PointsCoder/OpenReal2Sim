@@ -11,13 +11,13 @@ Outputs:
     - outputs/{key_name}/scene/scene.pkl (refined frames, depths, and camera infos)
 Notes:
     - for a single image, calibrate the predicted depth to real-world scale with the provided ground truth depth (data/{key_name}_depth.png)
-    - for multiple frames, calibrate the predicted depth to real-world scale with the provided ground truth depth (data/{key_name}_depth.png) on the first frame, 
+    - for multiple frames, calibrate the predicted depth to real-world scale with the provided ground truth depth (data/{key_name}_depth.png) on the first frame,
         and apply the same scale and shift to all frames
     - optionally, refine the predicted depth (Unidepth+DepthAnything) with monocular depth prediction (MoGe-2) before calibration
     - optionally, replace the camera intrinsics in scene/scene.pkl with the one from config.yaml
 """
 
-
+import argparse
 from pathlib import Path
 from typing import Tuple, List
 import numpy as np
@@ -311,10 +311,18 @@ def process_key(key: str, key_cfgs: dict) -> None:
     return
 
 # --------------------- main: read YAML and run ---------------------
-if __name__ == "__main__":
-    cfg_path = base_dir / "config" / "config.yaml"
+def main(config_file: str = "config/config.yaml"):
+    """Main function: load config and process depth calibration."""
+    cfg_path = base_dir / config_file
     cfg = yaml.safe_load(cfg_path.open("r"))
     keys = cfg["keys"]
     for key in keys:
         key_cfgs = compose_configs(key, cfg)
         process_key(key, key_cfgs)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="config/config.yaml", help="YAML with keys: [lab1, ...]")
+    args = parser.parse_args()
+
+    main(args.config)
