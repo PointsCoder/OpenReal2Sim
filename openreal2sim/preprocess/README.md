@@ -85,7 +85,12 @@ local:
 
 If everything is ready, run the all-in-one script:
 ```
-bash scripts/running/preprocess.sh
+python openreal2sim/preprocess/preprocess_manager.py
+```
+
+The pipeline can be executed with a custom config file:
+```
+python openreal2sim/preprocess/preproces_manager.py --config <path_to_config_file>
 ```
 
 Or run per-step:

@@ -204,17 +204,14 @@ def mode_check(key_name: str) -> str:
     else:
         return "video"
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--key_name", type=str, default=None, help="If set, run only this key")
-    parser.add_argument("--config", type=str, default="config/config.yaml", help="YAML with keys: [lab1, ...]")
-    args = parser.parse_args()
+def main(config_file: str = "config/config.yaml", key_name: str = None):
+    """Main function: load config and run depth prediction."""
+    with open(config_file, "r") as f:
+        cfg = yaml.safe_load(f)
 
-    if args.key_name is not None:
-        keys = [args.key_name]
+    if key_name is not None:
+        keys = [key_name]
     else:
-        with open(args.config, "r") as f:
-            cfg = yaml.safe_load(f)
         keys = [k for k in cfg["keys"]]
 
     for key in keys:
@@ -226,3 +223,11 @@ if __name__ == "__main__":
         else:
             print(f"[Info] Running moge for image: {key}")
             run_moge(key, key_cfgs)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--key_name", type=str, default=None, help="If set, run only this key")
+    parser.add_argument("--config", type=str, default="config/config.yaml", help="YAML with keys: [lab1, ...]")
+    args = parser.parse_args()
+
+    main(args.config, args.key_name)

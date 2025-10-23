@@ -15,6 +15,7 @@ Parameters:
 """
 
 import os
+import argparse
 import subprocess
 import yaml
 from pathlib import Path
@@ -164,4 +165,8 @@ def main(config_file: str = "config/config.yaml"):
         run_collect_info(key_name)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="config/config.yaml", help="YAML with keys: [lab1, ...]")
+    args = parser.parse_args()
+
+    main(args.config)
