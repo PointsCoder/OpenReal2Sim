@@ -9,12 +9,12 @@ from modules.utils.compose_config import compose_configs
 from modules.utils.notification import notify_started, notify_failed, notify_success
 
 class ReconAgent:
-    def __init__(self, stage=None):
+    def __init__(self, stage=None, key=None):
         print('[Info] Initializing ReconAgent...')
         self.base_dir = Path.cwd()
         cfg_path = self.base_dir / "config" / "config.yaml"
         cfg = yaml.safe_load(cfg_path.open("r"))
-        self.keys = cfg["keys"]
+        self.keys = [key] if key is not None else cfg["keys"]
         self.key_cfgs = {key: compose_configs(key, cfg) for key in self.keys}
         self.key_scene_dicts = {}
         for key in self.keys:
@@ -23,6 +23,7 @@ class ReconAgent:
                 scene_dict = pickle.load(f)
             self.key_scene_dicts[key] = scene_dict
         self.stages = [
+            "mask_propagation",
             "background_pixel_inpainting",
             "background_point_inpainting",
             "background_mesh_generation",
@@ -52,6 +53,11 @@ class ReconAgent:
             with open(json_path, 'w') as f:
                 json.dump(scene_json, f, indent=2)
         print('[Info] Scene JSON files saved.')
+
+    def mask_propagation(self):
+        from modules.mask_propagation import mask_propagation
+        mask_propagation(self.keys)
+        print("[Info] Mask propagation completed.")
 
     def background_pixel_inpainting(self):
         from modules.background_pixel_inpainting import background_pixel_inpainting
@@ -89,6 +95,8 @@ class ReconAgent:
         print('[Info] Scenario collision optimization completed.')
 
     def run(self):
+        if "mask_propagation" in self.stages:
+            self.mask_propagation()
         if "background_pixel_inpainting" in self.stages:
             self.background_pixel_inpainting()
         if "background_point_inpainting" in self.stages:
@@ -110,6 +118,7 @@ class ReconAgent:
 if __name__ == '__main__':
     args = argparse.ArgumentParser()
     args.add_argument('--stage', type=str, default=None, help='Starting from a certain stage')
+    args.add_argument('--key', type=str, default=None, help='Process a single key instead of all keys from config')
     args.add_argument('--label', type=str, default=None, help='Optional label for notifications')
     args = args.parse_args()
 
@@ -117,7 +126,7 @@ if __name__ == '__main__':
         notify_started(args.label)
 
     try:
-        agent = ReconAgent(args.stage)
+        agent = ReconAgent(stage=args.stage, key=args.key)
         scene_dicts = agent.run()
 
         if args.label:
