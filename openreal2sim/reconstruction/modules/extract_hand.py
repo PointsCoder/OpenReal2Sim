@@ -154,39 +154,37 @@ def hand_extraction(keys, key_scene_dicts, key_cfgs):
         #images = np.transpose(scene_dict["images"], (0, 3, 1, 2))
         images = scene_dict["images"].astype(np.float32)
         kpts, global_orient, masks = wilor_extractor.process(images)
-        # Ensure the "simulation" key exists in scene_dict
-        if "simulation" not in scene_dict:
-            scene_dict["simulation"] = {}
-        scene_dict["simulation"]["hand_kpts"] = kpts
-        scene_dict["simulation"]["hand_global_orient"] = global_orient
-        scene_dict["simulation"]["hand_masks"] = masks
+
+        scene_dict["recon"]["hand_kpts"] = kpts
+        scene_dict["recon"]["hand_global_orient"] = global_orient
+        scene_dict["recon"]["hand_masks"] = masks
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)
 
-        import cv2
-        start_frame_idx = scene_dict["recon"]["start_frame_idx"]
+        # import cv2
+        # start_frame_idx = scene_dict["recon"]["start_frame_idx"]
 
-        first_img = scene_dict["images"][start_frame_idx] 
-        first_kpts = kpts[start_frame_idx] 
-        first_masks = masks[start_frame_idx]
-        pts2d = np.asarray(first_kpts).astype(np.int32)
-        overlay_img = first_img.copy()
-        import pdb; pdb.set_trace()
-        for x, y in pts2d:
-            cv2.circle(overlay_img, (int(x), int(y)), 4, (0, 255, 0), -1)
-        mask_vis = (first_masks.astype(np.uint8) * 255)
-        if mask_vis.ndim == 2:
-            mask_vis = cv2.cvtColor(mask_vis, cv2.COLOR_GRAY2BGR)
-        overlay_alpha = 0.4
-        mask_color = np.zeros_like(overlay_img)
-        mask_color[:, :, 2] = mask_vis[:, :, 0] 
-        overlay_img = cv2.addWeighted(overlay_img, 1.0, mask_color, overlay_alpha, 0)
-        save_dir = base_dir / f'outputs/{key}/simulation/'
-        save_dir.mkdir(parents=True, exist_ok=True)
-        overlay_path = save_dir / "first_frame_hand_kpts_overlay.jpg"
-        cv2.imwrite(str(overlay_path), overlay_img)
-        print(f"Saved hand keypoints overlay for {key} to {overlay_path}")
+        # first_img = scene_dict["images"][start_frame_idx] 
+        # first_kpts = kpts[start_frame_idx] 
+        # first_masks = masks[start_frame_idx]
+        # pts2d = np.asarray(first_kpts).astype(np.int32)
+        # overlay_img = first_img.copy()
+        # import pdb; pdb.set_trace()
+        # for x, y in pts2d:
+        #     cv2.circle(overlay_img, (int(x), int(y)), 4, (0, 255, 0), -1)
+        # mask_vis = (first_masks.astype(np.uint8) * 255)
+        # if mask_vis.ndim == 2:
+        #     mask_vis = cv2.cvtColor(mask_vis, cv2.COLOR_GRAY2BGR)
+        # overlay_alpha = 0.4
+        # mask_color = np.zeros_like(overlay_img)
+        # mask_color[:, :, 2] = mask_vis[:, :, 0] 
+        # overlay_img = cv2.addWeighted(overlay_img, 1.0, mask_color, overlay_alpha, 0)
+        # save_dir = base_dir / f'outputs/{key}/simulation/'
+        # save_dir.mkdir(parents=True, exist_ok=True)
+        # overlay_path = save_dir / "first_frame_hand_kpts_overlay.jpg"
+        # cv2.imwrite(str(overlay_path), overlay_img)
+        # print(f"Saved hand keypoints overlay for {key} to {overlay_path}")
         return key_scene_dicts
 
 

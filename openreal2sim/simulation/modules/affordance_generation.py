@@ -1,1 +1,2 @@
-### Three options: UAD/SAM+PARTSLIP, or human annotation.
+### get part segmentation.
+### use the generated/extracted point as prompt.

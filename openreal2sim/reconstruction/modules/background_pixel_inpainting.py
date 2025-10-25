@@ -158,7 +158,7 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
         scene_dict["recon"]["background"] = np.ascontiguousarray(np.array(fused_img_pil, dtype=np.uint8))
         scene_dict["recon"]["foreground"] = np.ascontiguousarray(np.array(image_orig,   dtype=np.uint8))
         scene_dict["recon"]["ground_mask"] = ground_accum if ground_accum is not None else None # H x W, bool
-        scene_dict["recon"]["plane_mask"] = plane_accum if plane_accum is not None else None # H x W, bool
+        #scene_dict["recon"]["plane_mask"] = plane_accum if plane_accum is not None else None # H x W, bool
         scene_dict["recon"]["object_mask"] = mask_accum if mask_accum is not None else None   # H x W, bool
         scene_dict["recon"]["bbox_mask"] = bbox_accum if bbox_accum is not None else None   # H x W, bool
         key_scene_dicts[key] = scene_dict

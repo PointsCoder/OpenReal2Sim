@@ -24,11 +24,12 @@ class ReconAgent:
             self.key_scene_dicts[key] = scene_dict
         self.stages = [
             "background_pixel_inpainting", 
+            "get_object_plane"
             "background_point_inpainting",
             "background_mesh_generation",
+            "object_spatracker_cal",
             "object_mesh_generation",
             "scenario_construction",
-            "object_spatracker_cal",
             "scenario_fdpose_optimization",
             "scenario_collision_optimization"
         ]
@@ -58,6 +59,11 @@ class ReconAgent:
         from modules.background_pixel_inpainting import background_pixel_inpainting
         self.key_scene_dicts = background_pixel_inpainting(self.keys, self.key_scene_dicts, self.key_cfgs)
         print('[Info] Background inpainting completed.')
+
+    def get_object_plane(self):
+        from modules.get_object_plane import get_object_plane
+        self.key_scene_dicts = get_object_plane(self.keys, self.key_scene_dicts, self.key_cfgs)
+        print('[Info] Object plane extraction completed.')
 
     def background_point_inpainting(self):
         from modules.background_point_inpainting import background_point_inpainting

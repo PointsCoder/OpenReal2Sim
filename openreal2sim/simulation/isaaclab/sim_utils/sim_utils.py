@@ -49,7 +49,7 @@ def load_sim_parameters(basedir, key) -> dict:
     grasp_pre = exp_config.get("grasp_pre", None)
     grasp_delta = exp_config.get("grasp_delta", None)
     traj_key = exp_config.get("traj_key", "fdpose_trajs") # "fdpose_trajs", "simple_trajs", "hybrid_trajs"
-    manip_object_id = exp_config.get("manip_object_id", "1")
+    manip_object_id = scene_json["manipulated_id"]
     traj_path = scene_json["objects"][manip_object_id][traj_key]
     grasp_path = scene_json["objects"][manip_object_id].get("grasps", None)
     demo_cfg = {

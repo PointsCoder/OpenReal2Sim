@@ -387,11 +387,15 @@ def run_conversion_for_key(key: str):
 
     # Build IO lists (background always first). Prefer "refined" if present.
     input_list, output_list = [scene_dict["background"]["registered"]], [glb_to_usd(scene_dict["background"]["registered"])]
-    scene_dict["background"]["usd"] = glb_to_usd(scene_dict["background"]["registered"])
+    scene_dict["background"]["usd"] = glb_to_usd(scene_dict["background"]["optimized"])
     for idx, obj in scene_dict["objects"].items():
         input_list.append(obj["optimized"])
+        input_list.append(obj["registered"])
         output_list.append(glb_to_usd(obj["optimized"]))
+        output_list.append(glb_to_usd(obj["registered"]))
         scene_dict["objects"][idx]["usd"] = glb_to_usd(obj["optimized"])
+        scene_dict["objects"][idx]["usd_registered"] = glb_to_usd(obj["registered"])
+    
 
     # Persist USD paths back to scene.json
     with open(scene_json, 'w') as f:

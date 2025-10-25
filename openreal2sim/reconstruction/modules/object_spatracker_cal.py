@@ -1,4 +1,3 @@
-
 import os
 import sys
 from pathlib import Path
@@ -24,6 +23,29 @@ import torchvision
 from models.SpaTrackV2.models.vggt4track.models.vggt_moe import VGGT4Track
 from models.SpaTrackV2.models.vggt4track.utils.load_fn import preprocess_image
 from models.SpaTrackV2.models.vggt4track.utils.pose_enc import pose_encoding_to_extri_intri
+from models.SpaTrackV2.utils.visualizer import Visualizer
+
+def load_obj_masks(data: dict):
+    """
+    Return object list for frame-0:
+        [{'mask': bool array, 'name': name, 'bbox': (x1,y1,x2,y2)}, ...]
+    Filter out names: 'ground' / 'hand' / 'robot'
+    """
+    frame_objs = data.get(0, {})  # only frame 0
+    objs = []
+    for oid, item in frame_objs.items():
+        lbl = item["name"]
+        if lbl in ("ground", "hand", "robot"):
+            continue
+        objs.append({
+            "oid":  oid,
+            "mask":  item["mask"].astype(bool),
+            "name": lbl,
+            "bbox":  item["bbox"]          # used for cropping
+        })
+    # Keep original behavior: sort by mask area (desc)
+    objs.sort(key=lambda x: int(x["oid"]))
+    return objs
 
 def build_mask_array(
     oid: int,
@@ -59,54 +81,52 @@ def compute_tracks(single_scene_dict, key_cfg: dict):
     intrs = torch.from_numpy(intrs).float().to(device)
     extrs = np.linalg.inv(single_scene_dict["extrinsics"]).astype(np.float32)
     extrs = torch.from_numpy(extrs).float().to(device)
-    grid_size = key_cfg.get("grid_size", 100)
-    model.spatrack.track_num = grid_size
+
+    unc_metric = None
+    first_frame_mask = single_scene_dict["recon"]["object_mask"]
+    first_frame_mask = torch.from_numpy(first_frame_mask).to(device)
+    first_frame_mask = torchvision.transforms.Resize((resize_h, resize_w))(first_frame_mask.unsqueeze(0))
+    first_frame_mask = first_frame_mask.squeeze(0)
+    first_frame_mask = first_frame_mask > 0
+    mask_area = first_frame_mask.sum()
+
+    model = Predictor.from_pretrained("Yuxihenry/SpatialTrackerV2-Offline")
+
+    # Compute grid_size such that: mask_area / all_size * (grid_size * grid_size) = 300
+    all_size = video_tensor.shape[2] * video_tensor.shape[3]
+    estimated_pts = 300
+    ratio = mask_area.float() / float(all_size)
+    grid_size = int(np.sqrt(estimated_pts / float(ratio)))
+    print(f"[INFO] grid_size: {grid_size}")
+
+    model.spatrack.track_num = 768
     model.eval()
     model =model.to(device)
-    unc_metric = None
 
-    for obj_id, obj_ent in single_scene_dict["info"]["objects"].items():
-        oid   = obj_ent["oid"]
-        oname = obj_ent["name"]
-        omask = build_mask_array(oid, single_scene_dict)
-        omask = torch.from_numpy(omask).to(device)
-        omask = torchvision.transforms.Resize((resize_h, resize_w))(omask.unsqueeze(0))
-        omask = omask.squeeze(0)
-        omask = omask > 0
-        frame_H, frame_W = video_tensor.shape[2:]
-        grid_pts = get_points_on_a_grid(grid_size, (frame_H, frame_W), device="cpu")
-        grid_pts_int = grid_pts[0].long()
-        mask_values = omask[grid_pts_int[...,1], grid_pts_int[...,0]].cpu().numpy()
-        grid_pts = grid_pts[:, mask_values]
-        query_xyt = torch.cat([torch.zeros_like(grid_pts[:, :, :1]), grid_pts], dim=2)[0].numpy().astype(np.float32)
-        with torch.no_grad():
-            (
-                c2w_traj, intrs, point_map, conf_depth,
-                track3d_pred, track2d_pred, vis_pred, conf_pred, video
-            ) = model.forward(video_tensor, depth=depth_tensor,
-                                intrs=intrs, extrs=extrs, 
-                                queries=query_xyt,
-                                fps=1, full_point=False, iters_track=4,
-                                query_no_BA=True, fixed_cam=False, stage=1, unc_metric=unc_metric,
-                                support_frame=len(video_tensor)-1, replace_ratio=0.2) 
-        start_frame_idx, end_frame_idx = compute_start_end_frame(track3d_pred, offset=key_cfg["startend_offset"])
-        scene_dict["info"]["objects"][obj_id]["start_frame_idx"] = start_frame_idx
-        scene_dict["info"]["objects"][obj_id]["end_frame_idx"] = end_frame_idx
-        scene_dict["info"]["max_velocity"] = max(scene_dict["info"]["max_velocity"], np.max(np.linalg.norm(track3d_pred[1:][...,:3] - track3d_pred[:-1][...,:3], axis=2))/ track3d_pred.shape[1])
-        spatrack_trans = compute_trans(track3d_pred, vis_pred)
-        scene_dict["info"]["objects"][obj_id]["spatrack_trans"] = spatrack_trans
-        if scene_dict["info"]["max_velocity"] < 0.005:
-            scene_dict["info"]["objects"][obj_id]["type"] = "static"
-        else:
-            scene_dict["info"]["objects"][obj_id]["type"] = "dynamic"
-    
-    earliest_start_oid = min(scene_dict["info"]["objects"].keys(), key=lambda x: scene_dict["info"]["objects"][x]["start_frame_idx"])
-    scene_dict["info"]["objects"][earliest_start_oid]["type"] = "manipulated"
-    scene_dict["recon"]["manipulated_oid"] = earliest_start_oid
-    scene_dict["recon"][start_frame_idx] = scene_dict["info"]["objects"][earliest_start_oid]["start_frame_idx"]
-    scene_dict["recon"][end_frame_idx] = scene_dict["info"]["objects"][earliest_start_oid]["end_frame_idx"]
+    frame_H, frame_W = video_tensor.shape[2:]
+    grid_pts = get_points_on_a_grid(grid_size, (frame_H, frame_W), device="cpu")
+    grid_pts_int = grid_pts[0].long()
+    mask_values = first_frame_mask[grid_pts_int[...,1], grid_pts_int[...,0]].cpu().numpy()
+    grid_pts = grid_pts[:, mask_values]
+    query_xyt = torch.cat([torch.zeros_like(grid_pts[:, :, :1]), grid_pts], dim=2)[0].numpy().astype(np.float32)
 
-    return scene_dict
+    with torch.no_grad():
+        (
+            c2w_traj, intrs, point_map, conf_depth,
+            track3d_pred, track2d_pred, vis_pred, conf_pred, video
+        ) = model.forward(video_tensor, depth=depth_tensor,
+                            intrs=intrs, extrs=extrs, 
+                            queries=query_xyt,
+                            fps=1, full_point=False, iters_track=4,
+                            query_no_BA=True, fixed_cam=False, stage=1, unc_metric=unc_metric,
+                            support_frame=len(video_tensor)-1, replace_ratio=0.2) 
+    viser = Visualizer()
+    viser.visualize(video=video[None],
+                                tracks=track2d_pred[None][...,:2],
+                                visibility=vis_pred[None],filename=f"./outputs/{key}/scene/track2d_pred.mp4")
+    ### it's also feasible to compute using pred2dtracks.
+    # import pdb; pdb.set_trace()
+    return track2d_pred.cpu().numpy(), track3d_pred.cpu().numpy(), vis_pred.cpu().numpy(), grid_pts
 
 
 def optimize_trans(prev_coords, curr_coords):
@@ -162,11 +182,12 @@ def compute_start_end_frame(track3d_pred, offset = 5):
     # Compute velocities (frame-to-frame displacement)
     # velocity[fi] means velocity from frame fi-1 to fi
     velocities = np.linalg.norm(track3d_pred[1:][...,:3] - track3d_pred[:-1][...,:3], axis=2) # (num_frames-1, num_points)
-
+    if np.max(velocities) > 0.04:
+        return None, None
     # Find first frame where at least 100 points velocity > 0.005 (5mm = 0.5cm)
     start_frame_idx = None
     for i in range(velocities.shape[0]):
-        if np.sum(velocities[i] > 0.005) >= 100:
+        if np.sum(velocities[i] > 0.005) >= 0.8 * track3d_pred.shape[1]:
             start_frame_idx = i
             break
     if start_frame_idx is None:
@@ -188,18 +209,103 @@ def compute_start_end_frame(track3d_pred, offset = 5):
     return start_frame_idx, end_frame_idx
 
 
+def seg_mask(object_mask, grid_pts):
+    """
+    Select the index of kpts_2d_pred that lies on the object_mask.
+
+    Args:
+        object_mask (np.ndarray): 2D array representing the binary mask of the object. Shape: (H, W)
+        kpts_2d_pred (np.ndarray): 2D points predicted of shape (N, 2) or (N, X), where the first 2 cols are x and y.
+
+    Returns:
+        indices (np.ndarray): Indices of kpts_2d_pred that lie within the mask (object_mask == 1)
+    """
+    object_mask = np.asarray(object_mask)
+    kpts = np.asarray(grid_pts)
+    # Round and convert coordinates to int for indexing
+    x = np.round(kpts[:, 0]).astype(int)
+    y = np.round(kpts[:, 1]).astype(int)
+    H, W = object_mask.shape[:2]
+
+    # Filter points that are inside the image bounds
+    valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
+    x_valid = x[valid]
+    y_valid = y[valid]
+
+    # Now, for valid points, check if they are on the mask
+    mask_hits = np.zeros_like(valid, dtype=bool)
+    mask_hits[valid] = object_mask[y_valid, x_valid] > 0
+
+    indices = np.where(mask_hits)[0]
+    return indices
+
+
+
+
+
+def refine_end_frame(hand_masks, object_masks):
+    N = min(len(hand_masks), len(object_masks))
+    kernel = np.ones((10, 10), np.uint8)
+    for i in range(N-1, -1, -1):
+        hand_mask = hand_masks[i].astype(np.uint8)
+        obj_mask = object_masks[i].astype(np.uint8)
+        obj_mask_dilated = cv2.dilate(obj_mask, kernel, iterations=1)
+        overlap = (hand_mask & obj_mask_dilated).sum()
+        if overlap == 0:
+            return i 
+    return 0
+    
+
+
 def object_spatracker_cal(keys, key_scene_dicts, key_cfgs):
     base_dir = Path.cwd()
     for key in keys:
         scene_dict = key_scene_dicts[key]
         key_cfg = key_cfgs[key]
-        scene_dict = compute_tracks(scene_dict, key_cfg)
+        track2d_pred, track3d_pred, vis_pred, grid_pts = compute_tracks(scene_dict, key_cfg)
+        objs = load_obj_masks(scene_dict)
+        for obj in objs:
+            obj_mask = obj["mask"]
+            obj_indices = seg_mask(obj_mask, grid_pts)
+            obj_track2d_pred = track2d_pred[obj_indices]
+            obj_track3d_pred = track3d_pred[obj_indices]
+            obj_vis_pred = vis_pred[obj_indices]
+            obj_grid_pts = grid_pts[obj_indices]
+            obj_start_frame_idx, obj_end_frame_idx = compute_start_end_frame(obj_track3d_pred, offset=5)
+            if obj_start_frame_idx is None or obj_end_frame_idx is None:
+                scene_dict["info"]["objects"][oid]["type"] = "static"
+                continue
+            scene_dict["info"]["objects"][obj["oid"]]["type"] = "dynamic"
+            obj_trans = compute_trans(obj_track3d_pred, obj_vis_pred)
+            obj_trans = np.array(obj_trans)
+            obj_trans = obj_trans.reshape(-1, 4, 4)
+            obj_trans = obj_trans.tolist()
+            scene_dict["recon"]["obj_trans"][obj["oid"]] = obj_trans
+            scene_dict["recon"]["obj_start_frame_idx"][obj["oid"]] = obj_start_frame_idx
+            scene_dict["recon"]["obj_end_frame_idx"][obj["oid"]] = obj_end_frame_idx
+
+        manipulated_oid = min(scene_dict["recon"]["obj_start_frame_idx"], key=scene_dict["recon"]["obj_start_frame_idx"].get)
+        scene_dict["info"]["objects"][manipulated_oid]["type"] = "manipulated"
+        scene_dict["info"]["manipulated_oid"] = manipulated_oid
+        scene_dict["recon"]["start_frame_idx"] = scene_dict["recon"]["obj_start_frame_idx"][manipulated_oid]
+        scene_dict["recon"]["end_frame_idx"] = scene_dict["recon"]["obj_end_frame_idx"][manipulated_oid]
+        object_masks = build_mask_array(manipulated_oid, scene_dict)
+        hand_masks = scene_dict["recon"]["hand_masks"]
+        refined_end_frame = refine_end_frame(hand_masks, object_masks)
+        if refined_end_frame == track3d_pred.shape[0]:
+            scene_dict["info"]["final_gripper_closed"] = True
+            scene_dict["recon"]["end_frame_idx"] = track3d_pred.shape[0] - 1
+        else:
+            scene_dict["info"]["final_gripper_closed"] = False
+            scene_dict["recon"]["end_frame_idx"] = min(refined_end_frame, scene_dict["recon"]["end_frame_idx"])
+        end_frame_idx = scene_dict["recon"]["end_frame_idx"]
+        start_frame_idx = scene_dict["recon"]["start_frame_idx"]
+        manipulated_name = scene_dict["info"]["objects"][manipulated_oid]["name"]
+        print(f"[INFO] start_frame_idx: {start_frame_idx}, end_frame_idx: {end_frame_idx}, manipulated_name: {manipulated_name}")
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)
         key_scene_dicts[key] = scene_dict
         return key_scene_dicts
-
-
 
 if __name__ == "__main__":
     base_dir = Path.cwd()

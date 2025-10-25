@@ -54,8 +54,8 @@ Optionally, you may want to push the image to a remote registry (e.g., GitHub Co
 
 If so, you can tag the image and push it:
    ```bash
-   docker tag openreal2sim:dev ghcr.io/<username>/openreal2sim:dev
-   docker push ghcr.io/<username>/openreal2sim:dev
+   docker tag openreal2sim:dev ghcr.io/peiqiduan/openreal2sim:dev
+   docker push ghcr.io/peiqiduan/openreal2sim:dev
    ```
 Don't forget to change the visibility of the pushed image to public if you want others to access it.
 

@@ -16,6 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 SHELL ["/bin/bash", "-lc"]
 
+ENV MAX_JOBS=2
+ENV MAKEFLAGS="-j2"
+ENV CMAKE_BUILD_PARALLEL_LEVEL=2
+
 # -------------------------------------------------------------------------
 # Install Python Dependencies
 # -------------------------------------------------------------------------

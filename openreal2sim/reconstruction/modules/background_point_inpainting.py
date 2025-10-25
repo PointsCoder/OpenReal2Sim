@@ -191,10 +191,10 @@ def plane_fill(depth0, K, ground, obj):
     from scipy.ndimage import distance_transform_edt
     from scipy.interpolate import griddata
 
-
+    ground = ground & ~obj
     ground_border = (ground > 0).astype(np.uint8)
     dist = distance_transform_edt(ground_border)
-    mask_inner = dist >= 3
+    mask_inner = dist >= 1
     ground_filtered = np.zeros_like(ground, dtype=bool)
     ground_filtered[ground & mask_inner] = True
     z = depth0.reshape(-1).astype(np.float32)
@@ -207,7 +207,7 @@ def plane_fill(depth0, K, ground, obj):
     pc.points = o3d.utility.Vector3dVector(pts_ground)
   
     np.random.seed(42) 
-    plane = handcraft_segment_plane(pts_ground, distance_threshold=0.02, ransac_n=3, num_iterations=1000)
+    plane , _= pc.segment_plane(distance_threshold=0.02, ransac_n=3, num_iterations=1000)
     a, b, c, d = plane
 
     from scipy.ndimage import binary_dilation
@@ -227,7 +227,7 @@ def plane_fill(depth0, K, ground, obj):
     t[valid] = -d / denom[valid]
     plane_z = t * dz
     dist_to_plane = np.abs(a * (dx * t) + b * (dy * t) + c * (dz * t) + d) / np.linalg.norm([a, b, c])
-    plane_dist_th = 0.02
+    plane_dist_th = 0.003
     mask_valid = (t > 0) & np.isfinite(t) & (dist_to_plane < plane_dist_th)
     z_plane = plane_z[mask_valid]
     xs_plane = xs[mask_valid]
@@ -273,67 +273,67 @@ def vanilla_plane_fill(depth0, K, ground, obj):
     return depth0_filled
 
 
-def get_ground_mask_from_existing_mask(img: np.ndarray, existing_ground_mask: np.ndarray) -> np.ndarray:
-    # Import SAM modules
-    import sys
-    from pathlib import Path
-    ROOT = Path.cwd()
-    THIRD = ROOT / "third_party/Grounded-SAM-2"
-    sys.path.append(str(THIRD))
+# def get_ground_mask_from_existing_mask(img: np.ndarray, existing_ground_mask: np.ndarray) -> np.ndarray:
+#     # Import SAM modules
+#     import sys
+#     from pathlib import Path
+#     ROOT = Path.cwd()
+#     THIRD = ROOT / "third_party/Grounded-SAM-2"
+#     sys.path.append(str(THIRD))
     
-    from sam2.build_sam import build_sam2
-    from sam2.sam2_image_predictor import SAM2ImagePredictor
-    import torch
+#     from sam2.build_sam import build_sam2
+#     from sam2.sam2_image_predictor import SAM2ImagePredictor
+#     import torch
     
-    # Initialize Hydra
-    import hydra
-    from omegaconf import DictConfig
+#     # Initialize Hydra
+#     import hydra
+#     from omegaconf import DictConfig
     
-    # Initialize SAM model
-    DEV = "cuda" if torch.cuda.is_available() else "cpu"
-    CFG = "configs/sam2.1/sam2.1_hiera_l.yaml"
-    CKPT = "third_party/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt"
+#     # Initialize SAM model
+#     DEV = "cuda" if torch.cuda.is_available() else "cpu"
+#     CFG = "configs/sam2.1/sam2.1_hiera_l.yaml"
+#     CKPT = "third_party/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt"
     
-    img_predictor = SAM2ImagePredictor(build_sam2(CFG, CKPT))
-    img_predictor.set_image(img)
-    H, W = img.shape[:2]
-    ground_points = []
-    ground_labels = []
-    existing_ground_mask = existing_ground_mask.astype(bool)
-    ground_indices = np.where(existing_ground_mask)
-    if len(ground_indices[0]) > 0:
-        sample_indices = np.random.choice(len(ground_indices[0]), 
-                                        min(20, len(ground_indices[0])), 
-                                        replace=False)
-        for idx in sample_indices:
-            y, x = ground_indices[0][idx], ground_indices[1][idx]
-            ground_points.append([x, y])
-            ground_labels.append(1)
+#     img_predictor = SAM2ImagePredictor(build_sam2(CFG, CKPT))
+#     img_predictor.set_image(img)
+#     H, W = img.shape[:2]
+#     ground_points = []
+#     ground_labels = []
+#     existing_ground_mask = existing_ground_mask.astype(bool)
+#     ground_indices = np.where(existing_ground_mask)
+#     if len(ground_indices[0]) > 0:
+#         sample_indices = np.random.choice(len(ground_indices[0]), 
+#                                         min(20, len(ground_indices[0])), 
+#                                         replace=False)
+#         for idx in sample_indices:
+#             y, x = ground_indices[0][idx], ground_indices[1][idx]
+#             ground_points.append([x, y])
+#             ground_labels.append(1)
     
-    ground_mask = np.zeros((H, W), dtype=bool)
-    if len(ground_points) > 0:
-        point_coords = np.array(ground_points)
-        point_labels = np.array(ground_labels)
+#     ground_mask = np.zeros((H, W), dtype=bool)
+#     if len(ground_points) > 0:
+#         point_coords = np.array(ground_points)
+#         point_labels = np.array(ground_labels)
     
-        masks, scores, logits = img_predictor.predict(
-            point_coords=point_coords,
-            point_labels=point_labels,
-            multimask_output=True
-        )
+#         masks, scores, logits = img_predictor.predict(
+#             point_coords=point_coords,
+#             point_labels=point_labels,
+#             multimask_output=True
+#         )
         
 
-        best_idx = np.argmax(scores)
-        ground_mask = masks[best_idx]
+#         best_idx = np.argmax(scores)
+#         ground_mask = masks[best_idx]
         
-        ground_mask = ground_mask.astype(bool)
+#         ground_mask = ground_mask.astype(bool)
     
-    return ground_mask
+#     return ground_mask
 
     
 
 def hybrid_fill(depth0: np.ndarray, fg_img: np.ndarray, bg_img: np.ndarray, K: np.ndarray, 
                            obj_msk: np.ndarray, device: torch.device, 
-                           existing_ground_mask: np.ndarray = None) -> np.ndarray:
+                           plane_masks: np.ndarray = None) -> np.ndarray:
     """
     Generate depth using hybrid approach: 
     - Ground regions use plane fill
@@ -351,27 +351,32 @@ def hybrid_fill(depth0: np.ndarray, fg_img: np.ndarray, bg_img: np.ndarray, K: n
         depth_bg: Generated background depth
     """
     print(f"[Info] Starting hybrid depth generation...")
-
-    ground_mask = get_ground_mask_from_existing_mask(fg_img, existing_ground_mask)
-
-    print(f"[Info] Running MoGe depth prediction...")
-    depth_moge = run_moge_depth(bg_img, device)
-    # kernel = np.ones((25, 25), np.uint8)  # prevent boundaries problem.
-    # obj_msk = cv2.dilate(obj_msk.astype(np.uint8), kernel, iterations=1).astype(bool)
-    depth_ground = vanilla_plane_fill(depth0, K,existing_ground_mask, obj_msk)
-
     depth_bg = depth0.copy()
-    obj_msk =obj_msk.astype(bool)
-    ground_mask = ground_mask.astype(bool)
-    
-    obj_ground = obj_msk & ground_mask
-    obj_non_ground = obj_msk & (~ground_mask)
+    kernel = np.ones((25, 25), np.uint8)  # prevent boundaries problem.
+    obj_msk = cv2.dilate(obj_msk.astype(np.uint8), kernel, iterations=1).astype(bool)
+    left_obj_msk = obj_msk.copy()
+    for plane_mask in plane_masks:
+        if (plane_mask & left_obj_msk).sum() > 0:
+            depth_filled = plane_fill(depth0, K, plane_mask, left_obj_msk & plane_mask)
+            depth_bg[plane_mask & left_obj_msk] = depth_filled[plane_mask & left_obj_msk]
+        left_obj_msk = left_obj_msk & ~plane_mask
+    depth_moge = run_moge_depth(bg_img, device)
+   
+    # # kernel = np.ones((25, 25), np.uint8)  # prevent boundaries problem.
+    # # obj_msk = cv2.dilate(obj_msk.astype(np.uint8), kernel, iterations=1).astype(bool)
+    # depth_ground = vanilla_plane_fill(depth0, K,existing_ground_mask, obj_msk)
 
-    if obj_ground.sum() > 0:
-        depth_bg[obj_ground] = depth_ground[obj_ground]
+    # depth_bg = depth0.copy()
+    # obj_msk =obj_msk.astype(bool)
+    # ground_mask = ground_mask.astype(bool)
     
-     
-    if obj_non_ground.sum() > 0:
+    # obj_ground = obj_msk & ground_mask
+    # obj_non_ground = obj_msk & (~ground_mask)
+
+    # if obj_ground.sum() > 0:
+    #     depth_bg[obj_ground] = depth_ground[obj_ground]
+    
+    if left_obj_msk.sum() > 0:
         a, b = robust_scale_shift_align(
                 pred_depth=depth_moge,
                 ref_depth=depth0,
@@ -380,10 +385,7 @@ def hybrid_fill(depth0: np.ndarray, fg_img: np.ndarray, bg_img: np.ndarray, K: n
                 huber_delta=0.02
             )
         depth_align = (a * depth_moge + b).astype(np.float32)
-        depth_bg[obj_non_ground] = depth_align[obj_non_ground]
-    
-    
-    
+        depth_bg[left_obj_msk] = depth_align[left_obj_msk]
 
     return depth_bg
 
@@ -418,8 +420,8 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
         if "ground_mask" not in scene_dict["recon"] or "object_mask" not in scene_dict["recon"]:
             print(f"[Warning] [{key}] 'recon' key missing 'ground_mask' or 'object_mask'; run background_pixel_inpainting first.")
             continue
-
-        ground_mask = scene_dict["recon"]["plane_mask"] if scene_dict["recon"]["plane_mask"] is not None else scene_dict["recon"]["ground_mask"]  # H x W, bool
+        ground_mask = scene_dict["recon"]["ground_mask"]
+        plane_masks = scene_dict["recon"]["plane_masks"] if scene_dict["recon"]["plane_masks"] is not None else []
         object_mask   = scene_dict["recon"]["object_mask"]  # H x W, bool
          # dilate the masks a bit more to remove boundary outliers
         object_mask = fill_mask(object_mask)
@@ -436,7 +438,7 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
             # assume the masked region is the ground, and using ground plane for geometry completion
             depth_bg = plane_fill(depth0, K, ground_mask, object_mask)
         elif completion_mode == "hybrid":
-            depth_bg = hybrid_fill(depth0, fg_img, bg_img, K, object_mask, device, ground_mask)
+            depth_bg = hybrid_fill(depth0, fg_img, bg_img, K, object_mask, device, plane_masks)
         else:
             # use monocular depth prediction for geometry completion
             print(f"[Info] [{key}] predicting depth with MoGe-2 ...")
@@ -476,6 +478,7 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
         export_cloud(fg_pts, fg_colors, recon_dir / "foreground_points.ply")
         export_cloud(bg_pts, bg_colors, recon_dir / "background_points.ply")
         print(f"[Info] [{key}] geometry inpainting done.\n")
+        
     return key_scene_dicts
 
 if __name__ == "__main__":

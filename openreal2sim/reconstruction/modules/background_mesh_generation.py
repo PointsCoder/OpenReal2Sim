@@ -16,8 +16,7 @@ Note:
             "background": {
                 "original": # original background mesh path,
             },
-            "groundplane_in_cam": {
-                "point":  # a point on the ground plane [x,y,z],
+b                "point":  # a point on the ground plane [x,y,z],
                 "normal": # the normal of the ground plane [x,y,z], 
             }
         }

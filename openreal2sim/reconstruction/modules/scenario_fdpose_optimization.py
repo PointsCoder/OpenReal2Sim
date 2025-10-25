@@ -32,6 +32,8 @@ import numpy as np
 import cv2, imageio
 import trimesh
 import yaml
+from scipy.spatial.transform import Rotation as R
+from scipy.spatial import cKDTree
 
 BASE_DIR = Path.cwd()
 OUTPUT_DIR = BASE_DIR / "outputs"
@@ -42,6 +44,110 @@ sys.path.append(REPO_DIR)
 from estimater import *  # FoundationPose, ScorePredictor, PoseRtuefinePredictor, draw_posed_3d_box, draw_xyz_axis, set_seed
 import nvdiffrast.torch as dr
 
+
+def determine_object_symmetry(obj_mesh_path, eps=0.01, sample_num=1000, test_angles=None):
+    """
+    Check whether the object has continuous rotational symmetry around x, y, or z axis.
+    This means the object looks the same when rotated by any angle around the axis.
+
+    Args:
+        obj_mesh_path: path to the 3D mesh file (e.g., .glb, .obj)
+        eps: symmetry threshold
+        sample_num: number of points to sample for checking symmetry
+        test_angles: list of angles to test (in radians). If None, uses [30, 60, 90, 120, 150, 180] degrees
+
+    Returns:
+        sym_axes: list of axis labels (str) that have continuous rotational symmetry, e.g., ['z']
+    """
+    
+    # Load mesh
+    mesh = trimesh.load(obj_mesh_path)
+    
+    # Sample points uniformly from surface (ptcloud: (N,3))
+    if hasattr(mesh, 'sample'):
+        pts = mesh.sample(sample_num)
+    else:
+        pts = np.array(mesh.vertices)
+        if pts.shape[0] > sample_num:
+            indices = np.random.choice(pts.shape[0], sample_num, replace=False)
+            pts = pts[indices]
+
+    # Center the mesh (important for symmetry evaluation!)
+    center = np.mean(pts, axis=0)
+    pts_centered = pts - center
+
+    # Initialize result
+    sym_axes = []
+    
+    # Default test angles (in radians)
+    if test_angles is None:
+        test_angles = np.deg2rad([30, 60, 90, 120, 150, 180])
+    
+    # Check each axis for continuous rotational symmetry
+    for axis_idx, axis_name in enumerate(['x', 'y', 'z']):
+        is_symmetric = True
+        
+        # Test multiple rotation angles
+        for angle in test_angles:
+            # Create rotation matrix around the axis
+            if axis_name == 'x':
+                rotation = R.from_euler('x', angle)
+            elif axis_name == 'y':
+                rotation = R.from_euler('y', angle)
+            else:  # z axis
+                rotation = R.from_euler('z', angle)
+            
+            # Rotate points around the axis
+            pts_rotated = rotation.apply(pts_centered)
+            
+            # Check if rotated points match original points
+            # Use KDTree for efficient nearest neighbor search
+            kdtree = cKDTree(pts_centered)
+            dist, _ = kdtree.query(pts_rotated)
+            
+            # If average distance is too large, not symmetric
+            if np.mean(dist) > eps:
+                is_symmetric = False
+                break
+        
+        if is_symmetric:
+            sym_axes.append(axis_name)
+    
+    return sym_axes
+
+def disable_certain_axes(pose, list_of_axes):
+    """
+    Disable (zero out) rotation on the given axes for the input pose (4x4 matrix).
+
+    Args:
+        pose (np.ndarray): [4,4] pose matrix (homogeneous transformation, rotation + translation)
+        list_of_axes (list[str]): List of axes to disable, e.g., ['x', 'y', 'z']
+
+    Returns:
+        np.ndarray: Pose matrix with rotation about specified axes removed (set to identity on those axes)
+    """
+    import numpy as np
+
+    pose = pose.copy()
+    R = pose[:3, :3]  # rotation matrix
+    t = pose[:3, 3]   # translation
+
+    # Convert R to Euler angles (xyz convention)
+    from scipy.spatial.transform import Rotation as Rscipy
+    rot = Rscipy.from_matrix(R)
+    euler = rot.as_euler('xyz', degrees=False)  # [rx, ry, rz]
+
+    axis_index = {'x': 0, 'y': 1, 'z': 2}
+    for axis in list_of_axes:
+        idx = axis_index[axis.lower()]
+        euler[idx] = 0.0
+
+    # Regenerate rotation matrix with disabled axes
+    R_new = Rscipy.from_euler('xyz', euler, degrees=False).as_matrix()
+    pose_new = pose.copy()
+    pose_new[:3, :3] = R_new
+    pose_new[:3, 3] = t
+    return pose_new
 # ------------------------- utils -------------------------
 def set_logging():
     logging.basicConfig(format='[%(asctime)s] %(levelname)s: %(message)s', level=logging.INFO)
@@ -277,7 +383,7 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
         debug_dir = base_dir / Path(f"outputs/{key}/reconstruction/debug")
         debug_dir.mkdir(parents=True, exist_ok=True)
         placed_meshes: List[Tuple[str, trimesh.Trimesh]] = []
-
+        extrinsics = scene_dict["extrinsics"]
         for obj_id, obj_ent in objects.items():
             oid   = obj_ent["oid"]
             oname = obj_ent["name"]
@@ -309,6 +415,8 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             mesh_path_tmp, tmpdir = convert_glb_to_obj_temp(mesh_in_path)
 
             mesh = trimesh.load(mesh_path_tmp)
+            sym_axes = determine_object_symmetry(mesh_path_tmp)
+            print(f"[INFO] Object {oid}_{oname} symmetry axes: {sym_axes}")
             to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
             bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2,3)
 
@@ -323,40 +431,63 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                 glctx=glctx
             )
 
+            centers_cam: List[Optional[np.ndarray]] = []
+            for i in range(N):
+                m_i = reader.get_mask(i)
+                c_i = masked_center_cam(
+                    depth=reader.get_depth(i),
+                    mask=m_i,
+                    K=reader.get_K(i),
+                )
+                centers_cam.append(c_i)           
+            # Fill in gaps using nearest valid values
+            nearest_valid_fill_inplace(centers_cam)
+
             all_poses: List[np.ndarray] = []
             pose_prev: Optional[np.ndarray] = None
+
             for i in range(len(reader)):
                 K_i   = reader.Ks[i].astype(np.float64, copy=False)
                 color = reader.get_color(i)
                 depth = reader.get_depth(i)
+                if scene_dict["info"]["objects"][oid]["type"] == "static" and i >= 1:
+                    break
                 
                 if pose_tracking_mode == "perframe":
                     ob_mask_i = reader.get_mask(i).astype(bool)
                     pose = est.register(K=K_i, rgb=color, depth=depth, ob_mask=ob_mask_i,
                                             iteration=max(1, est_refine_iter))
+                    pose = disable_certain_axes(pose, sym_axes)
                 else:
                     if i == 0:
                         ob_mask_0 = reader.get_mask(0).astype(bool)
                         pose = est.register(K=K_i, rgb=color, depth=depth,
                                             ob_mask=ob_mask_0, iteration=est_refine_iter)
+                        pose = disable_certain_axes(pose, sym_axes)
                     else:
-                        if pose_tracking_mode == 'spatrack' and len(scene_dict["recon"]["spatrack_trans"]) > 0:
-                            trans = scene_dict["recon"]["spatrack_trans"][i-1]
+                        if pose_tracking_mode == 'spatrack' and len(scene_dict["recon"]["obj_trans"][oid]) > 0:
+                            trans = scene_dict["recon"]["object_trans"][oid][i-1]
                             present_guess = trans @ pose_prev.reshape(4,4)
                             pose = est.track_one(rgb=color, depth=depth, K=K_i,
                                              iteration=track_refine_iter, last_pose = present_guess)
                         else:  
                             pose = est.track_one(rgb=color, depth=depth, K=K_i,
-                                             iteration=track_refine_iter)
-                        
+                                                iteration=track_refine_iter, last_pose=pose_prev)
+                        pose = disable_certain_axes(pose, sym_axes)
                         trans_change, rot_change = calculate_pos_change(pose_prev, pose)
                         if trans_change > 0.10 or rot_change > 30.0:
                             pose = est.register(K=K_i, rgb=color, depth=depth,
                                                 ob_mask=reader.get_mask(i).astype(bool),
-                                                iteration=est_refine_iter)
+                                                iteration= 3 * est_refine_iter)
                             present_guess = pose.reshape(4, 4)
+                            pose = disable_certain_axes(pose, sym_axes)
                             print("[Warning] Large translation or rotation detected, re-registering...")
+                            trans_change, rot_change = calculate_pos_change(pose_prev, pose)
+                            if trans_change > 0.10 or rot_change > 30.0:
+                               pose = np.linalg.inv(extrinsics[i-1]) @ extrinsics[i] @ pose_prev
+                               pose[:3, 3] = centers_cam[i]
 
+               
                 all_poses.append(pose.reshape(4,4))
                 pose_prev = pose.reshape(4,4)
 
@@ -378,72 +509,78 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             genvideo_out = base_dir / f"outputs/{key}/reconstruction/objects/{oid}_{oname}_fdpose.mp4"
             export_debug_track_as_video(track_vis_dir=track_vis_dir, output_mp4_path=genvideo_out, fps=20)
 
+
+
+
             # record the relative object pose trajectory (w.r.t. frame-0)
             all_poses_np = np.stack(all_poses, axis=0)
+            for i in range(all_poses_np.shape[0]):
+                all_poses_np[i] = np.linalg.inv(extrinsics[0]) @ extrinsics[i] @ all_poses_np[i]
             T_c2w = np.array(scene_dict["info"]["camera"]["camera_opencv_to_world"]).astype(np.float64).reshape(4,4) 
-            T_obj_w_abs = np.einsum('ij,njk->nik', T_c2w, all_poses_np)   # [N,4,4]
-            T0_w_inv    = np.linalg.inv(T_obj_w_abs[0])
-            rel_w       = T_obj_w_abs @ T0_w_inv                           # [N,4,4]
-
-            pose_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_trajs.npy"
-            pose_save_path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(pose_save_path, rel_w.astype(np.float32))
-            scene_dict["info"]["objects"][obj_id]["fdpose_trajs"] = str(pose_save_path)
-            logging.info(f"[object {oid}] relative trajs(rel_world) -> {pose_save_path}")
-
+           
+            
             # transform the object mesh with the fdpose estimated pose at frame 0
             T_obj_w_0 = (T_c2w @ all_poses_np[0]).astype(np.float64)
             m_base = trimesh.load(mesh_in_path, force='mesh')
             m_fd = m_base.copy(); m_fd.apply_transform(T_obj_w_0)
             fdpose_path = base_dir / f"outputs/{key}/reconstruction/objects" / f"{oid}_{oname}_fdpose.glb"
             m_fd.export(str(fdpose_path))
-            scene_dict["info"]["objects"][obj_id]["fdpose"] = str(fdpose_path)
+            scene_dict["info"]["objects"][obj_id]["starting_mesh"] = str(fdpose_path)
+            scene_dict["info"]["objects"][obj_id]["starting_pose"] = T_obj_w_0.astype(np.float32)
             logging.info(f"[object {oid}] fdpose -> {fdpose_path}")
 
             placed_meshes.append((f"{oid}_{oname}", m_fd))
 
-            ####  add simple trajs (from mask+depth only) ####
-            logging.info(f"[object] oid={oid}, name={oname} - simple trajs from mask+depth only")
-            centers_cam: List[Optional[np.ndarray]] = []
-            for i in range(N):
-                m_i = reader.get_mask(i)
-                c_i = masked_center_cam(
-                    depth=reader.get_depth(i),
-                    mask=m_i,
-                    K=reader.get_K(i),
-                )
-                centers_cam.append(c_i)            
 
-            # Fill in gaps using nearest valid values
-            nearest_valid_fill_inplace(centers_cam)
-            # camera->world: p_w(t) = R_cw @ p_c(t) + t_w
-            R_cw = T_c2w[:3, :3]; t_w = T_c2w[:3, 3]
-            pc_stack = np.stack(centers_cam, axis=0).astype(np.float64)  # [N,3]
-            pw_stack = (R_cw @ pc_stack.T).T + t_w[None, :]              # [N,3]
-            p0_w = pw_stack[0].copy()
-            # assemble simple Δ(t): rotation = I, translation = p_w(t) - p_w(0)
-            simple_rel = np.repeat(np.eye(4, dtype=np.float32)[None, ...], N, axis=0)  # [N,4,4]
-            simple_rel[:, :3, 3] = (pw_stack - p0_w[None, :]).astype(np.float32)
+            if scene_dict["info"]["objects"][oid]["type"] != "static":
+                T_obj_w_abs = np.einsum('ij,njk->nik', T_c2w, all_poses_np)   # [N,4,4]
+                T0_w_inv    = np.linalg.inv(T_obj_w_abs[0])
+                rel_w       = T_obj_w_abs @ T0_w_inv                           # [N,4,4]
+                abs_pose_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_trajs_abs.npy"
+                pose_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_trajs.npy"
+                pose_save_path.parent.mkdir(parents=True, exist_ok=True)
+                np.save(abs_pose_save_path, T_obj_w_abs.astype(np.float32))
+                np.save(pose_save_path, rel_w.astype(np.float32))
+                scene_dict["info"]["objects"][obj_id]["fdpose_trajs"] = str(pose_save_path)
+                scene_dict["info"]["objects"][obj_id]["abs_fdpose_trajs"] = str(abs_pose_save_path)
+                logging.info(f"[object {oid}] relative fdpose trajs(rel_world) -> {pose_save_path}")
+                logging.info(f"[object {oid}] absolute fdpose trajs(abs_world) -> {abs_pose_save_path}")
 
-            simple_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_simple_trajs.npy"
-            np.save(simple_save_path, simple_rel.astype(np.float32))
-            scene_dict["info"]["objects"][obj_id]["simple_trajs"] = str(simple_save_path)
-            logging.info(f"[object {oid}] simple trajs(mask+depth only) -> {simple_save_path}")
+                ####  add simple trajs (from mask+depth only) ####
+                logging.info(f"[object] oid={oid}, name={oname} - simple trajs from mask+depth only")
+                # camera->world: p_w(t) = R_cw @ p_c(t) + t_w
+                R_cw = T_c2w[:3, :3]; t_w = T_c2w[:3, 3]
 
-            ####  add hybrid trajs (using object center + foundation pose object headings) ####
-            logging.info(f"[object] oid={oid}, name={oname} - hybrid trajs (fd-rot + mask/depth-trans)")
-            R_fd = rel_w[:, :3, :3].astype(np.float64)        # [N,3,3]
-            t_hyb = np.stack([pw_stack[i] - (R_fd[i] @ p0_w) for i in range(N)], axis=0).astype(np.float32)  # [N,3]
+                pc_stack = np.stack(centers_cam, axis=0).astype(np.float64)  # [N,3]
+                for i in range(pc_stack.shape[0]):
+                    temp_pose = np.eye(4)
+                    temp_pose[:3, 3] = pc_stack[i]
+                    temp_pose[:3, :3] = all_poses_np[0][:3, :3]
+                    pc_stack[i] = (np.linalg.inv(extrinsics[0]) @ extrinsics[i] @ temp_pose)[:3,3]
+                pw_stack = (R_cw @ pc_stack.T).T + t_w[None, :]              # [N,3]
+                p0_w = pw_stack[0].copy()
+                # assemble simple Δ(t): rotation = I, translation = p_w(t) - p_w(0)
+                simple_rel = np.repeat(np.eye(4, dtype=np.float32)[None, ...], N, axis=0)  # [N,4,4]
+                simple_rel[:, :3, 3] = (pw_stack - p0_w[None, :]).astype(np.float32)
 
-            hybrid_rel = rel_w.copy().astype(np.float32)
-            hybrid_rel[:, :3, 3] = t_hyb
-            hybrid_rel[0] = np.eye(4, dtype=np.float32)        # exact identity at t=0
+                simple_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_simple_trajs.npy"
+                np.save(simple_save_path, simple_rel.astype(np.float32))
+                scene_dict["info"]["objects"][obj_id]["simple_trajs"] = str(simple_save_path)
+                logging.info(f"[object {oid}] simple trajs(mask+depth only) -> {simple_save_path}")
 
-            hybrid_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_hybrid_trajs.npy"
-            np.save(hybrid_save_path, hybrid_rel.astype(np.float32))
-            scene_dict["info"]["objects"][obj_id]["hybrid_trajs"] = str(hybrid_save_path)
-            logging.info(f"[object {oid}] hybrid trajs(fd-rot + mask/depth-trans) -> {hybrid_save_path}")
+                ####  add hybrid trajs (using object center + foundation pose object headings) ####
+                logging.info(f"[object] oid={oid}, name={oname} - hybrid trajs (fd-rot + mask/depth-trans)")
+                R_fd = rel_w[:, :3, :3].astype(np.float64)        # [N,3,3]
+                t_hyb = np.stack([pw_stack[i] - (R_fd[i] @ p0_w) for i in range(N)], axis=0).astype(np.float32)  # [N,3]
 
+                hybrid_rel = rel_w.copy().astype(np.float32)
+                hybrid_rel[:, :3, 3] = t_hyb
+                hybrid_rel[0] = np.eye(4, dtype=np.float32)        # exact identity at t=0
+
+                hybrid_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_hybrid_trajs.npy"
+                np.save(hybrid_save_path, hybrid_rel.astype(np.float32))
+                scene_dict["info"]["objects"][obj_id]["hybrid_trajs"] = str(hybrid_save_path)
+                logging.info(f"[object {oid}] hybrid trajs(fd-rot + mask/depth-trans) -> {hybrid_save_path}")
 
             if tmpdir is not None and Path(tmpdir).exists():
                 shutil.rmtree(tmpdir, ignore_errors=True)

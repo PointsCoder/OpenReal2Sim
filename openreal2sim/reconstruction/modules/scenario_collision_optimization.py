@@ -46,6 +46,110 @@ def ensure_unit_normal(n):
         raise ValueError("Plane normal has near-zero length.")
     return n / norm
 
+def sort_object(obj_dict):
+    z_mins = []
+    for oid, obj_info in obj_dict.items():
+        mesh_path = obj_info['starting_mesh']
+        mesh = trimesh_single(mesh_path)
+        z_min = mesh.bounds[0][2]
+        z_mins.append((oid, z_min))
+    z_mins_sorted = sorted(z_mins, key=lambda x: x[1])
+    sorted_oids = [oid for oid, _ in z_mins_sorted]
+    return sorted_oids
+
+def sort_object_ending(obj_dict):
+    z_mins = []
+    for oid, obj_info in obj_dict.items():
+        if obj_info['type'] == "static":
+            mesh_path = obj_info['starting_mesh']
+        else:
+            mesh_path = obj_info['ending_mesh']
+        mesh = trimesh_single(mesh_path)
+        z_min = mesh.bounds[0][2]
+        z_mins.append((oid, z_min))
+    z_mins_sorted = sorted(z_mins, key=lambda x: x[1])
+    sorted_oids = [oid for oid, _ in z_mins_sorted]
+    return sorted_oids
+
+def recompute_necessary(obj_dict, obj_id):
+    """
+    Check if any other object's x-y bbox covers part of the current object's x-y bbox,
+    and that object's z_min > given object's z_min.
+
+    Args:
+        obj_dict (dict): mapping oid -> object info dict. Must contain "fdpose" key for each object.
+
+        obj_id (any): the id of the target object.
+
+    Returns:
+        results: list of oids that satisfy the conditions.
+    """
+    current_mesh = trimesh_single(obj_dict[obj_id]['starting_mesh'])
+    current_bounds = current_mesh.bounds
+    current_xmin, current_ymin, current_zmin = current_bounds[0]
+    current_xmax, current_ymax, _ = current_bounds[1]
+
+    results = []
+    for oid, obj_info in obj_dict.items():
+        if oid == obj_id:
+            continue
+        other_mesh = trimesh_single(obj_info['starting_mesh'])
+        other_bounds = other_mesh.bounds
+        oxmin, oymin, ozmin = other_bounds[0]
+        oxmax, oymax, _ = other_bounds[1]
+
+        # Check if x-y bbox overlaps
+        x_overlap = not (oxmax < current_xmin or oxmin > current_xmax)
+        y_overlap = not (oymax < current_ymin or oymin > current_ymax)
+        xy_overlap = x_overlap and y_overlap
+
+        # Check z_min
+        if xy_overlap and ozmin < current_zmin:
+            results.append(oid)
+    return results
+
+def recompute_necessary_ending(obj_dict, obj_id):
+    """
+    Check if any other object's x-y bbox covers part of the current object's x-y bbox,
+    and that object's z_min > given object's z_min.
+
+    Args:
+        obj_dict (dict): mapping oid -> object info dict. Must contain "fdpose" key for each object.
+
+        obj_id (any): the id of the target object.
+
+    Returns:
+        results: list of oids that satisfy the conditions.
+    """
+    
+    current_mesh = trimesh_single(obj_dict[obj_id]['ending_mesh'])
+    current_bounds = current_mesh.bounds
+    current_xmin, current_ymin, current_zmin = current_bounds[0]
+    current_xmax, current_ymax, _ = current_bounds[1]
+
+    results = []
+    for oid, obj_info in obj_dict.items():
+        if oid == obj_id:
+            continue
+        if obj_info['type'] == "static":
+            mesh_path = obj_info['starting_mesh_optimized']
+        else:
+            mesh_path = obj_info['ending_mesh']
+        other_mesh = trimesh_single(mesh_path)
+        other_bounds = other_mesh.bounds
+        oxmin, oymin, ozmin = other_bounds[0]
+        oxmax, oymax, _ = other_bounds[1]
+
+        # Check if x-y bbox overlaps
+        x_overlap = not (oxmax < current_xmin or oxmin > current_xmax)
+        y_overlap = not (oymax < current_ymin or oymin > current_ymax)
+        xy_overlap = x_overlap and y_overlap
+
+        # Check z_min
+        if xy_overlap and ozmin < current_zmin:
+            results.append(oid)
+    return results
+
 # ──────────────── Kaolin SDF ──────────────── #
 @torch.no_grad()
 def build_sdf_kaolin(mesh_path, res=192, margin=0.02, device="cuda"):
@@ -97,7 +201,7 @@ def sdf_query(vol, origin, vox, pts):
 def optimise_sdf_z(mesh_path, sdf_pack,
                    n_sample=5000, lr=2e-3,
                    n_iter=4000, max_step=1e-3,
-                   clearance=0.004):
+                   clearance=0.004, force_on_ground = False):
     vol, origin, vox = sdf_pack
     device = vol.device
     mesh = trimesh_single(mesh_path)
@@ -125,16 +229,24 @@ def optimise_sdf_z(mesh_path, sdf_pack,
     moved = V + torch.tensor([0.0, 0.0, 1.0], device=device) * tz.detach()
     sdf_vals = sdf_query(vol, origin, vox, moved)
     min_dist = sdf_vals.min().item()
-    if min_dist < clearance:
+    if force_on_ground:
+        #if min_dist < clearance:
         dz_extra = clearance - min_dist
         print(f"Applying extra clearance dz={dz_extra:.4f}")
         moved[:, 2] += dz_extra
+    else:
+        if min_dist < clearance + 0.01:
+            dz_extra = clearance - min_dist
+            print(f"Applying extra clearance dz={dz_extra:.4f}")
+            moved[:, 2] += dz_extra
+        else:
+            dz_extra = 0.0
 
     mesh.vertices = moved.cpu().numpy()
-    return mesh
+    return mesh, dz_extra
 
 # ──────────────── Plane-based lift ──────────────── #
-def refine_by_plane_clearance(mesh_path, plane_point, plane_normal, clearance=0.004):
+def refine_by_plane_clearance(mesh_path, plane_point, plane_normal, clearance=0.004, force_on_ground = False):
     """
     Move the entire mesh along plane_normal so that all vertices satisfy:
         n · (v - p0) >= clearance
@@ -147,14 +259,21 @@ def refine_by_plane_clearance(mesh_path, plane_point, plane_normal, clearance=0.
 
     dists = (V - p0) @ n
     d_min = float(dists.min())
-    if d_min < clearance:
+    if not force_on_ground:
+        if d_min < clearance:
+            delta = (clearance - d_min) * n
+            V = V + delta
+            mesh.vertices = V
+            print(f"lifted by {np.linalg.norm(delta):.6f} along normal")
+        else:
+            delta = 0.0
+    else:
         delta = (clearance - d_min) * n
         V = V + delta
         mesh.vertices = V
         print(f"lifted by {np.linalg.norm(delta):.6f} along normal")
-    else:
-        print("already above plane with required clearance")
-    return mesh
+    
+    return mesh, delta
 
 # ──────────────── main function ──────────────── #
 def scenario_collision_optimization(keys, key_scene_dicts, key_cfgs):
@@ -174,29 +293,44 @@ def scenario_collision_optimization(keys, key_scene_dicts, key_cfgs):
             sdf_t, org_t, vox_t = build_sdf_kaolin(background_mesh_path, res=sdf_res)
             sdf_t, org_t, vox_t = sdf_t.cuda(), org_t.cuda(), vox_t.cuda()
         elif mode == "plane":
-            plane_sim = scene_dict["info"]["groundplane_in_sim"]
+            plane_sim = scene_dict["info"]["groundplane_in_cam"]
             p0 = plane_sim["point"]
             n  = plane_sim["normal"]
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
+        obj_list = sort_object(scene_dict["info"]["objects"])
         # per-object refine
-        for oid, obj in scene_dict["info"]["objects"].items():
+        for oid in obj_list:
+            obj = scene_dict["info"]["objects"][oid]
             name = obj["name"]
             print(f"[Info] [{key}] Refining {oid}_{name}...")
-            in_path = obj["fdpose"]
-
-            if mode == "sdf":
-                refined = optimise_sdf_z(in_path, (sdf_t, org_t, vox_t), clearance=clearance)
-            elif mode == "plane":
-                refined = refine_by_plane_clearance(in_path, p0, n, clearance=clearance)
+            in_path = obj["starting_mesh"]
+            necessary_oids = recompute_necessary(scene_dict["info"]["objects"], oid)
+            if mode == "sdf" and len(necessary_oids) > 0: 
+                background_mesh = trimesh_single(scene_dict["info"]["background"]["registered"])
+                for nid in necessary_oids:
+                    obj_mesh = scene_dict["info"]["objects"][nid]["starting_mesh_optimized"]
+                    background_mesh += trimesh_single(obj_mesh)
+                temp_mesh_path = base_dir / Path(f"outputs/{key}/reconstruction/scenario") / f"temp_mesh_{nid}.glb"
+                background_mesh.export(str(temp_mesh_path)) 
+                necessary_sdf_t, necessary_org_t, necessary_vox_t = build_sdf_kaolin(temp_mesh_path, res=sdf_res)
+                refined, trans = optimise_sdf_z(temp_mesh_path, (necessary_sdf_t, necessary_org_t, necessary_vox_t), clearance=clearance, force_on_ground=True)
+                os.remove(temp_mesh_path)
             else:
-                raise ValueError(f"Unknown mode: {mode}")
-
+                if mode == "sdf":
+                    refined, trans = optimise_sdf_z(in_path, (sdf_t, org_t, vox_t), clearance=clearance)
+                elif mode == "plane":
+                    refined, trans = refine_by_plane_clearance(in_path, p0, n, clearance=clearance)
+                else:
+                    raise ValueError(f"Unknown mode: {mode}")
+                    
             out_path = Path(in_path).parent / f"{oid}_{name}_optimized.glb"
             refined.export(str(out_path))
             obj["optimized"] = str(out_path)
-
+            ###  this should be added to the poses. I'm nor sure whether to do this directly to the pose. 
+            obj["optimized_trans_start"] = trans
+            obj["abs_trajs"][0][2,3] += trans
             # update AABB stats
             bounds = trimesh_single(str(out_path)).bounds
             obj["object_min"]    = bounds[0].tolist()
@@ -204,6 +338,51 @@ def scenario_collision_optimization(keys, key_scene_dicts, key_cfgs):
             obj["object_center"] = (0.5 * (bounds[0] + bounds[1])).tolist()
             print(f"[Info] [{key}] collision optimized object is saved to {out_path}")
 
+            # update scene_dict
+            scene_dict["info"]["objects"][oid] = obj
+            
+        obj_list_ending = sort_object_ending(scene_dict["info"]["objects"])
+        for oid in obj_list_ending:
+            if obj["type"] == "static":
+                continue
+            obj = scene_dict["info"]["objects"][oid]
+            name = obj["name"]
+            print(f"[Info] [{key}] Refining {oid}_{name}...")
+            in_path = obj["ending_mesh"]
+            necessary_oids = recompute_necessary_ending(scene_dict["info"]["objects"], oid)
+            if mode == "sdf" and len(necessary_oids) > 0: 
+                background_mesh = trimesh_single(scene_dict["info"]["background"]["registered"])
+                for nid in necessary_oids:
+                    obj_mesh = scene_dict["info"]["objects"][nid]["ending_mesh_optimized"]
+                    background_mesh += trimesh_single(obj_mesh)
+                temp_mesh_path = base_dir / Path(f"outputs/{key}/reconstruction/scenario") / f"temp_mesh_{nid}.glb"
+                background_mesh.export(str(temp_mesh_path)) 
+                necessary_sdf_t, necessary_org_t, necessary_vox_t = build_sdf_kaolin(temp_mesh_path, res=sdf_res)
+                refined, trans = optimise_sdf_z(temp_mesh_path, (necessary_sdf_t, necessary_org_t, necessary_vox_t), clearance=clearance)
+                os.remove(temp_mesh_path)
+            else:
+                if mode == "sdf":
+                    refined, trans = optimise_sdf_z(in_path, (sdf_t, org_t, vox_t), clearance=clearance)
+                elif mode == "plane":
+                    refined, trans = refine_by_plane_clearance(in_path, p0, n, clearance=clearance)
+                else:
+                    raise ValueError(f"Unknown mode: {mode}")
+                    
+
+            ###  this should be added to the poses. I'm nor sure whether to do this directly to the pose. 
+            out_path = Path(in_path).parent / f"{oid}_{name}_optimized_ending.glb"
+            refined.export(str(out_path))
+            obj["optimized_trans_ending"] = trans
+            obj["abs_trajs"][-1][2,3] += trans
+            # update AABB stats
+            bounds = trimesh_single(str(out_path)).bounds
+            obj["object_min_end"]    = bounds[0].tolist()
+            obj["object_max_end"]    = bounds[1].tolist()
+            obj["object_center_end"] = (0.5 * (bounds[0] + bounds[1])).tolist()
+            print(f"[Info] [{key}] collision optimized object is saved to {out_path}")
+
+            for i in range(len(obj["abs_trajs"])):
+                obj["rel_trajs"][i] = obj["abs_trajs"][i] @ np.linalg.inv(obj["abs_trajs"][0])
             # update scene_dict
             scene_dict["info"]["objects"][oid] = obj
 
@@ -216,7 +395,6 @@ def scenario_collision_optimization(keys, key_scene_dicts, key_cfgs):
         merged = base_dir / Path(f"outputs/{key}/reconstruction/scenario") / "scene_optimized.glb"
         scene.export(str(merged))
         scene_dict["info"]["scene_mesh"]["optimized"] = str(merged)
-        key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)
     
