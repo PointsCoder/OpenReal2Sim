@@ -14,7 +14,9 @@ services:
               count: all
               capabilities: [ gpu ]
     environment:
-      - Home=/tmp
+      - HOME=/tmp
+      - USER=dev
+      - VSCODE_SERVER_DIR=/tmp/.vscode-server
     working_dir: /app
     volumes:
       - /etc/passwd:/etc/passwd:ro
