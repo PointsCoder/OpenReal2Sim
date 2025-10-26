@@ -263,22 +263,25 @@ def cb_delete(oid_txt:str):
     return f"🗑️ Deleted oid {oid} (appeared in {cnt} frames)", render(S["cur"])
 
 def cb_prop():
-    cur_idx=S.get("cur",0); cur_objs=S["mask_dict"].get(cur_idx,{})
-    if not cur_objs: return "⚠️ No confirmed objects in current frame", render(cur_idx)
-    seeds=[(oid,o["mask"]) for oid,o in cur_objs.items()]
-    state=video_pred.init_state(video_path=str(S["resized_dir"]))
-    for oid,m in seeds: video_pred.add_new_mask(state,cur_idx,oid,m)
-    T=len(S["frames"]); allm={fi:{} for fi in range(T)}
-    for fi,ids,log in video_pred.propagate_in_video(state):
-        for ii,oid in enumerate(ids): allm[fi][oid]=(log[ii]>0).cpu().numpy()
-    for fi,objs in allm.items():
-        for oid,m in objs.items():
-            bbox=sv.mask_to_xyxy(np.squeeze(m)[None])[0]
-            name=S["mask_dict"][cur_idx][oid]["name"]
-            add_mask_unique(fi,name,bbox,np.squeeze(m),iou_thr=.99,oid=oid)
-    save_mask_dict(OUT_ROOT/S["key"],S["mask_dict"])
+    frame_index=S.get("cur",0)
+    current_objects=S["mask_dict"].get(frame_index, {})
+    preprocess = {"mask_dict": S["mask_dict"], "resized_dir": S["resized_dir"], "frames": S["frames"], "key": S["key"]}
+    
+    if not current_objects: return "⚠️ No confirmed objects in current frame", render(frame_index)
+    
+    save_keys = {"mask_dict", "resized_dir", "frames", "key"}
 
-    return "✅ Propagation finished and saved", render(cur_idx)
+    first_frame_dict = {
+        key: S[key] 
+        for key in save_keys 
+        if key in S 
+    }
+
+    save_path = OUT_ROOT/S["key"]/"scene/first_scene.pkl"
+    
+    with open(save_path, "wb") as f:
+        pickle.dump(first_frame_dict, f)
+    return "✅ Masks Saved", render(frame_index)
 
 # ────────── GUI ──────────
 css_prevent_image_drag = """
@@ -310,7 +313,7 @@ with gr.Blocks(title="Grounded-SAM-2 Annotator", css=css_prevent_image_drag) as 
     slider = gr.Slider(0,1,1,label="Frame",interactive=False)
     imgbox = gr.Image(type="numpy",label="Preview", elem_id="sam-image-box")
 
-    prop_btn, logbox = gr.Button("PROPAGATE & SAVE"), gr.Textbox(label="Log")
+    prop_btn, logbox = gr.Button("SAVE MASKS"), gr.Textbox(label="Log")
 
     # Event binding
     load_btn.click(cb_load_key, key_in, [imgbox,slider,logbox])

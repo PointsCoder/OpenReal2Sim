@@ -30,7 +30,9 @@ We first need to segment the objects and the ground (for gravity alignment) in t
 
 With the object and ground masks, we can reconstruct the 3D meshes of each object and the background in the following steps.
 
-We provide an interactive object segmentation tool using the `tools/segmentation_annotator.py` script.
+We two object segmentation tools
+1.  `tools/segmentation_annotator.py` to segment and propagate through the video.
+2. `tools/first_frame_annotator.py` to segment the first frame. (Propagation done in the reconstruction stage)
 
 ### background pixel inpainting
 
