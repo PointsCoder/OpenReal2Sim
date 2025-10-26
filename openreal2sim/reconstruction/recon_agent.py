@@ -55,7 +55,7 @@ class ReconAgent:
         print('[Info] Scene JSON files saved.')
 
     def mask_propagation(self):
-        from modules.mask_propagation import mask_propagation
+        from tools.segmentation_mask_propagation import mask_propagation
         mask_propagation(self.keys)
         print("[Info] Mask propagation completed.")
 
