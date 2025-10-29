@@ -18,11 +18,12 @@ def sample_surface(glb_path: str, n_points: int = 5000) -> np.ndarray:
     pts, _ = trimesh.sample.sample_surface(mesh, n_points)
     return np.array(pts, dtype=np.float32)
 
-def crop_pointcloud_quadrant(points,
-                             quadrant = 1,
-                             axes = "xy",
-                             ):
 
+def crop_pointcloud_quadrant(
+    points,
+    quadrant=1,
+    axes="xy",
+):
     # Map axis letters to indices
     axis_index = {"x": 0, "y": 1, "z": 2}
     a1, a2 = axes[0], axes[1]
@@ -32,12 +33,12 @@ def crop_pointcloud_quadrant(points,
 
     c1, c2 = center_full[idx1], center_full[idx2]
 
-    ge = np.greater        # >
+    ge = np.greater  # >
 
     # Build boolean masks for the four quadrants
     # Right/Left split along axis1, Top/Bottom split along axis2
     right = ge(points[:, idx1], c1)  # axis1 >= c1  (or > c1)
-    top   = ge(points[:, idx2], c2)  # axis2 >= c2  (or > c2)
+    top = ge(points[:, idx2], c2)  # axis2 >= c2  (or > c2)
 
     # Quadrant mapping per convention documented above
     if quadrant == 1:
@@ -66,7 +67,10 @@ def read_score_safe(gg, i: int, fallback: float) -> float:
     except Exception:
         return fallback
 
-def grasps_to_pointcloud(gg, pts_per_gripper: int = 400, color=(1.0, 0.0, 0.0)) -> o3d.geometry.PointCloud:
+
+def grasps_to_pointcloud(
+    gg, pts_per_gripper: int = 400, color=(1.0, 0.0, 0.0)
+) -> o3d.geometry.PointCloud:
     """Sample each gripper mesh to points and tint with color."""
     geoms = gg.to_open3d_geometry_list()  # list of TriangleMesh
     out = o3d.geometry.PointCloud()
@@ -78,37 +82,49 @@ def grasps_to_pointcloud(gg, pts_per_gripper: int = 400, color=(1.0, 0.0, 0.0)) 
         )
     return out
 
-def save_vis_ply(points_xyz: np.ndarray, gg, save_path: Path,
-                 pts_per_gripper: int = 400,
-                 cloud_color=(0.0, 1.0, 0.0)):
+
+def save_vis_ply(
+    points_xyz: np.ndarray,
+    gg,
+    save_path: Path,
+    pts_per_gripper: int = 400,
+    cloud_color=(0.0, 1.0, 0.0),
+):
     """Write a PLY: green object cloud + red ALL grasp candidates."""
     cloud = o3d.geometry.PointCloud()
     cloud.points = o3d.utility.Vector3dVector(points_xyz.astype(np.float32))
     cloud.colors = o3d.utility.Vector3dVector(
         np.tile(np.array(cloud_color, dtype=np.float32), (len(cloud.points), 1))
     )
-    grasp_pcd = grasps_to_pointcloud(gg, pts_per_gripper=pts_per_gripper, color=(1.0, 0.0, 0.0))
+    grasp_pcd = grasps_to_pointcloud(
+        gg, pts_per_gripper=pts_per_gripper, color=(1.0, 0.0, 0.0)
+    )
     merged = cloud + grasp_pcd
     save_path.parent.mkdir(parents=True, exist_ok=True)
     o3d.io.write_point_cloud(str(save_path), merged)
     print(f"[VIS] saved {save_path}")
 
-def process_one_object(gg_net: MyGraspNet,
-                       obj_idx: int,
-                       obj_dict: dict,
-                       proposals_dir: Path,
-                       keep: int | None,
-                       nms: bool,
-                       n_points: int,
-                       overwrite: bool,
-                       vis_pts_per_gripper: int = 400) -> str | None:
+
+def process_one_object(
+    gg_net: MyGraspNet,
+    obj_idx: int,
+    obj_dict: dict,
+    proposals_dir: Path,
+    keep: int | None,
+    nms: bool,
+    n_points: int,
+    overwrite: bool,
+    vis_pts_per_gripper: int = 400,
+) -> str | None:
     """
     Build full point cloud for one object, run GraspNet, export all candidates to NPZ,
     save a PLY visualization, and return the NPZ path (string).
     """
     glb_path = obj_dict["optimized"]
     if glb_path is None or (not os.path.exists(glb_path)):
-        print(f"[WARN][{obj_dict['oid']}_{obj_dict['name']}] mesh not found -> {glb_path}")
+        print(
+            f"[WARN][{obj_dict['oid']}_{obj_dict['name']}] mesh not found -> {glb_path}"
+        )
         return None
 
     npy_path = proposals_dir / f"{obj_dict['oid']}_{obj_dict['name']}_grasp.npy"
@@ -141,16 +157,21 @@ def process_one_object(gg_net: MyGraspNet,
         gg.grasp_group_array[g_i][4:13] = rotation.reshape(-1)
 
     gg.save_npy(npy_path)
-    print(f"[OK][{obj_dict['oid']}_{obj_dict['name']}] saved {len(gg.grasp_group_array)} -> {npy_path.name}")
+    print(
+        f"[OK][{obj_dict['oid']}_{obj_dict['name']}] saved {len(gg.grasp_group_array)} -> {npy_path.name}"
+    )
 
     return str(npy_path.resolve())
 
-def run_for_key(key: str,
-                n_points: int,
-                keep: int | None,
-                nms: bool,
-                overwrite: bool,
-                vis_pts_per_gripper: int):
+
+def run_for_key(
+    key: str,
+    n_points: int,
+    keep: int | None,
+    nms: bool,
+    overwrite: bool,
+    vis_pts_per_gripper: int,
+):
     base_dir = Path.cwd()
     out_dir = base_dir / "outputs"
     scene_json = out_dir / key / "scene" / "scene.json"
@@ -189,15 +210,25 @@ def run_for_key(key: str,
             scene_dict["objects"][i]["grasps"] = npy_path
             with open(scene_json, "w") as f:
                 json.dump(scene_dict, f, indent=2)
-            print(f"[OK][{key}] scene.json updated with 'grasps' for {obj['oid']}_{obj['name']}.")
+            print(
+                f"[OK][{key}] scene.json updated with 'grasps' for {obj['oid']}_{obj['name']}."
+            )
+
 
 def main():
-    parser = argparse.ArgumentParser("Export grasp proposals for ALL objects (batch over keys) and write paths into scene.json")
+    parser = argparse.ArgumentParser(
+        "Export grasp proposals for ALL objects (batch over keys) and write paths into scene.json"
+    )
     parser.add_argument("--n_points", type=int, default=100000)
-    parser.add_argument("--keep", type=int, default=None)     # set None to keep all
+    parser.add_argument("--keep", type=int, default=None)  # set None to keep all
     parser.add_argument("--nms", type=bool, default=True)
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--vis_pts_per_gripper", type=int, default=400, help="points sampled per gripper mesh for PLY")
+    parser.add_argument(
+        "--vis_pts_per_gripper",
+        type=int,
+        default=400,
+        help="points sampled per gripper mesh for PLY",
+    )
     args = parser.parse_args()
 
     # load keys from YAML
@@ -215,6 +246,7 @@ def main():
             overwrite=args.overwrite,
             vis_pts_per_gripper=args.vis_pts_per_gripper,
         )
+
 
 if __name__ == "__main__":
     main()

@@ -41,6 +41,7 @@ from dataclasses import dataclass, MISSING
 from dataclasses import dataclass
 from typing import Optional, List, Dict
 
+
 @dataclass
 class SceneCtx:
     cam_dict: Dict
@@ -93,12 +94,15 @@ def _deep_update(dst: dict, src: dict | None) -> dict:
             out[k] = v
     return out
 
+
 # --------------------------------------------------------------------------------------
 # Camera / Robot builders (use _SCENE_CTX)
 # --------------------------------------------------------------------------------------
 def create_camera():
     """Return a CameraCfg using the global SceneCtx."""
-    assert _SCENE_CTX is not None, "init_scene_configs/init_scene_from_scene_dict must be called first."
+    assert _SCENE_CTX is not None, (
+        "init_scene_configs/init_scene_from_scene_dict must be called first."
+    )
     C = _SCENE_CTX.cam_dict
     width = int(C["width"])
     height = int(C["height"])
@@ -117,7 +121,8 @@ def create_camera():
         colorize_instance_id_segmentation=False,
         spawn=sim_utils.PinholeCameraCfg.from_intrinsic_matrix(
             intrinsic_matrix=[fx, 0, cx, 0, fy, cy, 0, 0, 1],
-            width=width, height=height,
+            width=width,
+            height=height,
         ),
         width=width,
         height=height,
@@ -126,7 +131,9 @@ def create_camera():
 
 def create_robot():
     """Return a configured Franka Panda config using the global SceneCtx."""
-    assert _SCENE_CTX is not None, "init_scene_configs/init_scene_from_scene_dict must be called first."
+    assert _SCENE_CTX is not None, (
+        "init_scene_configs/init_scene_from_scene_dict must be called first."
+    )
     robot = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
     robot.init_state.pos = tuple(_SCENE_CTX.robot_pos)
     robot.init_state.rot = tuple(_SCENE_CTX.robot_rot)
@@ -142,7 +149,9 @@ def build_tabletop_scene_cfg():
       - background, camera, robot
       - object_00, object_01, ... based on _SCENE_CTX.obj_paths
     """
-    assert _SCENE_CTX is not None, "init_scene_configs/init_scene_from_scene_dict must be called first."
+    assert _SCENE_CTX is not None, (
+        "init_scene_configs/init_scene_from_scene_dict must be called first."
+    )
     C = _SCENE_CTX
 
     base_attrs = {}
@@ -154,7 +163,9 @@ def build_tabletop_scene_cfg():
     )
 
     _bg = _deep_update(DEFAULT_BG_PHYSICS, C.bg_physics)
-    _objs = [_deep_update(DEFAULT_OBJ_PHYSICS, obj_physics) for obj_physics in C.obj_physics]
+    _objs = [
+        _deep_update(DEFAULT_OBJ_PHYSICS, obj_physics) for obj_physics in C.obj_physics
+    ]
 
     bg_mass_cfg = schemas_cfg.MassPropertiesCfg(**_bg["mass_props"])
     bg_rigid_cfg = schemas_cfg.RigidBodyPropertiesCfg(**_bg["rigid_props"])
@@ -166,7 +177,7 @@ def build_tabletop_scene_cfg():
         spawn=sim_utils.GroundPlaneCfg(),
     )
     z = float(C.ground_z if C.ground_z is not None else 0.0)
-    base_attrs["backgroundn"].init_state.pos = (0.0, 0.0, z-0.2)
+    base_attrs["backgroundn"].init_state.pos = (0.0, 0.0, z - 0.2)
 
     # ---------- Background ----------
     if C.use_ground_plane:
@@ -194,14 +205,17 @@ def build_tabletop_scene_cfg():
 
     # Placeholder entries to be replaced in __post_init__
     base_attrs["camera"] = CameraCfg(prim_path="{ENV_REGEX_NS}/Camera")
-    base_attrs["robot"] = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    base_attrs["robot"] = FRANKA_PANDA_HIGH_PD_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot"
+    )
 
     # Instantiate objects
     for i, usd_path in enumerate(C.obj_paths):
-
         obj_mass_cfg = schemas_cfg.MassPropertiesCfg(**_objs[i]["mass_props"])
         obj_rigid_cfg = schemas_cfg.RigidBodyPropertiesCfg(**_objs[i]["rigid_props"])
-        obj_colli_cfg = schemas_cfg.CollisionPropertiesCfg(**_objs[i]["collision_props"])
+        obj_colli_cfg = schemas_cfg.CollisionPropertiesCfg(
+            **_objs[i]["collision_props"]
+        )
 
         obj_template = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Object",
@@ -230,8 +244,11 @@ def build_tabletop_scene_cfg():
     attrs["__doc__"] = "Auto-generated multi-object TableTop scene cfg."
     attrs["__post_init__"] = __post_init__
 
-    DynamicSceneCfg = configclass(type("TableTopSceneCfgAuto", (InteractiveSceneCfg,), attrs))
+    DynamicSceneCfg = configclass(
+        type("TableTopSceneCfgAuto", (InteractiveSceneCfg,), attrs)
+    )
     return DynamicSceneCfg
+
 
 # --------------------------------------------------------------------------------------
 # Build cam_dict & init directly from a raw scene dict
@@ -259,12 +276,15 @@ def init_scene_from_scene_dict(
     elif isinstance(obj_physics, dict):
         obj_physics = [obj_physics for _ in scene["objects"].values()]
     elif isinstance(obj_physics, list):
-        assert len(obj_physics) == len(scene["objects"]), \
+        assert len(obj_physics) == len(scene["objects"]), (
             "obj_physics must be a list of the same length as scene['objects'] if provided."
+        )
         pass
     else:
         raise TypeError("obj_physics must be None, a dict, or a list of dicts.")
-    bg_physics = scene["background"].get("physics", None) if bg_physics is None else bg_physics
+    bg_physics = (
+        scene["background"].get("physics", None) if bg_physics is None else bg_physics
+    )
 
     robot_pos = cfgs["robot_cfg"]["robot_pose"][:3]
     robot_rot = cfgs["robot_cfg"]["robot_pose"][3:]
@@ -274,7 +294,9 @@ def init_scene_from_scene_dict(
         try:
             ground_z = float(scene["plane"]["simulation"]["point"][2])
         except Exception as e:
-            raise ValueError(f"use_ground_plane=True but scene['plane']['simulation'] missing/invalid: {e}")
+            raise ValueError(
+                f"use_ground_plane=True but scene['plane']['simulation'] missing/invalid: {e}"
+            )
 
     # write global ctx (keep old fields the same)
     global _SCENE_CTX
@@ -289,7 +311,6 @@ def init_scene_from_scene_dict(
         use_ground_plane=use_ground_plane,
         ground_z=ground_z,
     )
-
 
     return {
         "cam_dict": cam_dict,
@@ -309,7 +330,9 @@ def _build_manip_env_cfg(scene_cfg_cls, *, num_envs: int, env_spacing: float = 2
     """Return a ManagerBasedRLEnvCfg subclass stitched together from sub-Cfgs."""
     from isaaclab.envs import ManagerBasedRLEnvCfg
     from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
-    from isaaclab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg
+    from isaaclab.envs.mdp.actions.actions_cfg import (
+        DifferentialInverseKinematicsActionCfg,
+    )
 
     @configclass
     class ManipEnvCfg(ManagerBasedRLEnvCfg):
@@ -324,7 +347,7 @@ def _build_manip_env_cfg(scene_cfg_cls, *, num_envs: int, env_spacing: float = 2
 
         def __post_init__(self):
             # ---- Sim & PhysX ----
-            self.decimation = 2 #4
+            self.decimation = 2  # 4
             self.episode_length_s = 5.0
             self.sim.dt = 0.01
             self.sim.render_interval = self.decimation
@@ -349,7 +372,9 @@ def _build_manip_env_cfg(scene_cfg_cls, *, num_envs: int, env_spacing: float = 2
                     command_type="pose", use_relative_mode=True, ik_method="dls"
                 ),
                 scale=0.5,
-                body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(pos=[0.0, 0.0, 0.107]),
+                body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(
+                    pos=[0.0, 0.0, 0.107]
+                ),
             )
             self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
                 asset_name="robot",
@@ -400,27 +425,37 @@ def make_env(
     env = ManagerBasedRLEnv(cfg=env_cfg)
     return env, env_cfg
 
+
 # --------------------------------------------------------------------------------------
 # Observation/Action/Reward/Termination/Curriculum config classes
 # --------------------------------------------------------------------------------------
 @configclass
 class CommandsCfg:
     """Command terms for the MDP."""
+
     object_pose = mdp.UniformPoseCommandCfg(
         asset_name="robot",
         body_name=MISSING,
         resampling_time_range=(5.0, 5.0),
         debug_vis=False,
         ranges=mdp.UniformPoseCommandCfg.Ranges(
-            pos_x=(0.4, 0.6), pos_y=(-0.25, 0.25), pos_z=(0.25, 0.5),
-            roll=(0.0, 0.0), pitch=(0.0, 0.0), yaw=(0.0, 0.0),
+            pos_x=(0.4, 0.6),
+            pos_y=(-0.25, 0.25),
+            pos_z=(0.25, 0.5),
+            roll=(0.0, 0.0),
+            pitch=(0.0, 0.0),
+            yaw=(0.0, 0.0),
         ),
     )
+
 
 @configclass
 class ActionsCfg:
     """Action specifications for the MDP."""
-    arm_action: mdp.JointPositionActionCfg | mdp.DifferentialInverseKinematicsActionCfg = MISSING  # type: ignore
+
+    arm_action: (
+        mdp.JointPositionActionCfg | mdp.DifferentialInverseKinematicsActionCfg
+    ) = MISSING  # type: ignore
     gripper_action: mdp.BinaryJointPositionActionCfg = MISSING  # type: ignore
 
 
@@ -434,11 +469,37 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.joint_pos)
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel)
-        target_object_position = ObsTerm(func=mdp.generated_commands, params={"command_name": "object_pose"})
+        target_object_position = ObsTerm(
+            func=mdp.generated_commands, params={"command_name": "object_pose"}
+        )
         actions = ObsTerm(func=mdp.last_action)
-        rgb = ObsTerm(func=mdp.image, params={"sensor_cfg": SceneEntityCfg(name="camera"), "data_type": "rgb", "convert_perspective_to_orthogonal": False, "normalize": False})
-        depth = ObsTerm(func=mdp.image, params={"sensor_cfg": SceneEntityCfg(name="camera"), "data_type": "distance_to_image_plane", "convert_perspective_to_orthogonal": False, "normalize": False})
-        segmask = ObsTerm(func=mdp.image, params={"sensor_cfg": SceneEntityCfg(name="camera"), "data_type": "instance_id_segmentation_fast", "convert_perspective_to_orthogonal": False, "normalize": False})
+        rgb = ObsTerm(
+            func=mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg(name="camera"),
+                "data_type": "rgb",
+                "convert_perspective_to_orthogonal": False,
+                "normalize": False,
+            },
+        )
+        depth = ObsTerm(
+            func=mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg(name="camera"),
+                "data_type": "distance_to_image_plane",
+                "convert_perspective_to_orthogonal": False,
+                "normalize": False,
+            },
+        )
+        segmask = ObsTerm(
+            func=mdp.image,
+            params={
+                "sensor_cfg": SceneEntityCfg(name="camera"),
+                "data_type": "instance_id_segmentation_fast",
+                "convert_perspective_to_orthogonal": False,
+                "normalize": False,
+            },
+        )
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -450,27 +511,41 @@ class ObservationsCfg:
 @configclass
 class EventCfg:
     """Configuration for events."""
+
     reset_all = EventTerm(func=mdp.reset_scene_to_default, mode="reset")
 
 
 @configclass
 class RewardsCfg:
     """Reward terms for the MDP (kept simple)."""
+
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
-    joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-1e-4, params={"asset_cfg": SceneEntityCfg("robot")})
+    joint_vel = RewTerm(
+        func=mdp.joint_vel_l2,
+        weight=-1e-4,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
 
 
 @configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
+
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
 
 
 @configclass
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
-    action_rate = CurrTerm(func=mdp.modify_reward_weight, params={"term_name": "action_rate", "weight": -1e-1, "num_steps": 10000})
-    joint_vel = CurrTerm(func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -1e-1, "num_steps": 10000})
+
+    action_rate = CurrTerm(
+        func=mdp.modify_reward_weight,
+        params={"term_name": "action_rate", "weight": -1e-1, "num_steps": 10000},
+    )
+    joint_vel = CurrTerm(
+        func=mdp.modify_reward_weight,
+        params={"term_name": "joint_vel", "weight": -1e-1, "num_steps": 10000},
+    )
 
 
 # Public symbols
