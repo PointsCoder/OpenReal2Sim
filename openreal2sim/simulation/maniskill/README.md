@@ -2,303 +2,87 @@
 
 This module provides a ManiSkill environment that loads reconstructed scenes from the OpenReal2Sim pipeline, enabling robotic manipulation simulation on real-world reconstructed scenes.
 
-## Overview
+## Installation with Docker
 
-The `OpenReal2SimEnv` is a custom ManiSkill environment that:
+The recommended way to set up the environment is by using the provided Dockerfile.
 
-- Loads reconstructed 3D scenes (background and objects) from `scene.json`
-- Configures cameras to match the original scene geometry
-- Provides a Franka Panda robot for manipulation
-- Supports various observation modes (state, RGB-D, etc.)
-- Handles coordinate transformations between OpenCV and SAPIEN/ROS conventions
+### Step 1: Build the Custom Docker Image
 
-## Directory Structure
-
-```
-maniskill/
-├── __init__.py                  # Package initialization
-├── env.py                       # Main environment class
-├── test_env.py                  # Test script
-├── README.md                    # This file
-└── utils/
-    ├── __init__.py
-    ├── scene_loader.py          # Scene configuration loader
-    └── transform_utils.py       # Coordinate transformation utilities
-```
-
-## Installation
-
-### Prerequisites
-
-1. **ManiSkill 3**: Install ManiSkill following the [official documentation](https://maniskill.readthedocs.io/)
+From the root of the OpenReal2Sim repository, run the following command to build the Docker image. The build context is set to the `docker` subdirectory where the Dockerfile and its resources are located.
 
 ```bash
-pip install mani-skill
+docker build -t openreal2sim-maniskill openreal2sim/simulation/maniskill/docker
 ```
 
-2. **Additional Dependencies**:
+### Step 2: Run the Docker Container
+
+Once the image is built, run the container to get an interactive shell. This will mount the current directory into the container at `/app`.
 
 ```bash
-pip install scipy transforms3d
+docker run --gpus all -it --rm -v $(pwd):/app -w /app openreal2sim-maniskill
 ```
 
-### Setup
+You are now inside the container. All subsequent commands should be run from this shell.
 
-The ManiSkill integration is already part of the OpenReal2Sim repository. Simply ensure you're in the project root:
+## Optional: Verify Base ManiSkill Docker
+
+If you encounter issues running the custom container, you can verify that your system is compatible with the base ManiSkill environment. This ensures that your Docker, GPU drivers, and NVIDIA Container Toolkit are set up correctly.
+
+**1. Pull the base image:**
 
 ```bash
-cd /path/to/OpenReal2Sim
+docker pull maniskill/base
 ```
 
-## Usage
-
-### Basic Usage
-
-```python
-import gymnasium as gym
-from openreal2sim.simulation.maniskill import OpenReal2SimEnv
-
-# Create environment
-env = gym.make(
-    "OpenReal2Sim-v0",
-    scene_json_path="outputs/demo_genvideo/scene/scene.json",
-    num_envs=1,
-    obs_mode="rgbd",
-    render_mode="rgb_array"
-)
-
-# Reset environment
-obs, info = env.reset()
-
-# Step through environment
-for _ in range(100):
-    action = env.action_space.sample()
-    obs, reward, terminated, truncated, info = env.step(action)
-
-    if terminated or truncated:
-        obs, info = env.reset()
-
-env.close()
-```
-
-### Running Tests
-
-Test the environment with your reconstructed scene:
+**2. Run a simple demo:**
+This command runs a demo with random actions. A viewer window should appear.
 
 ```bash
-# Test with default scene
-python openreal2sim/simulation/maniskill/test_env.py
-
-# Test with specific scene
-python openreal2sim/simulation/maniskill/test_env.py --scene outputs/demo_image/scene/scene.json
-
-# Quick test (fewer steps)
-python openreal2sim/simulation/maniskill/test_env.py --quick
+docker run --rm -it --gpus all --pid host maniskill/base python -m mani_skill.examples.demo_random_action
 ```
 
-The test script will:
+**3. Run a GPU simulation benchmark:**
+This command tests the GPU simulation performance.
 
-- Create the environment
-- Test reset and step functions
-- Test rendering
-- Validate observation modes
-- Save a test render image
-
-## Key Features
-
-### 1. Scene Loading
-
-The environment automatically loads:
-
-- **Background mesh**: Loaded as a static (kinematic) actor
-- **Object meshes**: Loaded as dynamic actors with physics
-- **Camera configuration**: Matches the original scene's camera parameters
-
-### 2. Coordinate System Transformation
-
-The environment handles the transformation between:
-
-- **OpenCV** (used by OpenReal2Sim): Z forward, X right, Y down
-- **SAPIEN/ROS** (used by ManiSkill): X forward, Y left, Z up
-
-This transformation is applied to:
-
-- Camera extrinsic matrices
-- Object poses (if needed)
-
-### 3. Observation Modes
-
-Supported observation modes:
-
-- `state`: Proprioceptive state + ground truth object poses
-- `rgbd`: RGB-D images from cameras
-- `state_dict`: Dictionary of state observations
-- `pointcloud`: Point cloud observations (if configured)
-
-### 4. Robot Configuration
-
-Default robot: **Franka Panda**
-
-- 7-DOF arm
-- Parallel gripper
-- Configurable initial position
-
-## Configuration
-
-### Environment Parameters
-
-```python
-env = gym.make(
-    "OpenReal2Sim-v0",
-    scene_json_path="path/to/scene.json",  # Required: path to scene.json
-    robot_uids="panda",                     # Robot model
-    num_envs=1,                             # Number of parallel environments
-    obs_mode="rgbd",                        # Observation mode
-    render_mode="rgb_array",                # Render mode
-    robot_init_qpos_noise=0.02,            # Initial joint position noise
-)
+```bash
+docker run --rm -it --gpus all --pid host maniskill/base python -m mani_skill.examples.benchmarking.gpu_sim
 ```
 
-### Scene JSON Format
+## Running Scripts
 
-The environment expects a `scene.json` file with the following structure:
+Here are some examples of how to run the provided scripts to test the environment.
 
-```json
-{
-  "background": {
-    "registered": "path/to/background.glb"
-  },
-  "objects": {
-    "1": {
-      "name": "object_name",
-      "registered": "path/to/object.glb",
-      "object_center": [x, y, z],
-      "grasps": "path/to/grasps.npy"
-    }
-  },
-  "camera": {
-    "width": 848,
-    "height": 480,
-    "fx": 611.23,
-    "fy": 610.76,
-    "cx": 429.54,
-    "cy": 241.20,
-    "camera_opencv_to_world": [[...], [...], [...], [...]]
-  },
-  "groundplane_in_sim": {
-    "point": [x, y, z],
-    "normal": [nx, ny, nz]
-  }
-}
+### 1. Test the Environment
+
+The `visualize_env.py` script loads a scene for inspection.
+
+**Run with a demo scene:**
+
+```bash
+python openreal2sim/simulation/maniskill/scripts/visualize_env.py --scene outputs/demo_image/scene/json/scene.json --mode static
 ```
 
-## Implementation Details
+- Use `--mode static` to inspect the scene.
+- Use `--mode random` to watch the robot perform random actions.
 
-### Key Classes
+### 2. Visualize Grasp Poses
 
-#### `OpenReal2SimEnv`
+The `visualize_grasp_pose.py` script loads pre-computed grasps for an object and displays the best one.
 
-Main environment class inheriting from `mani_skill.envs.sapien_env.BaseEnv`.
+**Run with a demo scene:**
 
-**Key Methods:**
-
-- `_load_scene()`: Load all assets (called once)
-- `_initialize_episode()`: Reset episode state (called every reset)
-- `evaluate()`: Evaluate success/failure conditions
-- `_get_obs_extra()`: Get additional observations
-- `_default_sensor_configs`: Configure cameras
-
-#### `SceneConfig`
-
-Data class holding parsed scene configuration.
-
-#### Utility Functions
-
-- `opencv_to_sapien_pose()`: Transform camera pose
-- `intrinsic_to_fov()`: Convert intrinsics to FOV
-- `load_scene_config()`: Parse scene.json
-
-### Collision Handling
-
-- **Background**: Uses mesh directly (no decomposition)
-- **Objects**: Uses COACD convex decomposition for stable physics
-
-### Camera Configuration
-
-The environment creates cameras that match the original scene:
-
-1. Parse camera intrinsics (fx, fy, cx, cy) and extrinsics
-2. Transform extrinsic matrix from OpenCV to SAPIEN coordinates
-3. Convert intrinsics to FOV
-4. Create `CameraConfig` with matched parameters
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Module not found**: Ensure you're running from the project root
-
-   ```bash
-   cd /path/to/OpenReal2Sim
-   python -m openreal2sim.simulation.maniskill.test_env
-   ```
-
-2. **Mesh files not found**: Check that paths in `scene.json` are correct
-
-   - The loader automatically converts `/app/` paths to local paths
-   - Verify files exist: `ls outputs/demo_genvideo/reconstruction/`
-
-3. **Collision decomposition fails**:
-
-   - This is expected for complex meshes
-   - The code falls back to using the mesh without decomposition
-
-4. **Camera view is wrong**:
-   - Verify coordinate transformation is correct
-   - Check that extrinsic matrix in `scene.json` is valid
-
-## Next Steps
-
-### Motion Planning Integration
-
-After validating the environment, the next steps are:
-
-1. **Grasp Loading**: Load pre-computed grasps from `.npy` files
-2. **Motion Planning**: Integrate a motion planner (mplib, OMPL, or custom)
-3. **Trajectory Execution**: Execute planned trajectories
-4. **Data Collection**: Record robot demonstrations
-
-### Example Task Implementation
-
-You can extend `OpenReal2SimEnv` to create specific tasks:
-
-```python
-@register_env("OpenReal2Sim-PickPlace-v0", max_episode_steps=200)
-class PickPlaceEnv(OpenReal2SimEnv):
-    def evaluate(self):
-        # Check if object is at target location
-        obj_pos = self.object_actors["1"].pose.p
-        target_pos = self.target_position
-        dist = np.linalg.norm(obj_pos - target_pos)
-
-        return {
-            "success": dist < 0.05,
-            "distance": dist,
-        }
-
-    def compute_dense_reward(self, obs, action, info):
-        # Reward based on distance to target
-        obj_pos = self.object_actors["1"].pose.p
-        dist = np.linalg.norm(obj_pos - self.target_position)
-        return -dist
+```bash
+python openreal2sim/simulation/maniskill/scripts/visualize_grasp_pose.py --scene outputs/demo_video/scene/json/scene.json
 ```
 
-## References
+### 3. Run Motion Planning
 
-- [ManiSkill Documentation](https://maniskill.readthedocs.io/)
-- [SAPIEN Documentation](https://sapien.ucsd.edu/)
-- [OpenReal2Sim Repository](https://github.com/PointsCoder/OpenReal2Sim)
+The `run_motion_planning.py` script demonstrates a pick-and-place sequence.
 
-## License
+**Run with visualization:**
 
-This code is part of the OpenReal2Sim project and follows the same license.
+```bash
+python openreal2sim/simulation/maniskill/scripts/run_motion_planning.py --scene outputs/demo_video/scene/json/scene.json --vis
+```
+
+- The `--vis` flag is required to see the robot perform the task.
