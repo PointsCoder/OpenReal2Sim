@@ -2,8 +2,11 @@
 
 Docker provides a sharable environment to run the code in this repository.
 
-The name inside the brackets indicates which container is needed to run which script. These scripts are meant to be run in order.
+We provide separate Dockerfiles for real2sim reconstruction and different robot simulation environments:
+- `docker/real2sim/Dockerfile` — for Real2Sim preprocessing and reconstruction.
+- `docker/isaaclab/Dockerfile` — for IsaacLab simulation and policy training.
 
+Each can be built and run independently depending on your use case.
 
 ## How to Run the Docker Container
 
@@ -47,7 +50,7 @@ You can also build the docker image yourself. Once the container is running, you
 **Build the container image**
    From the repository root:
    ```bash
-   docker compose -f docker/compose.yml build openreal2sim
+   docker compose -f docker/compose.yml build openreal2sim # or isaaclab
    ```
 
 Optionally, you may want to push the image to a remote registry (e.g., GitHub Container Registry) for easier sharing.
@@ -63,7 +66,7 @@ Don't forget to change the visibility of the pushed image to public if you want 
 
 Every time you want to run a script inside the repo, follow these steps:
 
-**Run the container**
+#### Run the real2sim container
    ```bash
    HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run openreal2sim
    ```
@@ -85,8 +88,13 @@ python scripts/installation/install.py
    ```bash
    python <path_to_script>.py
    ```
-   
-**Tips if you are using VSCode**:
+
+#### Run the isaaclab container
+   ```bash
+   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run isaaclab
+   ```
+
+#### Tips if you are using VSCode
 
 1. Install the [Container Tools](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.vscode-containers) extension for setting up the docker container as a remote development environment.
 

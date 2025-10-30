@@ -43,7 +43,7 @@ RUN pip install --no-cache-dir torch-scatter \
     -f https://data.pyg.org/whl/torch-2.5.1+cu118.html
 
 # Rest of the Dependencies
-COPY docker/requirements.docker.txt         /tmp/requirements.docker.txt
+COPY docker/real2sim/requirements.docker.txt         /tmp/requirements.docker.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.docker.txt
 
 

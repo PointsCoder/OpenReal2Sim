@@ -23,7 +23,7 @@ Our framework contains several stages:
 
 Running this scripts for all preprocessing steps:
 ```
-bash scripts/running/preprocess.sh
+python openreal2sim/preprocess/preprocess_manager.py
 ```
 
 ### Reconstruction

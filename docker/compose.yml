@@ -3,7 +3,7 @@ services:
   openreal2sim:
     build:
       context: ..
-      dockerfile: Dockerfile
+      dockerfile: docker/real2sim/Dockerfile
     image: openreal2sim:dev
     # container_name: openreal2sim
     deploy:
@@ -31,8 +31,8 @@ services:
   isaaclab:
     build:
       context: ..
-      dockerfile: Dockerfile_isaac
-    image: isaaclab:latest
+      dockerfile: docker/isaaclab/Dockerfile
+    image: isaaclab:dev
     deploy:
       resources:
         reservations:
