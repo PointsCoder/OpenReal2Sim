@@ -30,7 +30,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile_isaac
-    image: isaaclab:dev
+    image: isaaclab:latest
     deploy:
       resources:
         reservations:
@@ -62,3 +62,5 @@ services:
     stdin_open: true
     tty: true
     command: bash
+
+    runtime: nvidia
