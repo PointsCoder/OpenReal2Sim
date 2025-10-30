@@ -13,10 +13,10 @@ Usage:
 """
 
 import argparse
-from pathlib import Path
-import gymnasium as gym
-
 import sys
+from pathlib import Path
+
+import gymnasium as gym
 
 # Make the project root directory available to the python path
 project_root = Path(__file__).resolve().parents[3]

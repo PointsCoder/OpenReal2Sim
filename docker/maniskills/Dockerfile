@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
+FROM nvidia/cuda:11.8.0-devel-ubuntu20.04
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 ARG PYTHON_VERSION=3.10
 
@@ -12,7 +12,11 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     git \
     htop \
     libegl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    libsm6 \
     libxext6 \
+    libxrender-dev \
     libjpeg-dev \
     libpng-dev  \
     libvulkan1 \
@@ -31,6 +35,8 @@ RUN curl -o ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest
     ~/miniconda.sh -b -p /opt/conda && \
     rm ~/miniconda.sh && \
     /opt/conda/bin/conda init && \
+    /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
     /opt/conda/bin/conda install -y python="$PYTHON_VERSION" && \
     /opt/conda/bin/conda clean -ya
 

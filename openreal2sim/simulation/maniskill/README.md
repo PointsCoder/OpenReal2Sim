@@ -11,7 +11,8 @@ The recommended way to set up the environment is by using the provided Dockerfil
 From the root of the OpenReal2Sim repository, run the following command to build the Docker image. The build context is set to the `docker` subdirectory where the Dockerfile and its resources are located.
 
 ```bash
-docker build -t openreal2sim-maniskill openreal2sim/simulation/maniskill/docker
+cd <your/project/path/to>/docker/maniskills
+DOCKER_BUILDKIT=1 docker build --network=host -t maniskill/base .
 ```
 
 ### Step 2: Run the Docker Container
@@ -19,7 +20,7 @@ docker build -t openreal2sim-maniskill openreal2sim/simulation/maniskill/docker
 Once the image is built, run the container to get an interactive shell. This will mount the current directory into the container at `/app`.
 
 ```bash
-docker run --gpus all -it --rm -v $(pwd):/app -w /app openreal2sim-maniskill
+docker run --gpus all -it --rm -v $(pwd):/home -w /home maniskill/base
 ```
 
 You are now inside the container. All subsequent commands should be run from this shell.
