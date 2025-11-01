@@ -49,3 +49,35 @@ Then, run the whole physical scene reconstruction pipeline:
 ```
 python openreal2sim/reconstruction/recon_agent.py
 ```
+
+### Robotic Simulation
+
+We support importing the reconstructed scenes into different physics simulators and collecting robotic trajectories by cross-embodiment transfer from videos. Please refer to the [simulation](openreal2sim/simulation/) part for more details.
+
+Current supported physics simulators:
+
+- [x] IssacLab ([IssacLab v2.0.2](https://isaac-sim.github.io/IsaacLab/v2.0.2/source/setup/ecosystem.html) & [IssacSim v4.5.0](https://docs.isaacsim.omniverse.nvidia.com/4.5.0/index.html))
+- [x] Maniskills
+- [ ] Mujoco
+
+
+
+## Citation
+If you find this repository useful in your research, please consider citing:
+```
+@misc{openreal2sim,
+  title={OpenReal2Sim: A Toolbox for Real-to-Sim Reconstruction and Robotic Simulation},
+  author={OpenReal2Sim Development Team},
+  year={2025}
+}
+```
+```
+@inproceedings{rola,
+  title={Robot learning from any images},
+  author={Zhao, Siheng and Mao, Jiageng and Chow, Wei and Shangguan, Zeyu and Shi, Tianheng and Xue, Rong and Zheng, Yuxi and Weng, Yijia and You, Yang and Seita, Daniel and others},
+  booktitle={Conference on Robot Learning},
+  pages={4226--4245},
+  year={2025},
+  organization={PMLR}
+}
+```
