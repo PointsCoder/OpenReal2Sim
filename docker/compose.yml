@@ -33,6 +33,7 @@ services:
       context: ..
       dockerfile: docker/isaaclab/Dockerfile
     image: isaaclab:dev
+    user: "${HOST_UID}:${HOST_GID}"
     deploy:
       resources:
         reservations:
@@ -66,3 +67,4 @@ services:
     command: bash
 
     runtime: nvidia
+    network_mode: "host"
