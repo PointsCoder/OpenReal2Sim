@@ -65,7 +65,9 @@ RUN apt-get update && apt-get install -y libboost-dev libboost-system-dev libboo
 COPY third_party/FoundationPose /app/third_party/FoundationPose
 RUN python -m pip install --no-build-isolation --no-cache-dir git+https://github.com/NVlabs/nvdiffrast.git
 RUN python -m pip install --no-cache-dir kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu118.html
-RUN pip install "git+https://github.com/facebookresearch/pytorch3d.git"
+# RUN pip install "git+https://github.com/facebookresearch/pytorch3d.git"
+RUN PIP_NO_BUILD_ISOLATION=1 pip install --no-build-isolation --no-cache-dir \
+    "git+https://github.com/facebookresearch/pytorch3d.git"
 
 RUN cd / && git clone https://github.com/pybind/pybind11 &&\
     cd pybind11 && git checkout v2.10.0 &&\

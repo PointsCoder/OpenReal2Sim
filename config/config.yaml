@@ -15,6 +15,8 @@ global:
   reconstruction:
     gpu: "0" 
 
+  simulation:
+    physics: "default"
 
 # local settings for each key
 local:
@@ -22,8 +24,6 @@ local:
   demo_video:
     preprocess: # stage
       resize: 0.5
-    simulation:
-      physics: "default"
 
   demo_genvideo:
     preprocess: # stage
@@ -35,3 +35,10 @@ local:
       cy: 241.204
       depth_scale: 0.0010000000474974513
       depth_max: 1.6 # this is to clip the real depth for removing outliers
+    
+    simulation:
+      extrinsics: # GT camera to robot base transformation by hand-eye calibration
+        - [ -0.0026171,  -0.9995901,   0.02850952,  0.44341227]
+        - [ -0.9998069,   0.0031708,   0.01939349,  0.03251874]
+        - [ -0.01947593, -0.02845325, -0.99940537,  0.5708384]
+        - [ 0.,          0.,          0.,          1.,       ]
