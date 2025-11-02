@@ -74,6 +74,7 @@ class BaseSimulator:
         scene: Any,  # InteractiveScene
         *,
         args,
+        sim_cfgs: Dict,
         robot_pose: torch.Tensor,
         cam_dict: Dict,
         out_dir: Path,
@@ -84,6 +85,7 @@ class BaseSimulator:
     ) -> None:
         # basic simulation setup
         self.sim: sim_utils.SimulationContext = sim
+        self.sim_cfgs = sim_cfgs
         self.scene = scene
         self.sim_dt = sim.get_physics_dt()
 
@@ -811,7 +813,7 @@ class BaseSimulator:
                     np.save(env_dir / f"{key}.npy", depth_seq)
                 else:
                     np.save(env_dir / f"{key}.npy", arr[:, b])
-
+            json.dump(self.sim_cfgs, open(env_dir / "config.json", "w"), indent=2)
         print("[INFO]: Demonstration is saved at: ", save_root)
 
         demo_root = self.out_dir / "all_demos"

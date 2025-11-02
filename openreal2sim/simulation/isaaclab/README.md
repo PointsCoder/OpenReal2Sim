@@ -18,11 +18,11 @@ This is to allow the container to access the host's X server for IsaacSim GUI.
 
 Then, launch the container:
 ```
-docker compose -p "$USER" -f docker/compose.yml up -d isaaclab 
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml up -d isaaclab 
 ```
 and enter it:
 ```
-docker compose -p "$USER" -f docker/compose.yml exec isaaclab bash
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml exec isaaclab bash
 ```
 
 ## Preprocessing

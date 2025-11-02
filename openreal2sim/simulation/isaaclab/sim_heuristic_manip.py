@@ -61,7 +61,7 @@ class HeuristicManipulation(BaseSimulator):
             device=sim.device
         )
         super().__init__(
-            sim=sim, scene=scene, args=args_cli,
+            sim=sim, sim_cfgs=sim_cfgs, scene=scene, args=args_cli,
             robot_pose=robot_pose, cam_dict=sim_cfgs["cam_cfg"],
             out_dir=out_dir, img_folder=img_folder,
             enable_motion_planning=True,
@@ -310,7 +310,7 @@ class HeuristicManipulation(BaseSimulator):
         delta_batch: np.ndarray          # (B,)
     ) -> dict:
         """
-        返回与 _build_info 相同结构，但每个 env 的抓取都可不同。
+        return grasp info dict for all envs in batch.
         """
         B = self.scene.num_envs
         p_w   = np.asarray(grasp_pos_w_batch,  dtype=np.float32).reshape(B, 3)
@@ -400,28 +400,6 @@ class HeuristicManipulation(BaseSimulator):
                 "chosen_pre": None,
                 "chosen_delta": None,
             }
-
-    def replay_actions(self, actions: np.ndarray):
-        """
-        Replay a sequence of recorded actions: (p[B,3], q[B,4], gripper[B,1])
-        """
-        n_steps = actions.shape[0]
-
-        self.reset()
-        self.wait(gripper_open=True, steps=10)
-
-        for t in range(n_steps):
-            print(f"[INFO] replay step {t}/{n_steps}")
-            act = actions[t:t+1]
-            p_b = torch.as_tensor(act[:, 0:3], dtype=torch.float32, device=self.sim.device)
-            q_b = torch.as_tensor(act[:, 3:7], dtype=torch.float32, device=self.sim.device)
-            g_b = act[:, 7] < 0.5
-            jp, success = self.move_to(p_b, q_b, gripper_open=g_b)
-            if torch.any(success==False):
-                print(f"[ERR] replay step {t} failed.")
-                return False
-            jp = self.wait(gripper_open=g_b, steps=3)
-        return True
 
     def inference(self, std: float = 0.0) -> bool:
         """
@@ -530,8 +508,6 @@ def main():
         # Note: if you set viz_object_goals(), remember to disable gravity and collision for object
         # my_sim.viz_object_goals(sample_step=10, hold_steps=40)
         my_sim.inference()
-        # actions = np.load("outputs/lab16/demos/demo_5/env_000/actions.npy")
-        # my_sim.replay_actions(actions)
 
     env.close()
     simulation_app.close()

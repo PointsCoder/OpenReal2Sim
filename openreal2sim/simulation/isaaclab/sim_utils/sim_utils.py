@@ -133,7 +133,7 @@ viz_obj_physics = {
 
 def robot_placement_candidates_v2(
     scene_info: dict,
-    reachability=(0.3, 0.85),
+    reachability=(0.3, 0.65),
     reachability_zcenter_offset=0.3,
     robot_aabb=(0.12, 0.12, 0.72),
     num_radius_steps=10,
