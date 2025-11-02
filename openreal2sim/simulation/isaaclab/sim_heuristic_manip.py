@@ -14,7 +14,7 @@ from isaaclab.app import AppLauncher
 
 # ─────────── CLI ───────────
 parser = argparse.ArgumentParser("sim_policy")
-parser.add_argument("--key", type=str, default="demo_genvideo", help="scene key (outputs/<key>)")
+parser.add_argument("--key", type=str, default="demo_video", help="scene key (outputs/<key>)")
 parser.add_argument("--robot", type=str, default="franka")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--num_trials", type=int, default=1)
