@@ -10,6 +10,13 @@ from sim_utils.calibration_utils import calibration_to_robot_pose, load_extrinsi
 
 default_config = {
     "physics": "default",
+    "extrinsics": None,
+    "goal_offset": 0,
+    "grasp_idx": -1,
+    "grasp_pre": None,
+    "grasp_delta": None,
+    "traj_key": "fdpose_trajs", # "fdpose_trajs", "simple_trajs", "hybrid_trajs"
+    "manip_object_id": "1",
 }
 
 def compose_configs(key_name: str, config: dict) -> dict:
