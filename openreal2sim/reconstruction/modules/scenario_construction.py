@@ -143,9 +143,15 @@ def center_and_scale_mesh(mesh, scale_factor):
 
 def slow_registration(target_pcd_o3d, obj_info, object_dir):
     """
-    Slow but very accurate mesh to point cloud registration
+    Slow but accurate mesh to point cloud registration
     """
 
+    fg_mesh_orig = trimesh.load_mesh(obj_info["glb"])
+    if isinstance(fg_mesh_orig, trimesh.Scene):
+        fg_mesh_orig = list(fg_mesh_orig.geometry.values())[0]
+    T_flip = get_flip(fg_mesh_orig)
+
+    # we use open3d to simplify the mesh first
     fg_mesh_o3d = o3d.io.read_triangle_mesh(str(obj_info["glb"]))  # legacy
 
     if fg_mesh_o3d.has_triangle_uvs():
@@ -167,6 +173,9 @@ def slow_registration(target_pcd_o3d, obj_info, object_dir):
     t_idx = np.asarray(fg_mesh_o3d.triangles, dtype=np.int64)
 
     fg_mesh_register = trimesh.Trimesh(vertices=v_pos, faces=t_idx, process=False)
+
+    # apply the flip transform
+    fg_mesh_register.apply_transform(T_flip)
 
     # resize the mesh to point cloud scale
     points_masked = np.asarray(target_pcd_o3d.points, dtype=np.float32)
@@ -191,13 +200,11 @@ def slow_registration(target_pcd_o3d, obj_info, object_dir):
     )
     print(f"[Info] Registration results: {T}")
 
-    fg_mesh = trimesh.load_mesh(obj_info["glb"])
-    if isinstance(fg_mesh, trimesh.Scene):
-        fg_mesh = list(fg_mesh.geometry.values())[0]
-
-    # transform the mesh
-    fg_mesh = center_and_scale_mesh(fg_mesh, scale_factor)
-    fg_mesh.apply_transform(T)
+    fg_mesh = fg_mesh_orig.copy()
+    fg_mesh.apply_transform(T_flip)                # flip
+    fg_mesh = center_and_scale_mesh(fg_mesh, scale_factor)  # scale
+    fg_mesh.apply_transform(T)                     # rigid placement from mesh_other
+    
     return fg_mesh
 
 

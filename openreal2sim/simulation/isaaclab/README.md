@@ -43,3 +43,10 @@ We provide heuristic policies using grasping and motion planning:
 ```
 python openreal2sim/simulation/isaaclab/sim_heuristic_manip.py
 ```
+
+## Replay Robot Trajectories
+
+We can also replay the recorded robot trajectories in IsaacSim:
+```
+python openreal2sim/simulation/isaaclab/sim_replay_trajectories.py --demo_dir <path_to_demo_directory>
+```

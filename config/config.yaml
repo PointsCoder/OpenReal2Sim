@@ -36,9 +36,18 @@ local:
       depth_scale: 0.0010000000474974513
       depth_max: 1.6 # this is to clip the real depth for removing outliers
     
+    reconstruction:
+      fast_scene_construction: False
+      fdpose_est_refine_iter: 5
+      fdpose_track_refine_iter: 4
+
     simulation:
       extrinsics: # GT camera to robot base transformation by hand-eye calibration
         - [ -0.0026171,  -0.9995901,   0.02850952,  0.44341227]
         - [ -0.9998069,   0.0031708,   0.01939349,  0.03251874]
         - [ -0.01947593, -0.02845325, -0.99940537,  0.5708384]
         - [ 0.,          0.,          0.,          1.,       ]
+      
+      goal_offset: 0.1
+      # grasp_idx: 3
+      traj_key: "fdpose_trajs"
