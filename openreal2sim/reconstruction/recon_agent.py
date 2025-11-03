@@ -4,6 +4,7 @@ import pickle
 import yaml
 import json
 import argparse
+import shutil
 
 from modules.utils.compose_config import compose_configs
 from modules.utils.notification import notify_started, notify_failed, notify_success
@@ -46,10 +47,49 @@ class ReconAgent:
                 pickle.dump(scene_dict, f)
         print('[Info] Scene dictionaries saved.')
 
-    def save_scene_jsons(self):
+    def save_assets(self):
         for key, scene_dict in self.key_scene_dicts.items():
             scene_json = scene_dict["info"]
-            json_path = self.base_dir / f'outputs/{key}/scene/scene.json'
+            save_dir = self.base_dir / f'outputs/{key}/simulation'
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            bg_glb_path = scene_json["background"]["registered"]
+            new_bg_glb_path = save_dir / Path(bg_glb_path).name
+            scene_json["background"] = {"registered": str(new_bg_glb_path)}
+            shutil.copy(bg_glb_path, new_bg_glb_path)
+
+            scene_glb_path = scene_json["scene_mesh"]["optimized"]
+            new_scene_glb_path = save_dir / Path(scene_glb_path).name
+            scene_json["scene_mesh"] = {"optimized": str(new_scene_glb_path)}
+            shutil.copy(scene_glb_path, new_scene_glb_path)
+
+            for oid, obj in scene_json["objects"].items():
+                obj_glb_path = obj["optimized"]
+                new_obj_glb_path = save_dir / Path(obj_glb_path).name
+                shutil.copy(obj_glb_path, new_obj_glb_path)
+                obj_fdpose_trajs_path = obj["fdpose_trajs"]
+                new_obj_fdpose_trajs_path = save_dir / Path(obj_fdpose_trajs_path).name
+                shutil.copy(obj_fdpose_trajs_path, new_obj_fdpose_trajs_path)
+                obj_simple_trajs_path = obj["simple_trajs"]
+                new_obj_simple_trajs_path = save_dir / Path(obj_simple_trajs_path).name
+                shutil.copy(obj_simple_trajs_path, new_obj_simple_trajs_path)
+                obj_hybrid_trajs_path = obj["hybrid_trajs"]
+                new_obj_hybrid_trajs_path = save_dir / Path(obj_hybrid_trajs_path).name
+                shutil.copy(obj_hybrid_trajs_path, new_obj_hybrid_trajs_path)
+
+                scene_json["objects"][oid] = {
+                    "oid": obj["oid"],
+                    "name": obj["name"],
+                    "object_center": obj["object_center"],
+                    "object_min": obj["object_min"],
+                    "object_max": obj["object_max"],
+                    "optimized": str(new_obj_glb_path),
+                    "fdpose_trajs": str(new_obj_fdpose_trajs_path),
+                    "simple_trajs": str(new_obj_simple_trajs_path),
+                    "hybrid_trajs": str(new_obj_hybrid_trajs_path)
+                }
+
+            json_path = save_dir / "scene.json"
             with open(json_path, 'w') as f:
                 json.dump(scene_json, f, indent=2)
         print('[Info] Scene JSON files saved.')
@@ -111,7 +151,7 @@ class ReconAgent:
             self.scenario_fdpose_optimization()
         if "scenario_collision_optimization" in self.stages:
             self.scenario_collision_optimization()
-        self.save_scene_jsons()
+        self.save_assets()
         print('[Info] ReconAgent run completed.')
         return self.key_scene_dicts
 

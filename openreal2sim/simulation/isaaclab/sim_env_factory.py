@@ -388,8 +388,8 @@ def _build_manip_env_cfg(scene_cfg_cls, *, num_envs: int, env_spacing: float = 2
 
 
 def load_scene_json(key: str) -> dict:
-    """Return the raw scene dict from outputs/<key>/scene/scene.json."""
-    scene_path = Path.cwd() / "outputs" / key / "scene" / "scene.json"
+    """Return the raw scene dict from outputs/<key>/simulation/scene.json."""
+    scene_path = Path.cwd() / "outputs" / key / "simulation" / "scene.json"
     if not scene_path.exists():
         raise FileNotFoundError(scene_path)
     return json.load(open(scene_path))
@@ -402,7 +402,7 @@ def make_env(
     bg_simplify: bool = False,
 ) -> Tuple["ManagerBasedRLEnv", "ManagerBasedRLEnvCfg"]:
     """
-    Public entry to construct a ManagerBasedRLEnv from outputs/<key>/scene/scene.json.
+    Public entry to construct a ManagerBasedRLEnv from outputs/<key>/simulation/scene.json.
     Returns: (env, env_cfg)
     """
     from isaaclab.envs import ManagerBasedRLEnv

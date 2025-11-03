@@ -381,7 +381,7 @@ def count_rigid_api(usd_path):
 def run_conversion_for_key(key: str):
     global args
 
-    scene_json = out_dir / key / "scene" / "scene.json"
+    scene_json = out_dir / key / "simulation" / "scene.json"
     assert scene_json.exists(), f"[{key}] scene.json not found: {scene_json}"
     scene_dict = json.load(open(scene_json, "r"))
 

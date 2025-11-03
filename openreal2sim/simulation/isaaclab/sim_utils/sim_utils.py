@@ -32,7 +32,7 @@ def compose_configs(key_name: str, config: dict) -> dict:
     return ret_key_config
 
 def load_sim_parameters(basedir, key) -> dict:
-    scene_json_path = Path(basedir) / "outputs" / key / "scene" / "scene.json"
+    scene_json_path = Path(basedir) / "outputs" / key / "simulation" / "scene.json"
     scene_json   = json.load(open(scene_json_path, "r"))
     exp_config = yaml.load(open(Path(basedir) / "config/config.yaml"), Loader=yaml.FullLoader)
     exp_config = compose_configs(key, exp_config)
