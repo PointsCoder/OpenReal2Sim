@@ -119,7 +119,7 @@ def visualize_world_trajs_all(
     Render a single combined PLY (and optional GLB) for one key.
 
     Args:
-        key: scene key under outputs/<key>/scene/scene.json
+        key: scene key under outputs/<key>/simulation/scene.json
         out_dir: if None -> outputs/<key>/debug ; otherwise results write to <out_dir>/<key>/
         bg_samples, obj_samples: sample counts
         bg_voxel, obj_voxel: voxel sizes in meters
@@ -133,7 +133,7 @@ def visualize_world_trajs_all(
         dict: {"ply": <Path>, "glb": <Path or None>, "frames": int, "points": int}
     """
     base = Path.cwd()
-    scene_json = base / "outputs" / key / "scene" / "scene.json"
+    scene_json = base / "outputs" / key / "simulation" / "scene.json"
     out_dir = base / "outputs" / key / "reconstruction" / "debug"
     out_dir.mkdir(parents=True, exist_ok=True)
 

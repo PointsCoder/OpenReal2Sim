@@ -174,7 +174,7 @@ def run_for_key(
 ):
     base_dir = Path.cwd()
     out_dir = base_dir / "outputs"
-    scene_json = out_dir / key / "scene" / "scene.json"
+    scene_json = out_dir / key / "simulation" / "scene.json"
     if not scene_json.exists():
         raise FileNotFoundError(scene_json)
 

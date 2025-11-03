@@ -93,7 +93,7 @@ python modules/background_pixel_inpainting.py
 
 ## Outputs
 
-We will obtain `outputs/{key_name}/scene/scene.pkl` and `outputs/{key_name}/scene/scene.json` that contains all necessary scene information:
+We will obtain a portable scene assets folder at `outputs/{key_name}/simulation` and meta information at `outputs/{key_name}/simulation/scene.json`, which contains all necessary scene information:
 
 ```
 pkl file structure:

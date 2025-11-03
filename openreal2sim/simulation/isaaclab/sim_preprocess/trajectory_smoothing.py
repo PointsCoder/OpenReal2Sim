@@ -159,7 +159,7 @@ def main():
     for key in keys:
         print(f"\n========== [Trajectory Smoothing] Processing key: {key} ==========")
 
-        scene_json = out_dir / key / "scene" / "scene.json"
+        scene_json = out_dir / key / "simulation" / "scene.json"
         if not scene_json.exists():
             raise FileNotFoundError(scene_json)
 
