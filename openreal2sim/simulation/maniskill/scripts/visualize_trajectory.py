@@ -69,9 +69,6 @@ def main():
     target_object: Actor = env.unwrapped.object_actors[target_object_id]
 
     # --- Calculate Transformation to Align Trajectory ---
-    # The object's initial pose in sim might differ from the trajectory's start.
-    # We compute the delta and apply it to the whole trajectory to preserve
-    # the relative motion while starting from the correct sim location.
     initial_sim_pose = target_object.pose
     initial_traj_pose = trajectory_poses[0]
 

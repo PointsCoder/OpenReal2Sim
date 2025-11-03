@@ -17,6 +17,7 @@ from motion.grasp import (
 )
 from utils.scene_loader import load_trajectory
 from motion.planner import PandaArmMotionPlanningSolver, HeuristicManipulationAgent
+from mani_skill.envs.sapien_env import BaseEnv
 
 
 def main():
@@ -72,6 +73,7 @@ def main():
             print("--- Grasp Failed, Trying Next ---")
 
     # --- Trajectory Following ---
+    # TODO: Check other scenes
     if grasp_succeeded:
         print("--- Proceeding to Trajectory Following ---")
         # Load the real trajectory for the final run

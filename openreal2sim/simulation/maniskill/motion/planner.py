@@ -393,10 +393,10 @@ class HeuristicManipulationAgent:
             )
             self.planner.move_to_pose_with_screw(lift_pose)
         else:
+            # TODO: check the pre_grasp_pose to see if it is close to the object
             print("No significant contact forces detected. Grasp failed.")
-            # Move back to a safe position
             initial_gripper_pose = self.env.unwrapped.agent.tcp.pose
-
+            # Move back to a safe position
             pre_grasp_pose = Pose.create_from_pq(
                 p=initial_gripper_pose.p + np.array([0, 0, 0.1]).reshape(1, 3),
                 q=initial_gripper_pose.q,

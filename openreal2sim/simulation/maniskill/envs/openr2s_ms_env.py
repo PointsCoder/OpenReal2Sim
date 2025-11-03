@@ -62,7 +62,7 @@ class OpenReal2SimEnv(BaseEnv):
     ROBOT_BASE_QUAT = [1, 0, 0, 0]
     ROBOT_BASE_POSE = sapien.Pose(p=ROBOT_BASE_POS, q=ROBOT_BASE_QUAT)
     OBJECT_INIT_QUAT = [0, 0, 0, 1]
-    OBJECT_INIT_POS = [0, 0, 0.2]
+    OBJECT_INIT_POS = [0, 0, 0.3]
     BACKGROUND_INIT_POS = [0, 0, 0.2]
     BACKGROUND_INIT_QUAT = [0, 0, 0, 1]
     ROBOT_INIT_QPOS = [
