@@ -137,12 +137,14 @@ def propagate_maks(segmented_video: object, output_directory: Path):
 #========================================================================================
 # Main
 #========================================================================================
-def mask_propagation(keys):
+def mask_propagation(keys, key_scene_dicts):
     for key in keys:
         print("propagating for", key)
         with open(OUT_ROOT/key/"scene/scene.pkl", "rb") as f:
-            segmented_video = pickle.load(f)
-            propagate_maks(segmented_video, OUT_ROOT/key)
+            scene = pickle.load(f)
+        propagate_maks(scene, OUT_ROOT/key)
+        key_scene_dicts[key] = scene
+    return key_scene_dicts
 
 
 if __name__ == "__main__":
