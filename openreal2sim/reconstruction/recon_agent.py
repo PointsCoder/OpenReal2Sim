@@ -96,7 +96,7 @@ class ReconAgent:
 
     def mask_propagation(self):
         from tools.segmentation_mask_propagation import mask_propagation
-        mask_propagation(self.keys)
+        self.key_scene_dicts = mask_propagation(self.keys, self.key_scene_dicts)
         print("[Info] Mask propagation completed.")
 
     def background_pixel_inpainting(self):
