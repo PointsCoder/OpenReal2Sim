@@ -481,7 +481,7 @@ class HeuristicManipulation(BaseSimulator):
         # self.lift_up(height=0.05, gripper_open=False)
         jp = self.follow_object_goals(jp, sample_step=5, visualize=True)
 
-        self.save_data(ignore_keys=["segmask", "depth"])
+        self.save_data()
         return True
 
 # ──────────────────────────── Entry Point ────────────────────────────
