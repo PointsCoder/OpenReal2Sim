@@ -1,0 +1,5 @@
+mujoco
+numpy
+scipy
+imageio
+Pillow
