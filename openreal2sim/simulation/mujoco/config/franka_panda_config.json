@@ -1,0 +1,27 @@
+{
+  "joint_names": [
+    "joint1",
+    "joint2",
+    "joint3",
+    "joint4",
+    "joint5",
+    "joint6",
+    "joint7"
+  ],
+
+  "gripper_joint_names": [
+    "finger_joint1",
+    "finger_joint2"
+  ],
+
+  "control_frequency": 50,
+
+  "pd_gains": {
+    "kp": [400.0, 400.0, 400.0, 400.0, 400.0, 400.0, 400.0, 2000.0, 2000.0],
+    "kd": [80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 100.0, 100.0]
+  },
+
+  "gripper_control": {
+    "max_opening": 0.04
+  }
+}

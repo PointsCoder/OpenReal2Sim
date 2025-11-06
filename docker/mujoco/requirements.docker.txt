@@ -3,3 +3,8 @@ numpy
 scipy
 imageio
 Pillow
+trimesh
+lxml
+coacd
+pymeshlab
+loguru
