@@ -153,7 +153,7 @@ def run_for_key(key: str,
                 vis_pts_per_gripper: int):
     base_dir = Path.cwd()
     out_dir = base_dir / "outputs"
-    scene_json = out_dir / key / "scene" / "scene.json"
+    scene_json = out_dir / key / "simulation" / "scene.json"
     if not scene_json.exists():
         raise FileNotFoundError(scene_json)
 
@@ -190,6 +190,22 @@ def run_for_key(key: str,
             with open(scene_json, "w") as f:
                 json.dump(scene_dict, f, indent=2)
             print(f"[OK][{key}] scene.json updated with 'grasps' for {obj['oid']}_{obj['name']}.")
+
+
+def grasp_generation(keys):
+    for key in keys:
+        print(f"\n========== [GraspDet] Processing key: {key} ==========")
+        run_for_key(
+            key=key,
+            n_points=args.n_points,
+            keep=args.keep,
+            nms=args.nms,
+            overwrite=args.overwrite,
+            vis_pts_per_gripper=args.vis_pts_per_gripper,
+        )
+
+    print('[Info] Grasp generation completed.')
+
 
 def main():
     parser = argparse.ArgumentParser("Export grasp proposals for ALL objects (batch over keys) and write paths into scene.json")

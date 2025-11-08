@@ -9,7 +9,7 @@ import transforms3d
 from sim_utils.calibration_utils import calibration_to_robot_pose, load_extrinsics
 
 def load_sim_parameters(basedir, key) -> dict:
-    scene_json_path = Path(basedir) / "outputs" / key / "scene" / "scene.json"
+    scene_json_path = Path(basedir) / "outputs" / key / "simulation" / "scene.json"
     scene_json   = json.load(open(scene_json_path, "r"))
     exp_config = yaml.load(open(Path(basedir) / "config/config.yaml"), Loader=yaml.FullLoader)
     exp_config = exp_config["local"][key]["simulation"]
@@ -44,23 +44,24 @@ def load_sim_parameters(basedir, key) -> dict:
     }
 
     # demo configs
+   
     goal_offset = exp_config.get("goal_offset", 0)
     grasp_idx = exp_config.get("grasp_idx", -1)
     grasp_pre = exp_config.get("grasp_pre", None)
     grasp_delta = exp_config.get("grasp_delta", None)
-    traj_key = exp_config.get("traj_key", "fdpose_trajs") # "fdpose_trajs", "simple_trajs", "hybrid_trajs"
-    manip_object_id = exp_config.get("manip_object_id", "1")
-    traj_path = scene_json["objects"][manip_object_id][traj_key]
+    manip_object_id = scene_json["manipulated_oid"]
+    traj_path = scene_json["objects"][manip_object_id]["final_trajs"]
     grasp_path = scene_json["objects"][manip_object_id].get("grasps", None)
+    final_gripper_closed = scene_json["final_gripper_closed"]
     demo_cfg = {
         "manip_object_id": manip_object_id,
-        "traj_key": traj_key,
         "traj_path": traj_path,
         "goal_offset": goal_offset,
         "grasp_idx": grasp_idx,
         "grasp_pre": grasp_pre,
         "grasp_delta": grasp_delta,
         "grasp_path": grasp_path,
+        "final_gripper_closed": final_gripper_closed,
     }
 
     # physics configs
