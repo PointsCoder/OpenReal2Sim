@@ -34,7 +34,8 @@ class ProprocessAgent:
             # "hand_extraction",
             #"demo_motion_process",
             # "grasp_point_generation",
-            # "grasp_generation"
+            # "grasp_generation",
+            # "usd_generation"
 
         ]
         if stage is not None:
@@ -133,87 +134,87 @@ def create_args_from_config(config_path: Optional[str] = None, config_dict: Opti
     return argparse.Namespace(**config_dict)
 
 
-class IsaacAgent:
-    def __init__(self, stage=None, key=None):
-        print('[Info] Initializing IsaacAgent...')
-        self.base_dir = Path.cwd()
-        cfg_path = self.base_dir / "config" / "config.yaml"
-        cfg = yaml.safe_load(cfg_path.open("r"))
-        self.keys = [key] if key is not None else cfg["keys"]
-        self.key_cfgs = {key: compose_configs(key, cfg) for key in self.keys}
-        self.key_scene_dicts = {}
-        for key in self.keys:
-            scene_pkl = self.base_dir / f'outputs/{key}/scene/scene.pkl'
-            with open(scene_pkl, 'rb') as f:
-                scene_dict = pickle.load(f)
-            self.key_scene_dicts[key] = scene_dict
-        self.stages = [
-            # "usd_conversion",
-            #"grasp_generation",
-            #"sim_heuristic_manip",
-            "sim_randomize_rollout",
+# class IsaacAgent:
+#     def __init__(self, stage=None, key=None):
+#         print('[Info] Initializing IsaacAgent...')
+#         self.base_dir = Path.cwd()
+#         cfg_path = self.base_dir / "config" / "config.yaml"
+#         cfg = yaml.safe_load(cfg_path.open("r"))
+#         self.keys = [key] if key is not None else cfg["keys"]
+#         self.key_cfgs = {key: compose_configs(key, cfg) for key in self.keys}
+#         self.key_scene_dicts = {}
+#         for key in self.keys:
+#             scene_pkl = self.base_dir / f'outputs/{key}/scene/scene.pkl'
+#             with open(scene_pkl, 'rb') as f:
+#                 scene_dict = pickle.load(f)
+#             self.key_scene_dicts[key] = scene_dict
+#         self.stages = [
+#             # "usd_conversion",
+#             #"grasp_generation",
+#             #"sim_heuristic_manip",
+#             "sim_randomize_rollout",
 
-        ]
-        if stage is not None:
-            if stage in self.stages:
-                start_idx = self.stages.index(stage)
-                self.stages = self.stages[start_idx:]
-            else:
-                print(f"[Warning] Stage '{stage}' not found. It must be one of the {self.stages}. Running all stages by default.")
-        print('[Info] IsaacAgent initialized.')
+#         ]
+#         if stage is not None:
+#             if stage in self.stages:
+#                 start_idx = self.stages.index(stage)
+#                 self.stages = self.stages[start_idx:]
+#             else:
+#                 print(f"[Warning] Stage '{stage}' not found. It must be one of the {self.stages}. Running all stages by default.")
+#         print('[Info] IsaacAgent initialized.')
     
-    def launch_isaaclab(self):
+#     def launch_isaaclab(self):
 
-        self.args_cli = create_args_from_config()
-        #AppLauncher.add_app_launcher_args(self.args_cli)
-        self.args_cli.enable_cameras = True
-        self.args_cli.headless = True
-        self.app_launcher = AppLauncher(vars(self.args_cli))
-        self.simulation_app = self.app_launcher.app
-        return self.simulation_app
+#         self.args_cli = create_args_from_config()
+#         #AppLauncher.add_app_launcher_args(self.args_cli)
+#         self.args_cli.enable_cameras = True
+#         self.args_cli.headless = True
+#         self.app_launcher = AppLauncher(vars(self.args_cli))
+#         self.simulation_app = self.app_launcher.app
+#         return self.simulation_app
     
-    def close_isaaclab(self):
-        self.simulation_app.close()
+#     def close_isaaclab(self):
+#         self.simulation_app.close()
 
-    def usd_conversion(self):
-        from isaaclab.sim_preprocess.usd_conversion import usd_conversion
-        usd_conversion(self.keys)
-        print('[Info] USD conversion completed.')
+#     def usd_conversion(self):
+#         from isaaclab.sim_preprocess.usd_conversion import usd_conversion
+#         usd_conversion(self.keys)
+#         print('[Info] USD conversion completed.')
     
-    def sim_heuristic_manip(self):
-        self.launch_isaaclab()
-        from isaaclab.sim_heuristic_manip import sim_heuristic_manip
-        sim_heuristic_manip(self.keys, args_cli=self.args_cli)
-        print('[Info] Heuristic manipulation simulation completed.')
-        self.close_isaaclab()
+#     def sim_heuristic_manip(self):
+#         self.launch_isaaclab()
+#         from isaaclab.sim_heuristic_manip import sim_heuristic_manip
+#         sim_heuristic_manip(self.keys, args_cli=self.args_cli)
+#         print('[Info] Heuristic manipulation simulation completed.')
+#         self.close_isaaclab()
     
 
-    def sim_randomize_rollout(self):
-        self.launch_isaaclab()
-        from isaaclab.sim_randomize_rollout import sim_randomize_rollout
-        sim_randomize_rollout(self.keys, args_cli=self.args_cli)
-        print('[Info] Randomize rollout completed.')
-        self.close_isaaclab()
+#     def sim_randomize_rollout(self):
+#         self.launch_isaaclab()
+#         from isaaclab.sim_randomize_rollout import sim_randomize_rollout
+#         sim_randomize_rollout(self.keys, args_cli=self.args_cli)
+#         print('[Info] Randomize rollout completed.')
+#         self.close_isaaclab()
 
-    def grasp_generation(self):
-        from modules.grasp_preprocess.grasp_generation import grasp_generation
-        grasp_generation(self.keys)
-        print('[Info] Grasp proposal generation completed.')
+#     def grasp_generation(self):
+#         from modules.grasp_preprocess.grasp_generation import grasp_generation
+#         grasp_generation(self.keys)
+#         print('[Info] Grasp proposal generation completed.')
     
-    def run(self):
-        if "usd_conversion" in self.stages:
-            self.usd_conversion()
-        if "grasp_generation" in self.stages:
-            self.grasp_generation()
-        if "launch_isaaclab" in self.stages:
-            self.launch_isaaclab()
-        if "sim_heuristic_manip" in self.stages:
-            self.sim_heuristic_manip()
+#     def run(self):
+#         if "usd_conversion" in self.stages:
+#             self.usd_conversion()
+#         if "grasp_generation" in self.stages:
+#             self.grasp_generation()
+#         if "launch_isaaclab" in self.stages:
+#             self.launch_isaaclab()
+#         if "sim_heuristic_manip" in self.stages:
+#             self.sim_heuristic_manip()
 
-        if "sim_randomize_rollout" in self.stages:
-            self.sim_randomize_rollout()
-        if "close_isaaclab" in self.stages:
-            self.close_isaaclab()
+#         if "sim_randomize_rollout" in self.stages:
+#             self.sim_randomize_rollout()
+#         if "close_isaaclab" in self.stages:
+#             self.close_isaaclab()
 
 if __name__ == '__main__':
     args = argparse.ArgumentParser()
@@ -227,17 +228,6 @@ if __name__ == '__main__':
 
     try:
         agent = ProprocessAgent(stage=args.stage, key=args.key)
-        scene_dicts = agent.run()
-
-        if args.label:
-            notify_success(args.label)
-    except Exception as e:
-        if args.label:
-            notify_failed(args.label)
-        raise
-
-    try:
-        agent = IsaacAgent(stage=args.stage, key=args.key)
         scene_dicts = agent.run()
 
         if args.label:

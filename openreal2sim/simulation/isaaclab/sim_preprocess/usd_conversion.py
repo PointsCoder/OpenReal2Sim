@@ -9,7 +9,7 @@ parser = argparse.ArgumentParser()
 AppLauncher.add_app_launcher_args(parser)
 args_isaaclab = parser.parse_args()
 # Force GUI unless you toggle via IsaacLab flags
-args_isaaclab.headless = False
+args_isaaclab.headless = True
 app_launcher = AppLauncher(args_isaaclab)
 simulation_app = app_launcher.app
 
@@ -378,9 +378,11 @@ def count_rigid_api(usd_path):
 ########################################################
 ## Per-key conversion (batch)
 ########################################################
-def run_conversion_for_key(key: str):
+from typing import Optional
+def run_conversion_for_key(key: str, args_cli:Optional[argparse.Namespace] = None):
     global args
-
+    if args_cli is None:
+        args_cli = args_isaaclab
     scene_json = out_dir / key / "simulation" / "scene.json"
     assert scene_json.exists(), f"[{key}] scene.json not found: {scene_json}"
     scene_dict = json.load(open(scene_json, "r"))
@@ -401,7 +403,7 @@ def run_conversion_for_key(key: str):
     args = Args(input=input_list, output=output_list, make_instanceable=False,
                 collision_approximation="convexDecomposition",
                 mass=1.0, disable_gravity=False, kinematic_enabled=False,
-                headless=args_isaaclab.headless, exit_on_finish=True)
+                headless=args_cli.headless, exit_on_finish=True)
 
     # Run the original main conversion logic for this key
     log.info(f"[{key}] converting {len(args.input)} assets...")
@@ -553,11 +555,11 @@ def run_conversion(scene_dict: dict):
             log.info(f"Saved USD file to {os.path.abspath(output_path)}")
 
 
-def usd_conversion(keys):
+def usd_conversion(keys, args_cli):
     for key in keys:
         log.info(f"\n========== [USD Convert] key: {key} ==========")
-        run_conversion_for_key(key)
-    simulation_app.close()
+        run_conversion_for_key(key, args_cli)
+    #simulation_app.close()
     print('[Info] USD conversion completed.')
 
 ########################################################

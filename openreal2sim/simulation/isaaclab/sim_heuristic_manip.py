@@ -20,19 +20,19 @@ sys.path.append(str(file_path.parent))
 sys.path.append(str(file_path.parent.parent))
 
 # ─────────── CLI ───────────
-# parser = argparse.ArgumentParser("sim_policy")
-# parser.add_argument("--key", type=str, default="demo_video", help="scene key (outputs/<key>)")
-# parser.add_argument("--robot", type=str, default="franka")
-# parser.add_argument("--num_envs", type=int, default=1)
-# parser.add_argument("--num_trials", type=int, default=1)
-# parser.add_argument("--teleop_device", type=str, default="keyboard")
-# parser.add_argument("--sensitivity", type=float, default=1.0)
-# AppLauncher.add_app_launcher_args(parser)
-# args_cli = parser.parse_args()
-# args_cli.enable_cameras = True
-# args_cli.headless = True  # headless mode for batch execution
-# app_launcher = AppLauncher(vars(args_cli))
-# simulation_app = app_launcher.app
+parser = argparse.ArgumentParser("sim_policy")
+parser.add_argument("--key", type=str, default="demo_video", help="scene key (outputs/<key>)")
+parser.add_argument("--robot", type=str, default="franka")
+parser.add_argument("--num_envs", type=int, default=1)
+parser.add_argument("--num_trials", type=int, default=1)
+parser.add_argument("--teleop_device", type=str, default="keyboard")
+parser.add_argument("--sensitivity", type=float, default=1.0)
+AppLauncher.add_app_launcher_args(parser)
+args_cli = parser.parse_args()
+args_cli.enable_cameras = True
+args_cli.headless = True  # headless mode for batch execution
+app_launcher = AppLauncher(vars(args_cli))
+simulation_app = app_launcher.app
 
 # ─────────── Runtime imports ───────────
 import isaaclab.sim as sim_utils
@@ -829,7 +829,8 @@ def sim_heuristic_manip(keys: list[str], args_cli: argparse.Namespace, config_pa
                 success = True
                 task_cfg = my_sim.from_data_to_task_cfg(key)
                 my_sim.task_cfg = task_cfg
-                my_sim.trajectory_cfg_list = [task_cfg.reference_trajectory]
+                assert task_cfg.reference_trajectory is not None
+                my_sim.traj_cfg_list = [task_cfg.reference_trajectory]
                 my_sim.save_data(ignore_keys=["segmask", "depth"], env_ids=success_ids[:1])
                 break
             # actions = np.load("outputs/lab16/demos/demo_5/env_000/actions.npy")
@@ -838,11 +839,14 @@ def sim_heuristic_manip(keys: list[str], args_cli: argparse.Namespace, config_pa
             print("[ERR] no successful environments!")
         env.close()
     #simulation_app.close()
-    return True
+    return True 
 
+def main():
+    base_dir = Path.cwd()
+    cfg = yaml.safe_load((base_dir / "config" / "config.yaml").open("r"))
+    keys = cfg["keys"]
+    sim_heuristic_manip(keys, args_cli)
 
-
-#if __name__ == "__main__":
-    #main()
-    #os.system("quit()")
-    #simulation_app.close()
+if __name__ == "__main__":
+    main()
+    simulation_app.close()

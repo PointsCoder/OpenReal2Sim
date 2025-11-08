@@ -13,8 +13,8 @@ import yaml
 import sys
 from isaaclab.app import AppLauncher
 from typing import Optional, List
-from modules.envs.task_cfg import TaskCfg, TaskType, SuccessMetric, SuccessMetricType, TrajectoryCfg
-from modules.envs.task_construct import construct_task_config, add_reference_trajectory, load_task_cfg
+from modules.envs. task_cfg import TaskCfg, TaskType, SuccessMetric, SuccessMetricType, TrajectoryCfg
+from modules.envs.task_construct import construct_task_config, add_reference_trajectory, load_task_cfg, add_generated_trajectories
 from modules.envs.randomizer import Randomizer
 file_path = Path(__file__).resolve()
 import imageio 
@@ -23,19 +23,19 @@ sys.path.append(str(file_path.parent))
 sys.path.append(str(file_path.parent.parent))
 
 # ─────────── CLI ───────────
-# parser = argparse.ArgumentParser("sim_policy")
-# parser.add_argument("--key", type=str, default="demo_video", help="scene key (outputs/<key>)")
-# parser.add_argument("--robot", type=str, default="franka")
-# parser.add_argument("--num_envs", type=int, default=1)
-# parser.add_argument("--num_trials", type=int, default=1)
-# parser.add_argument("--teleop_device", type=str, default="keyboard")
-# parser.add_argument("--sensitivity", type=float, default=1.0)
-# AppLauncher.add_app_launcher_args(parser)
-# args_cli = parser.parse_args()
-# args_cli.enable_cameras = True
-# args_cli.headless = False  # headless mode for batch execution
-# app_launcher = AppLauncher(vars(args_cli))
-# simulation_app = app_launcher.app
+parser = argparse.ArgumentParser("sim_policy")
+parser.add_argument("--key", type=str, default="demo_video", help="scene key (outputs/<key>)")
+parser.add_argument("--robot", type=str, default="franka")
+parser.add_argument("--num_envs", type=int, default=1)
+parser.add_argument("--num_trials", type=int, default=1)
+parser.add_argument("--teleop_device", type=str, default="keyboard")
+parser.add_argument("--sensitivity", type=float, default=1.0)
+AppLauncher.add_app_launcher_args(parser)
+args_cli = parser.parse_args()
+args_cli.enable_cameras = True
+args_cli.headless = False  # headless mode for batch execution
+app_launcher = AppLauncher(vars(args_cli))
+simulation_app = app_launcher.app
 
 # ─────────── Runtime imports ───────────
 import isaaclab.sim as sim_utils
@@ -551,7 +551,7 @@ class RandomizeExecution(BaseSimulator):
 def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
     for key in keys:
         success_trajectory_config_list = []
-        total_require_traj_num = 50
+        total_require_traj_num = args_cli.total_num
         task_json_path = BASE_DIR / "tasks" / key / "task.json"
         task_cfg = load_task_cfg(task_json_path)
         randomizer = Randomizer(task_cfg)
@@ -564,7 +564,7 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
         data_dir = BASE_DIR / "data" / key
         current_timestep = 0
         env, _ = make_env(
-                cfgs=sim_cfgs, num_envs=3,
+                cfgs=sim_cfgs, num_envs=args_cli.num_envs,
                 device=args_cli.device,
                 bg_simplify=False,
             )
@@ -575,8 +575,8 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
         my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, demo_dir=demo_dir, data_dir=data_dir, record=True, args_cli=args_cli, bg_rgb=bg_rgb)
         my_sim.task_cfg = task_cfg
         while len(success_trajectory_config_list) < total_require_traj_num:
-            traj_cfg_list = random_task_cfg_list[current_timestep: current_timestep + 3]
-            current_timestep += 3
+            traj_cfg_list = random_task_cfg_list[current_timestep: current_timestep + args_cli.num_envs]
+            current_timestep += args_cli.num_envs
            
             success_env_ids = my_sim.run_batch_trajectory(traj_cfg_list)
             
@@ -594,7 +594,17 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
         #     success_env_ids = my_sim.inference()
         #     del my_sim
         #     torch.cuda.empty_cache()
-     
+        add_generated_trajectories(task_cfg, success_trajectory_config_list, task_json_path.parent)
     
     return success_trajectory_config_list
 
+def main():
+    base_dir = Path.cwd()
+    cfg = yaml.safe_load((base_dir / "config" / "config.yaml").open("r"))
+    keys = cfg["keys"]
+    sim_randomize_rollout(keys, args_cli)
+  
+
+if __name__ == "__main__":
+    main()
+    simulation_app.close()

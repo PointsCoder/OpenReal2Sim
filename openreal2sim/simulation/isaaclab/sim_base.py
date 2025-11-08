@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Optional, Dict, Sequence, Tuple
 from typing import List
-
+import copy
 import numpy as np
 import torch
 import imageio
@@ -689,7 +689,8 @@ class BaseSimulator:
         if env_ids is None:
             env_ids = self._all_env_ids.cpu().numpy()
 
-        composed_rgb = []
+        composed_rgb = copy.deepcopy(stacked["rgb"])
+        self.save_dict["composed_rgb"] = composed_rgb
         hdf5_names = []
         for b in env_ids:
             if self.defined_demo_dir is  None:
@@ -735,10 +736,10 @@ class BaseSimulator:
             self.bg_rgb = imageio.imread(bg_rgb_path)
             for t in range(rgb.shape[0]):
                 #import ipdb; ipdb.set_trace()
-                composed = self.convert_real(mask[t, b], self.bg_rgb, rgb[t, b])        
+                composed = self.convert_real(mask[t, b], self.bg_rgb, rgb[t, b])    
+                self.save_dict["composed_rgb"][t, b] = composed
                 writer.append_data(composed)
             writer.close()
-            composed_rgb.append(composed)
 
    
         self.export_batch_data_to_hdf5(hdf5_names)
@@ -899,7 +900,7 @@ class BaseSimulator:
                     cam_grp.attrs["resolution"] = resolution
 
                 if "rgb" in stacked:
-                    rgb_frames = stacked["rgb"][:, env_idx]
+                    rgb_frames = stacked["composed_rgb"][:, env_idx]
                     encoded_frames, max_len = self._encode_rgb_sequence(rgb_frames)
                     dtype = f"S{max_len}" if max_len > 0 else "S1"
                     cam_grp.create_dataset("rgb", data=np.asarray(encoded_frames, dtype=dtype))
