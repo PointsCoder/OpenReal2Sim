@@ -5,8 +5,12 @@ import trimesh
 from mani_skill.agents.base_agent import BaseAgent
 from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.envs.scene import ManiSkillScene
-from mani_skill.utils.structs.pose import to_sapien_pose
+from mani_skill.utils.structs.pose import Pose
+from mani_skill.utils.structs.pose import to_sapien_pose as to_sapien_pose_mani_skill
+from mani_skill.utils.structs.actor import Actor
 from transforms3d import quaternions
+from transforms3d.quaternions import mat2quat
+import torch
 
 
 class BaseMotionPlanningSolver:
@@ -27,7 +31,7 @@ class BaseMotionPlanningSolver:
         self.joint_vel_limits = joint_vel_limits
         self.joint_acc_limits = joint_acc_limits
 
-        self.base_pose = to_sapien_pose(base_pose)
+        self.base_pose = to_sapien_pose_mani_skill(base_pose)
 
         self.planner = self.setup_planner()
         self.control_mode = self.base_env.control_mode
@@ -100,7 +104,7 @@ class BaseMotionPlanningSolver:
     def move_to_pose_with_RRTStar(
         self, pose: sapien.Pose, dry_run: bool = False, refine_steps: int = 0
     ):
-        pose = to_sapien_pose(pose)
+        pose = to_sapien_pose_mani_skill(pose)
         self._update_grasp_visual(pose)
         pose = self._transform_pose_for_planning(pose)
         result = self.planner.plan_qpos_to_pose(
@@ -125,7 +129,7 @@ class BaseMotionPlanningSolver:
     def move_to_pose_with_RRTConnect(
         self, pose: sapien.Pose, dry_run: bool = False, refine_steps: int = 0
     ):
-        pose = to_sapien_pose(pose)
+        pose = to_sapien_pose_mani_skill(pose)
         self._update_grasp_visual(pose)
         pose = self._transform_pose_for_planning(pose)
         result = self.planner.plan_qpos_to_pose(
@@ -147,7 +151,7 @@ class BaseMotionPlanningSolver:
     def move_to_pose_with_screw(
         self, pose: sapien.Pose, dry_run: bool = False, refine_steps: int = 0
     ):
-        pose = to_sapien_pose(pose)
+        pose = to_sapien_pose_mani_skill(pose)
         # try screw two times before giving up
         self._update_grasp_visual(pose)
         pose = self._transform_pose_for_planning(pose)
@@ -349,6 +353,112 @@ def build_two_finger_gripper_grasp_pose_visual(scene: ManiSkillScene):
     )
     grasp_pose_visual = builder.build_kinematic(name="grasp_pose_visual")
     return grasp_pose_visual
+
+
+class HeuristicManipulationAgent:
+    """
+    An agent that performs heuristic grasp trials and follows a trajectory.
+    """
+
+    def __init__(
+        self,
+        env: BaseEnv,
+        planner: "PandaArmMotionPlanningSolver",
+        lift_height: float = 0.1,
+    ):
+        self.env = env
+        self.planner = planner
+        self.lift_height = lift_height
+
+    def check_grasp_success(self, target_object_id: str) -> bool:
+        """
+        Checks if the object is successfully grasped by using the agent's
+        built-in contact force checking method.
+        """
+        target_object: Actor = self.env.unwrapped.object_actors[target_object_id]
+        agent: BaseAgent = self.env.unwrapped.agent
+
+        # This check needs to be done over a few steps to be reliable
+        for _ in range(5):
+            self.env.step(None)  # Let physics settle
+
+        is_grasping = agent.is_grasping(target_object)
+
+        if is_grasping:
+            print("Contact forces detected. Grasp is likely successful.")
+            # Lift the gripper to confirm
+            initial_gripper_pose = self.env.unwrapped.agent.tcp.pose
+            lift_pose = (
+                Pose.create_from_pq(p=[0, 0, self.lift_height]) * initial_gripper_pose
+            )
+            self.planner.move_to_pose_with_screw(lift_pose)
+        else:
+            # TODO: check the pre_grasp_pose to see if it is close to the object
+            print("No significant contact forces detected. Grasp failed.")
+            initial_gripper_pose = self.env.unwrapped.agent.tcp.pose
+            # Move back to a safe position
+            pre_grasp_pose = Pose.create_from_pq(
+                p=initial_gripper_pose.p + np.array([0, 0, 0.1]).reshape(1, 3),
+                q=initial_gripper_pose.q,
+            )
+            self.planner.open_gripper()
+            self.planner.move_to_pose_with_RRTConnect(pre_grasp_pose)
+
+        return is_grasping
+
+    def attempt_grasp(
+        self, grasp_pose_world: Pose, pre_grasp_offset: float = 0.1
+    ) -> None:
+        """
+        Executes a grasp attempt from a pre-grasp position.
+        """
+        # Calculate pre-grasp pose (offset along the grasp's +X axis)
+        # unsqueeze to 4x4 matrix (N, 4, 4) -> (4, 4)
+        approach_dir = grasp_pose_world.to_transformation_matrix().reshape(4, 4)[:3, 0]
+
+        pre_grasp_p = grasp_pose_world.p - approach_dir * pre_grasp_offset
+        pre_grasp_pose = Pose.create_from_pq(p=pre_grasp_p, q=grasp_pose_world.q)
+
+        # Execute the motion sequence
+        self.planner.open_gripper()
+        print("Moving to pre-grasp pose...")
+        self.planner.move_to_pose_with_RRTConnect(pre_grasp_pose)
+        print("Moving to grasp pose...")
+        self.planner.move_to_pose_with_screw(grasp_pose_world)
+        self.planner.close_gripper()
+
+    def follow_trajectory(self, target_object_id: str, trajectory: list[Pose]) -> None:
+        """
+        Follows a given 6D object trajectory.
+        """
+        target_object: Actor = self.env.unwrapped.object_actors[target_object_id]
+        initial_ee_pose_world: Pose = self.env.unwrapped.agent.tcp.pose
+        initial_obj_pose_world: Pose = target_object.pose
+
+        # Calculate the fixed transform from the object to the EE frame
+        T_world_obj = initial_obj_pose_world.to_transformation_matrix()
+        T_world_ee = initial_ee_pose_world.to_transformation_matrix()
+
+        T_obj_ee = torch.linalg.inv(T_world_obj) @ T_world_ee
+
+        print("Starting trajectory following...")
+        for i, target_obj_pose_world in enumerate(trajectory):
+            print(f"  Waypoint {i + 1}/{len(trajectory)}")
+            T_world_obj_target = target_obj_pose_world.to_transformation_matrix()
+            T_world_ee_target = T_world_obj_target @ T_obj_ee
+            T_world_ee_target = T_world_ee_target.reshape(4, 4)
+
+            # turn into numpy array
+            T_world_ee_target = T_world_ee_target.cpu().numpy()
+
+            ee_target_pose = Pose.create_from_pq(
+                p=T_world_ee_target[:3, 3],
+                q=mat2quat(T_world_ee_target[:3, :3]),
+            )
+
+            self.planner.move_to_pose_with_screw(ee_target_pose, refine_steps=0)
+
+        print("Trajectory following complete.")
 
 
 class PandaArmMotionPlanningSolver(TwoFingerGripperMotionPlanningSolver):

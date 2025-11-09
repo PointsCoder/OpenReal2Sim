@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import json
@@ -6,6 +5,7 @@ import os
 import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 
 import curobo
 import imageio
@@ -35,6 +35,11 @@ from isaaclab.utils.math import (
     transform_points,
     unproject_depth,
 )
+
+##-- for sim background to real background video composition--
+from PIL import Image 
+import cv2  
+
 
 
 def get_next_demo_id(demo_root: Path) -> int:
@@ -428,6 +433,98 @@ class BaseSimulator:
             last = joint_pos_des
         return last, success
 
+    def compose_real_video(self, env_id: int = 0):
+        """
+        Composite simulated video onto real background using mask-based rendering.
+        
+        Args:
+            env_id: Environment ID to process
+        """
+    
+        def pad_to_even(frame):
+            """Pad frame to even dimensions for video encoding."""
+            H, W = frame.shape[:2]
+            pad_h = H % 2
+            pad_w = W % 2
+            if pad_h or pad_w:
+                pad = ((0, pad_h), (0, pad_w)) if frame.ndim == 2 else ((0, pad_h), (0, pad_w), (0, 0))
+                frame = np.pad(frame, pad, mode='edge')
+            return frame
+        
+        # Construct paths
+        base_path = self.out_dir / self.img_folder
+        demo_path = self._demo_dir() / f"env_{env_id:03d}"
+        
+        SIM_VIDEO_PATH = demo_path / "sim_video.mp4"
+        MASK_VIDEO_PATH = demo_path / "mask_video.mp4"
+        REAL_BACKGROUND_PATH = base_path / "simulation" / "background.jpg"
+        OUTPUT_PATH = demo_path / "real_video.mp4"
+        
+        # Check if required files exist
+        if not SIM_VIDEO_PATH.exists():
+            print(f"[WARN] Simulated video not found: {SIM_VIDEO_PATH}")
+            return False
+        if not MASK_VIDEO_PATH.exists():
+            print(f"[WARN] Mask video not found: {MASK_VIDEO_PATH}")
+            return False
+        if not REAL_BACKGROUND_PATH.exists():
+            print(f"[WARN] Real background not found: {REAL_BACKGROUND_PATH}")
+            return False
+        
+        # Load real background image
+        print(f"[INFO] Loading real background: {REAL_BACKGROUND_PATH}")
+        real_img = np.array(Image.open(REAL_BACKGROUND_PATH))
+        
+        H, W, _ = real_img.shape
+        print(f"[INFO] Background size: {W}x{H}")
+        
+        # Open videos
+        print(f"[INFO] Loading simulated video: {SIM_VIDEO_PATH}")
+        rgb_reader = imageio.get_reader(SIM_VIDEO_PATH)
+        print(f"[INFO] Loading mask video: {MASK_VIDEO_PATH}")
+        mask_reader = imageio.get_reader(MASK_VIDEO_PATH)
+        
+        # Get metadata from original video
+        N = rgb_reader.count_frames()
+        fps = rgb_reader.get_meta_data()['fps']
+        print(f"[INFO] Processing {N} frames at {fps} FPS...")
+        
+        composed_images = []
+        
+        for i in range(N):
+            # Read frames
+            sim_rgb = rgb_reader.get_data(i)
+            sim_mask = mask_reader.get_data(i)
+            
+            # Convert mask to binary (grayscale > 127 = foreground)
+            if sim_mask.ndim == 3:
+                sim_mask = cv2.cvtColor(sim_mask, cv2.COLOR_RGB2GRAY)
+            sim_mask = sim_mask > 127
+            
+            # Resize sim frames to match real background if needed
+            if sim_rgb.shape[:2] != (H, W):
+                sim_rgb = cv2.resize(sim_rgb, (W, H))
+                sim_mask = cv2.resize(sim_mask.astype(np.uint8), (W, H)) > 0
+            
+            # Compose: real background + simulated foreground (where mask is True)
+            composed = real_img.copy()
+            composed = pad_to_even(composed)
+            composed[sim_mask] = sim_rgb[sim_mask]
+            
+            composed_images.append(composed)
+            
+            if (i + 1) % 10 == 0:
+                print(f"[INFO] Processed {i + 1}/{N} frames")
+        
+        # Save composed video
+        print(f"[INFO] Saving composed video to: {OUTPUT_PATH}")
+        writer = imageio.get_writer(OUTPUT_PATH, fps=fps, macro_block_size=None)
+        for frame in composed_images:
+            writer.append_data(frame)
+        writer.close()
+        
+        print(f"[INFO] Done! Saved {len(composed_images)} frames to {OUTPUT_PATH} at {fps} FPS")
+        return True
     # ---------- Visualization ----------
     def show_goal(self, pos, quat):
         """
@@ -470,6 +567,7 @@ class BaseSimulator:
                 f"robot_pose must be [B,7], got {robot_pose.shape}"
             )
             self.robot_pose = robot_pose.to(self.robot.device).contiguous()
+
 
     # ---------- Environment Step ----------
     def step(self):
@@ -814,7 +912,18 @@ class BaseSimulator:
                 else:
                     np.save(env_dir / f"{key}.npy", arr[:, b])
             json.dump(self.sim_cfgs, open(env_dir / "config.json", "w"), indent=2)
+        
         print("[INFO]: Demonstration is saved at: ", save_root)
+        
+        # Compose real videos for all environments
+        print("\n[INFO] Composing real videos with background...")
+        for b in range(self.num_envs):
+            print(f"[INFO] Processing environment {b}/{self.num_envs}...")
+            success = self.compose_real_video(env_id=b)
+            if success:
+                print(f"[INFO] Real video composed successfully for env {b}")
+            else:
+                print(f"[WARN] Failed to compose real video for env {b}")
 
         demo_root = self.out_dir / "all_demos"
         demo_root.mkdir(parents=True, exist_ok=True)

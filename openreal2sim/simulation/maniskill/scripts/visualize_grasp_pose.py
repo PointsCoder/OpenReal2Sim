@@ -59,10 +59,6 @@ def main():
         while True:
             env.render()
             visualize_grasp_pose(target_object_id, grasp_visual)
-            if viewer.window.key_down("c"):
-                action = 0.1 * env.action_space.sample()
-                env.step(action)
-                time.sleep(2)
     except KeyboardInterrupt:
         print("\nExiting.")
 

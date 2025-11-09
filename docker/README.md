@@ -73,12 +73,6 @@ Every time you want to run a script inside the repo, follow these steps:
 
 **Inside the docker container**, run the following script to download pretrained checkpoints and compile c++/cuda extensions:
 ```
-bash scripts/installation/install.sh
-```
-
-**Note:** on the previous script sometimes gdwon fails download the files. Alternatively the following python script can be used: 
-
-```
 python scripts/installation/install.py
 ```
 

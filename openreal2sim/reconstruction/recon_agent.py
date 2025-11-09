@@ -53,6 +53,11 @@ class ReconAgent:
             save_dir = self.base_dir / f'outputs/{key}/simulation'
             save_dir.mkdir(parents=True, exist_ok=True)
 
+            background_image_path = self.base_dir / f'outputs/{key}/reconstruction/background.jpg'
+            new_background_image_path = save_dir / 'background.jpg'
+            scene_json["background_image"] = str(new_background_image_path)
+            shutil.copy(background_image_path, new_background_image_path)
+
             bg_glb_path = scene_json["background"]["registered"]
             new_bg_glb_path = save_dir / Path(bg_glb_path).name
             scene_json["background"] = {"registered": str(new_bg_glb_path)}

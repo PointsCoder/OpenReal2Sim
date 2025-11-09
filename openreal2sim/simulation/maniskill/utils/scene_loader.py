@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 import numpy as np
+from mani_skill.utils.structs.pose import Pose
+from transforms3d.quaternions import mat2quat
 
 
 @dataclass
@@ -108,6 +110,14 @@ def load_scene_config(scene_json_path: str | Path) -> SceneConfig:
             mesh_path = mesh_path.replace("/app/", str(output_path) + "/")
 
         grasp_path = obj_data.get("grasps").replace("/app/", str(output_path) + "/")
+
+        # Resolve trajectory path
+        trajectory_path = (
+            obj_data.get("hybrid_trajs") or obj_data.get("simple_trajs") or ""
+        )
+        if trajectory_path:
+            trajectory_path = trajectory_path.replace("/app/", str(output_path) + "/")
+
         objects[obj_id] = ObjectConfig(
             oid=obj_data["oid"],
             name=obj_data["name"],
@@ -116,8 +126,7 @@ def load_scene_config(scene_json_path: str | Path) -> SceneConfig:
             bbox_min=obj_data.get("object_min", [0, 0, 0]),
             bbox_max=obj_data.get("object_max", [0, 0, 0]),
             grasps=grasp_path,
-            trajectory_path=obj_data.get("hybrid_trajs")
-            or obj_data.get("simple_trajs"),
+            trajectory_path=trajectory_path,
         )
 
     # Parse background
@@ -168,3 +177,29 @@ def resolve_path(path: str, base_dir: Optional[Path] = None) -> Path:
         resolved = base_dir / resolved
 
     return resolved
+
+
+def load_trajectory(filepath: str) -> list[Pose] | None:
+    """Loads an object trajectory from a .npy file."""
+    if not filepath or not filepath.endswith(".npy"):
+        print(f"Error: Invalid trajectory file path provided: {filepath}")
+        return None
+    try:
+        trajectory_data = np.load(filepath, allow_pickle=True)
+    except FileNotFoundError:
+        print(f"Error: Trajectory file not found at {filepath}")
+        return None
+
+    poses = []
+    # The trajectory can be stored in different formats, so we handle both
+    # a list of 4x4 matrices and a dictionary containing the poses.
+    if isinstance(trajectory_data, dict):
+        trajectory_data = trajectory_data["world_pose"]
+
+    for matrix in trajectory_data:
+        # position
+        p = matrix[:3, 3]
+        # rotation matrix to wxyz quaternion
+        q_wxyz = mat2quat(matrix[:3, :3])
+        poses.append(Pose.create_from_pq(p=p, q=q_wxyz))
+    return poses
