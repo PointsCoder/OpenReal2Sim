@@ -25,6 +25,7 @@ services:
       - ${HOME}:${HOME}
       - ../:/app
       - ${HF_HOME:-~/.cache/huggingface}:/tmp/.cache/huggingface
+      - ~/.cache/warp:/tmp/.cache/warp
       - ~/.cache/hy3dgen:/tmp/.cache/hy3dgen
       - ~/.cache/torch_extensions:/tmp/.cache/torch_extensions
       - ~/.cache/matplotlib:/tmp/.cache/matplotlib
