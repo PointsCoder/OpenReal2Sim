@@ -49,7 +49,7 @@ Then run the tools under `openreal2sim/simulation/mujoco/tools` directly.
 python openreal2sim/simulation/mujoco/tools/simplify_scene.py --scene-name demo_genvideo
 ```
 
-WARNING: This overwrites GLB files in place. Make sure you have backups!
+**WARNING**: This overwrites GLB files **in place**. Make sure you have backups!
 
 ### GLB to MJCF Conversion
 
@@ -89,12 +89,7 @@ python openreal2sim/simulation/mujoco/tools/replay_trajectory.py \
 
 Replays trajectories with PD control. Keyboard: Space (pause), R (restart).
 
-**Note:** Trajectories from Isaac Sim may not always succeed in MuJoCo due to dynamics differences.
-
-## Configuration
-
-- **Simulation parameters**: `config/constants.yaml` contains default collision, solver, and material settings
-- **Robot configuration**: `config/franka_panda_config.yaml` contains joint names, PD gains, and gripper settings
+**Note:** Trajectories from Isaac Sim may not always succeed in MuJoCo due to dynamics differences, especially contact handling. You may need to tune the simulation parameters or modify the GLB to MJCF settings.
 
 ## License
 
