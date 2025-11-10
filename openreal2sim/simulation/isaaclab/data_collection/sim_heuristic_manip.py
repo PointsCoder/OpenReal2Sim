@@ -16,7 +16,7 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser("sim_policy")
 parser.add_argument("--key", type=str, default="demo_video", help="scene key (outputs/<key>)")
 parser.add_argument("--robot", type=str, default="franka")
-parser.add_argument("--num_envs", type=int, default=1)
+parser.add_argument("--num_envs", type=int, default=4)
 parser.add_argument("--num_trials", type=int, default=1)
 parser.add_argument("--teleop_device", type=str, default="keyboard")
 parser.add_argument("--sensitivity", type=float, default=1.0)
@@ -366,62 +366,101 @@ class HeuristicManipulation(BaseSimulator):
 
     def grasp_trials(self, gg, std: float = 0.0005, max_retries: int = 3):
         """
-        Try grasp proposals with automatic recovery from motion planning failures.
-        Returns dict with success flag and chosen grasp parameters.
+        Async grasp trials: each env finds its own successful grasp independently.
+        Environments that succeed early keep their grasp while failed envs continue searching.
         
-        Args:
-            gg: GraspGroup with grasp proposals
-            std: Standard deviation for random perturbations
-            max_retries: Number of retry attempts if motion planning fails
+        Returns dict with per-env success flags, chosen grasp parameters, and skip mask.
+        Envs that exhaust retries are marked to skip in future processing.
         """
         B = self.scene.num_envs
         idx_all = list(range(len(gg)))
         if len(idx_all) == 0:
             print("[ERR] empty grasp list.")
             return {
-                "success": False,
-                "chosen_pose_w": None,
-                "chosen_pre": None,
-                "chosen_delta": None,
+                "success": np.zeros(B, dtype=bool),
+                "chosen_pose_w": [None] * B,
+                "chosen_pre": [None] * B,
+                "chosen_delta": [None] * B,
+                "skip_envs": np.zeros(B, dtype=bool),
             }
 
         rng = np.random.default_rng()
         pre_dist_const = 0.12  # m
 
+        # Track per-environment success and chosen grasps
+        env_success = np.zeros(B, dtype=bool)
+        env_chosen_pose_w = [None] * B  # List of (pos, quat) tuples per env
+        env_chosen_pre = np.zeros(B, dtype=np.float32)
+        env_chosen_delta = np.zeros(B, dtype=np.float32)
+        env_best_score = np.zeros(B, dtype=np.float32)
+        env_skip = np.zeros(B, dtype=bool)  # Track envs to skip due to exhausted retries
+        
         # Retry loop for grasp selection phase
         for retry_attempt in range(max_retries):
             try:
                 print(f"\n{'='*60}")
-                print(f"GRASP SELECTION ATTEMPT {retry_attempt + 1}/{max_retries}")
+                print(f"ASYNC GRASP SELECTION ATTEMPT {retry_attempt + 1}/{max_retries}")
+                print(f"Successful envs: {env_success.sum()}/{B}")
                 print(f"{'='*60}\n")
                 
-                success = False
-                chosen_pose_w = None    # (p_w, q_w)
-                chosen_pre    = None
-                chosen_delta  = None
-
-                # Assign different grasp proposals to different envs
+                # If all non-skipped envs succeeded, we're done
+                active_mask = ~env_skip
+                if np.all(env_success[active_mask]):
+                    successful_envs = np.where(env_success & ~env_skip)[0]
+                    skipped_envs = np.where(env_skip)[0]
+                    print(f"[SUCCESS] All active environments found valid grasps!")
+                    if len(skipped_envs) > 0:
+                        print(f"[INFO] Skipped {len(skipped_envs)} failed environments: {skipped_envs.tolist()}")
+                    break
+                
+                # Get mask of envs that still need to find a grasp (not successful and not skipped)
+                active_failed_mask = (~env_success) & (~env_skip)
+                failed_env_ids = np.where(active_failed_mask)[0]
+                n_failed = len(failed_env_ids)
+                
+                if n_failed == 0:
+                    # All remaining envs are either successful or skipped
+                    break
+                
+                print(f"[INFO] {n_failed} environments still searching for grasps: {failed_env_ids.tolist()}")
+                
+                # Iterate through grasp proposals
                 for start in range(0, len(idx_all), B):
                     block = idx_all[start : start + B]
                     if len(block) < B:
                         block = block + [block[-1]] * (B - len(block))
 
+                    # Build grasp proposals for ALL envs (even successful ones get dummy data)
                     grasp_pos_w_batch, grasp_quat_w_batch = [], []
-                    for idx in block:
-                        p_w, q_w = grasp_to_world(gg[int(idx)])
-                        grasp_pos_w_batch.append(p_w.astype(np.float32))
-                        grasp_quat_w_batch.append(q_w.astype(np.float32))
+                    for b in range(B):
+                        if env_success[b] or env_skip[b]:
+                            # Use existing successful grasp or dummy for skipped env
+                            if env_success[b]:
+                                p_w, q_w = env_chosen_pose_w[b]
+                            else:
+                                # Dummy grasp for skipped env
+                                p_w, q_w = grasp_to_world(gg[0])
+                            grasp_pos_w_batch.append(p_w.astype(np.float32))
+                            grasp_quat_w_batch.append(q_w.astype(np.float32))
+                        else:
+                            # New grasp proposal for failed env
+                            idx = block[b % len(block)]
+                            p_w, q_w = grasp_to_world(gg[int(idx)])
+                            grasp_pos_w_batch.append(p_w.astype(np.float32))
+                            grasp_quat_w_batch.append(q_w.astype(np.float32))
+                    
                     grasp_pos_w_batch  = np.stack(grasp_pos_w_batch,  axis=0)  # (B,3)
                     grasp_quat_w_batch = np.stack(grasp_quat_w_batch, axis=0)  # (B,4)
                     self.show_goal(grasp_pos_w_batch, grasp_quat_w_batch)
                     
                     # Random disturbance along approach axis
                     pre_dist_batch = np.full((B,), pre_dist_const, dtype=np.float32)
-                    delta_batch    = rng.normal(0.0, std, size=(B,)).astype(np.float32)
+                    delta_batch = rng.normal(0.0, std, size=(B,)).astype(np.float32)
 
                     info = self.build_grasp_info(grasp_pos_w_batch, grasp_quat_w_batch,
                                                 pre_dist_batch, delta_batch)
 
+                    # Execute grasp trial for ALL envs
                     ok_batch, score_batch = self.execute_and_lift_once_batch(info)
                     
                     # Check if motion planning returned valid results
@@ -429,36 +468,60 @@ class HeuristicManipulation(BaseSimulator):
                         print(f"[CRITICAL] Motion planning failed during grasp trial at block[{start}:{start+B}]")
                         raise RuntimeError("GraspTrialMotionPlanningFailure")
                     
-                    ok_cnt = int(ok_batch.sum())
-                    print(f"[SEARCH] block[{start}:{start+B}] -> success {ok_cnt}/{B}")
+                    # Update success status ONLY for envs that were still searching
+                    for b in range(B):
+                        if not env_success[b] and not env_skip[b]:  # Only update if active and not already successful
+                            if ok_batch[b] and score_batch[b] > env_best_score[b]:
+                                # This env found a better grasp
+                                env_success[b] = True
+                                env_chosen_pose_w[b] = (grasp_pos_w_batch[b], grasp_quat_w_batch[b])
+                                env_chosen_pre[b] = pre_dist_batch[b]
+                                env_chosen_delta[b] = delta_batch[b]
+                                env_best_score[b] = score_batch[b]
+                                print(f"[SUCCESS] Env {b} found valid grasp (score: {score_batch[b]:.2f})")
                     
-                    if ok_cnt > 0:
-                        winner = int(np.argmax(score_batch))
-                        chosen_pose_w = (grasp_pos_w_batch[winner], grasp_quat_w_batch[winner])
-                        chosen_pre    = float(pre_dist_batch[winner])
-                        chosen_delta  = float(delta_batch[winner])
-                        success = True
-                        print(f"[SUCCESS] Found valid grasp on attempt {retry_attempt + 1}")
+                    # Check if all active envs now succeeded
+                    active_mask = ~env_skip
+                    newly_successful = np.sum(env_success[active_failed_mask])
+                    print(f"[SEARCH] block[{start}:{start+B}] -> {newly_successful}/{n_failed} previously-failed envs now successful")
+                    
+                    if np.all(env_success[active_mask]):
+                        successful_envs = np.where(env_success & ~env_skip)[0]
+                        skipped_envs = np.where(env_skip)[0]
+                        print(f"[SUCCESS] All active environments found valid grasps on attempt {retry_attempt + 1}!")
+                        if len(skipped_envs) > 0:
+                            print(f"[INFO] {len(skipped_envs)} environments skipped: {skipped_envs.tolist()}")
                         return {
-                            "success": success,
-                            "chosen_pose_w": chosen_pose_w,
-                            "chosen_pre": chosen_pre,
-                            "chosen_delta": chosen_delta,
+                            "success": env_success,
+                            "chosen_pose_w": env_chosen_pose_w,
+                            "chosen_pre": env_chosen_pre,
+                            "chosen_delta": env_chosen_delta,
+                            "skip_envs": env_skip,
                         }
-
-                # If we get here, no grasp succeeded in this attempt
-                if not success:
-                    print(f"[WARN] No proposal succeeded in grasp trial attempt {retry_attempt + 1}/{max_retries}")
+                
+                # End of this attempt - check status
+                active_mask = ~env_skip
+                if not np.all(env_success[active_mask]):
+                    still_failed = np.where((~env_success) & (~env_skip))[0]
+                    print(f"[WARN] {len(still_failed)} envs still need grasps after attempt {retry_attempt + 1}: {still_failed.tolist()}")
                     if retry_attempt < max_retries - 1:
-                        print("[INFO] Retrying grasp selection...")
+                        print("[INFO] Retrying grasp selection for failed environments...")
                         continue
                     else:
-                        print("[ERR] No proposal succeeded to lift after all grasp trial attempts.")
+                        # Last attempt exhausted - mark remaining failed envs as skipped
+                        print(f"[WARN] Exhausted all {max_retries} grasp attempts")
+                        print(f"[INFO] Marking {len(still_failed)} failed environments to skip: {still_failed.tolist()}")
+                        env_skip[still_failed] = True
+                        
+                        successful_envs = np.where(env_success)[0]
+                        print(f"[INFO] Proceeding with {len(successful_envs)} successful environments: {successful_envs.tolist()}")
+                        
                         return {
-                            "success": False,
-                            "chosen_pose_w": None,
-                            "chosen_pre": None,
-                            "chosen_delta": None,
+                            "success": env_success,
+                            "chosen_pose_w": env_chosen_pose_w,
+                            "chosen_pre": env_chosen_pre,
+                            "chosen_delta": env_chosen_delta,
+                            "skip_envs": env_skip,
                         }
                         
             except RuntimeError as e:
@@ -473,14 +536,19 @@ class HeuristicManipulation(BaseSimulator):
                         continue
                     else:
                         print("[ERR] Grasp trial failed after all retry attempts")
+                        # Mark all currently failed envs as skipped
+                        failed_envs = np.where((~env_success) & (~env_skip))[0]
+                        if len(failed_envs) > 0:
+                            print(f"[INFO] Marking {len(failed_envs)} failed environments to skip: {failed_envs.tolist()}")
+                            env_skip[failed_envs] = True
                         return {
-                            "success": False,
-                            "chosen_pose_w": None,
-                            "chosen_pre": None,
-                            "chosen_delta": None,
+                            "success": env_success,
+                            "chosen_pose_w": env_chosen_pose_w,
+                            "chosen_pre": env_chosen_pre,
+                            "chosen_delta": env_chosen_delta,
+                            "skip_envs": env_skip,
                         }
                 else:
-                    # Unknown error, re-raise
                     raise
                     
             except Exception as e:
@@ -490,20 +558,28 @@ class HeuristicManipulation(BaseSimulator):
                     self.clear_data()
                     continue
                 else:
+                    # Mark all currently failed envs as skipped
+                    failed_envs = np.where((~env_success) & (~env_skip))[0]
+                    if len(failed_envs) > 0:
+                        print(f"[INFO] Marking {len(failed_envs)} failed environments to skip: {failed_envs.tolist()}")
+                        env_skip[failed_envs] = True
                     return {
-                        "success": False,
-                        "chosen_pose_w": None,
-                        "chosen_pre": None,
-                        "chosen_delta": None,
+                        "success": env_success,
+                        "chosen_pose_w": env_chosen_pose_w,
+                        "chosen_pre": env_chosen_pre,
+                        "chosen_delta": env_chosen_delta,
+                        "skip_envs": env_skip,
                     }
         
-        # Fallback (should not reach here)
+        # Return final status
         return {
-            "success": False,
-            "chosen_pose_w": None,
-            "chosen_pre": None,
-            "chosen_delta": None,
+            "success": env_success,
+            "chosen_pose_w": env_chosen_pose_w,
+            "chosen_pre": env_chosen_pre,
+            "chosen_delta": env_chosen_delta,
+            "skip_envs": env_skip,
         }
+
     
     def is_success(self, position_threshold: float = 0.05) -> bool:
         """
@@ -557,16 +633,98 @@ class HeuristicManipulation(BaseSimulator):
         print("="*50 + "\n")
         
         return all_success
+    
+    def save_data_selective(self, skip_envs: np.ndarray, ignore_keys: List[str] = []):
+        """
+        Save data only for non-skipped environments.
+        
+        Args:
+            skip_envs: Boolean array [B] indicating which envs to skip
+            ignore_keys: List of keys to ignore during save
+        """
+        save_root = self._demo_dir()
+        save_root.mkdir(parents=True, exist_ok=True)
+
+        stacked = {k: np.array(v) for k, v in self.save_dict.items()}
+        
+        active_envs = np.where(~skip_envs)[0]
+        print(f"[INFO] Saving data for {len(active_envs)} active environments: {active_envs.tolist()}")
+
+        for b in active_envs:
+            env_dir = self._env_dir(save_root, b)
+            for key, arr in stacked.items():
+                if key in ignore_keys:
+                    continue
+                if key == "rgb":
+                    video_path = env_dir / "sim_video.mp4"
+                    writer = imageio.get_writer(
+                        video_path, fps=50, macro_block_size=None
+                    )
+                    for t in range(arr.shape[0]):
+                        writer.append_data(arr[t, b])
+                    writer.close()
+                elif key == "segmask":
+                    video_path = env_dir / "mask_video.mp4"
+                    writer = imageio.get_writer(
+                        video_path, fps=50, macro_block_size=None
+                    )
+                    for t in range(arr.shape[0]):
+                        writer.append_data((arr[t, b].astype(np.uint8) * 255))
+                    writer.close()
+                elif key == "depth":
+                    depth_seq = arr[:, b]
+                    flat = depth_seq[depth_seq > 0]
+                    max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
+                    depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(
+                        np.uint8
+                    )
+                    video_path = env_dir / "depth_video.mp4"
+                    writer = imageio.get_writer(
+                        video_path, fps=50, macro_block_size=None
+                    )
+                    for t in range(depth_norm.shape[0]):
+                        writer.append_data(depth_norm[t])
+                    writer.close()
+                    np.save(env_dir / f"{key}.npy", depth_seq)
+                else:
+                    np.save(env_dir / f"{key}.npy", arr[:, b])
+            json.dump(self.sim_cfgs, open(env_dir / "config.json", "w"), indent=2)
+        
+        print("[INFO]: Demonstration is saved at: ", save_root)
+        
+        # Compose real videos only for active environments
+        print("\n[INFO] Composing real videos with background...")
+        for b in active_envs:
+            print(f"[INFO] Processing environment {b}/{len(active_envs)}...")
+            success = self.compose_real_video(env_id=b)
+            if success:
+                print(f"[INFO] Real video composed successfully for env {b}")
+            else:
+                print(f"[WARN] Failed to compose real video for env {b}")
+
+        demo_root = self.out_dir / "all_demos"
+        demo_root.mkdir(parents=True, exist_ok=True)
+        total_demo_id = get_next_demo_id(demo_root)
+        demo_save_path = demo_root / f"demo_{total_demo_id}"
+        demo_save_path.mkdir(parents=True, exist_ok=True)
+        meta_info = {
+            "path": str(save_root),
+            "fps": 50,
+            "active_envs": active_envs.tolist(),
+            "skipped_envs": np.where(skip_envs)[0].tolist(),
+        }
+        with open(demo_save_path / "meta_info.json", "w") as f:
+            json.dump(meta_info, f)
+        os.system(f"cp -r {save_root}/* {demo_save_path}")
+        print("[INFO]: Demonstration is saved at: ", demo_save_path)
 
 
     def inference(self, std: float = 0.0, max_restart_attempts: int = 10, 
-              max_grasp_retries: int = 3, regrasp_after_failures: int = 3) -> bool:
+          max_grasp_retries: int = 1, regrasp_after_failures: int = 1) -> bool:
         """
-        Main function with automatic restart on motion planning failures.
-        Now has separate retry loops for:
-        1. Grasp selection phase (max_grasp_retries)
-        2. Trajectory following phase (max_restart_attempts)
-        3. Re-grasp after N consecutive trajectory failures (regrasp_after_failures)
+        Main function with async per-env grasp selection and trajectory following.
+        Each environment progresses independently through grasp selection, and only
+        moves to trajectory following once ALL envs have found successful grasps.
         """
         B = self.scene.num_envs
         
@@ -578,59 +736,94 @@ class HeuristicManipulation(BaseSimulator):
         gg = GraspGroup().from_npy(npy_file_path=npy_path)
         gg = get_best_grasp_with_hints(gg, point=None, direction=[0, 0, -1])
 
-        # Track consecutive trajectory failures for re-grasping
-        consecutive_trajectory_failures = 0
+        # Track per-environment state
+        env_grasp_success = np.zeros(B, dtype=bool)
+        env_traj_success = np.zeros(B, dtype=bool)
+        env_consecutive_failures = np.zeros(B, dtype=int)
+        env_skip = np.zeros(B, dtype=bool)  # Track envs to skip entirely
+        
         total_grasp_attempts = 0
-        max_total_grasp_attempts = 5  # Prevent infinite re-grasping loop
+        max_total_grasp_attempts = 5
         
         # ========== OUTER LOOP: RE-GRASP IF NEEDED ==========
         while total_grasp_attempts < max_total_grasp_attempts:
             total_grasp_attempts += 1
             
-            # ========== PHASE 1: GRASP SELECTION (with retries) ==========
+            # ========== PHASE 1: ASYNC GRASP SELECTION ==========
             if self.grasp_idx >= 0:
-                # Fixed grasp index mode
+                # Fixed grasp index mode - all envs use same grasp
                 if self.grasp_idx >= len(gg):
                     print(f"[ERR] grasp_idx {self.grasp_idx} out of range [0,{len(gg)})")
                     return False
                 print(f"[INFO] using fixed grasp index {self.grasp_idx} for all envs.")
                 p_w, q_w = grasp_to_world(gg[int(self.grasp_idx)])
-                ret = {
-                    "success": True,
-                    "chosen_pose_w": (p_w.astype(np.float32), q_w.astype(np.float32)),
-                    "chosen_pre": self.grasp_pre if self.grasp_pre is not None else 0.12,
-                    "chosen_delta": self.grasp_delta if self.grasp_delta is not None else 0.0,
-                }
+                
+                # Prepare per-env format
+                env_grasp_success = np.ones(B, dtype=bool)
+                env_chosen_pose_w = [(p_w.astype(np.float32), q_w.astype(np.float32))] * B
+                env_chosen_pre = np.full(B, self.grasp_pre if self.grasp_pre is not None else 0.12, dtype=np.float32)
+                env_chosen_delta = np.full(B, self.grasp_delta if self.grasp_delta is not None else 0.0, dtype=np.float32)
+                env_skip = np.zeros(B, dtype=bool)
             else:
-                # Automatic grasp selection with retries
+                # Automatic async grasp selection
                 if total_grasp_attempts > 1:
                     print(f"\n{'#'*60}")
                     print(f"RE-GRASP ATTEMPT {total_grasp_attempts}/{max_total_grasp_attempts}")
                     print(f"{'#'*60}\n")
+                
                 ret = self.grasp_trials(gg, std=std, max_retries=max_grasp_retries)
+                
+                env_grasp_success = ret["success"]
+                env_chosen_pose_w = ret["chosen_pose_w"]
+                env_chosen_pre = ret["chosen_pre"]
+                env_chosen_delta = ret["chosen_delta"]
+                env_skip = ret["skip_envs"]
             
-            if not ret["success"]:
-                print("[ERR] No successful grasp found after all attempts")
+            # Check if any active envs found grasps
+            active_envs = np.where(~env_skip)[0]
+            successful_envs = np.where(env_grasp_success & ~env_skip)[0]
+            
+            if len(active_envs) == 0:
+                print("[ERR] All environments failed grasp selection and were skipped")
                 return False
             
-            print(f"\n[SUCCESS] Grasp selected: delta={ret['chosen_delta']:.4f}m")
+            if len(successful_envs) == 0:
+                print(f"[ERR] None of the {len(active_envs)} active environments found grasps")
+                return False
             
-            # Reset trajectory failure counter for new grasp
-            consecutive_trajectory_failures = 0
+            print(f"\n[SUCCESS] {len(successful_envs)}/{len(active_envs)} active environments found valid grasps!")
+            if len(successful_envs) < len(active_envs):
+                skipped_envs = np.where(env_skip)[0]
+                print(f"[INFO] {len(skipped_envs)} environments skipped: {skipped_envs.tolist()}")
             
-            # ========== PHASE 2: TRAJECTORY FOLLOWING (with restarts) ==========
+            for b in successful_envs:
+                print(f"  Env {b}: delta={env_chosen_delta[b]:.4f}m")
+            
+            # Reset trajectory failure counters for new grasps
+            env_consecutive_failures[:] = 0
+            env_traj_success[:] = False
+            
+            # ========== PHASE 2: TRAJECTORY FOLLOWING (with per-env restart) ==========
             for restart_attempt in range(max_restart_attempts):
                 try:
                     print(f"\n{'='*60}")
                     print(f"TRAJECTORY EXECUTION ATTEMPT {restart_attempt + 1}/{max_restart_attempts}")
+                    active_envs = np.where(~env_skip)[0]
+                    successful_traj_envs = np.where(env_traj_success & ~env_skip)[0]
+                    print(f"Active envs: {active_envs.tolist()}")
+                    print(f"Successful envs: {len(successful_traj_envs)}/{len(active_envs)}")
                     print(f"{'='*60}\n")
                     
-                    # Prepare grasp info
-                    p_win, q_win = ret["chosen_pose_w"]
-                    p_all   = np.repeat(p_win.reshape(1, 3), B, axis=0)
-                    q_all   = np.repeat(q_win.reshape(1, 4), B, axis=0)
-                    pre_all = np.full((B,), ret["chosen_pre"],   dtype=np.float32)
-                    del_all = np.full((B,), ret["chosen_delta"], dtype=np.float32)
+                    # If all active envs succeeded in trajectory, we're done
+                    if np.all(env_traj_success[~env_skip]):
+                        print(f"[SUCCESS] All {len(active_envs)} active environments completed trajectories!")
+                        break
+                    
+                    # Prepare grasp info for ALL envs using their individual grasps
+                    p_all = np.stack([pose[0] for pose in env_chosen_pose_w], axis=0)  # [B,3]
+                    q_all = np.stack([pose[1] for pose in env_chosen_pose_w], axis=0)  # [B,4]
+                    pre_all = env_chosen_pre  # [B]
+                    del_all = env_chosen_delta  # [B]
                     info_all = self.build_grasp_info(p_all, q_all, pre_all, del_all)
 
                     # Reset and execute: open → pre → grasp → close → follow_object_goals
@@ -651,108 +844,132 @@ class HeuristicManipulation(BaseSimulator):
                     self.wait(gripper_open=True, steps=4)
 
                     # Pre-grasp
-                    print("[INFO] Moving to pre-grasp position...")
+                    print("[INFO] Moving to pre-grasp positions...")
                     jp, success = self.move_to(info_all["pre_p_b"], info_all["pre_q_b"], gripper_open=True)
                     if jp is None or torch.any(success == False):
-                        print("[WARN] Pre-grasp motion failed, restarting...")
-                        consecutive_trajectory_failures += 1
-                        if consecutive_trajectory_failures >= regrasp_after_failures:
-                            break  # Exit to re-grasp
+                        print("[WARN] Pre-grasp motion failed for some envs")
+                        failed_envs = torch.where(success == False)[0].cpu().numpy() if success is not None else np.arange(B)
+                        # Only increment failure counter for ACTIVE envs that failed
+                        for b in failed_envs:
+                            if not env_skip[b]:  # Only track failures for active envs
+                                env_consecutive_failures[b] += 1
+                        
+                        # Check if any ACTIVE env needs re-grasp
+                        active_need_regrasp = np.where((env_consecutive_failures >= regrasp_after_failures) & ~env_skip)[0]
+                        if len(active_need_regrasp) > 0:
+                            print(f"[INFO] Active envs {active_need_regrasp.tolist()} need re-grasping")
+                            break
                         continue
+                    
                     self.save_dict["actions"].append(np.concatenate([info_all["pre_p_b"].cpu().numpy(), info_all["pre_q_b"].cpu().numpy(), np.zeros((B, 1))], axis=1))
                     jp = self.wait(gripper_open=True, steps=3)
 
                     # Grasp
-                    print("[INFO] Moving to grasp position...")
+                    print("[INFO] Moving to grasp positions...")
                     jp, success = self.move_to(info_all["p_b"], info_all["q_b"], gripper_open=True)
                     if jp is None or torch.any(success == False):
-                        print("[WARN] Grasp motion failed, restarting...")
-                        consecutive_trajectory_failures += 1
-                        if consecutive_trajectory_failures >= regrasp_after_failures:
-                            break  # Exit to re-grasp
+                        print("[WARN] Grasp motion failed for some envs")
+                        failed_envs = torch.where(success == False)[0].cpu().numpy() if success is not None else np.arange(B)
+                        # Only increment failure counter for ACTIVE envs that failed
+                        for b in failed_envs:
+                            if not env_skip[b]:  # Only track failures for active envs
+                                env_consecutive_failures[b] += 1
+                        
+                        # Check if any ACTIVE env needs re-grasp
+                        active_need_regrasp = np.where((env_consecutive_failures >= regrasp_after_failures) & ~env_skip)[0]
+                        if len(active_need_regrasp) > 0:
+                            print(f"[INFO] Active envs {active_need_regrasp.tolist()} need re-grasping")
+                            break
                         continue
+                    
                     self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.zeros((B, 1))], axis=1))
 
                     # Close gripper
-                    print("[INFO] Closing gripper...")
+                    print("[INFO] Closing grippers...")
                     jp = self.wait(gripper_open=False, steps=50)
                     self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.ones((B, 1))], axis=1))
 
-                    # Follow object trajectory - THIS CAN RAISE RuntimeError
-                    print("[INFO] Following object trajectory...")
+                    # Follow object trajectory
+                    print("[INFO] Following object trajectories...")
                     jp = self.follow_object_goals(jp, sample_step=5, visualize=True)
                     
-                    # If we reach here, trajectory following succeeded!
-                    print("[SUCCESS] Trajectory completed successfully!")
+                    # If we reach here, trajectory following succeeded for all!
+                    print("[SUCCESS] All trajectories completed successfully!")
+                    env_traj_success[:] = True
                     
-                    # Verify task completion
+                    # Verify task completion (only for active envs)
                     task_success = self.is_success(position_threshold=0.1)
                     if task_success:
-                        print("[SUCCESS] Task verification passed!")
-                        self.save_data()
+                        print(f"[SUCCESS] Task verification passed for all {len(active_envs)} active environments!")
+                        self.save_data_selective(env_skip)
                         return True
                     else:
-                        print("[WARN] Task verification failed, but trajectory completed")
-                        print(f"[ERROR] Attempting restart")
+                        print("[WARN] Task verification failed for some environments")
                         self.clear_data()
                         
                 except RuntimeError as e:
                     if "MotionPlanningFailure_RestartNeeded" in str(e):
                         print(f"\n[RESTART] Motion planning failed mid-trajectory on attempt {restart_attempt + 1}")
                         print("[RESTART] Object was likely dropped. Restarting from grasp phase...")
-                        print(f"[RESTART] Remaining attempts: {max_restart_attempts - restart_attempt - 1}\n")
                         
-                        # Clear the corrupted trajectory data
+                        # Increment failure counter ONLY for ACTIVE envs that haven't succeeded
+                        for b in range(B):
+                            if not env_traj_success[b] and not env_skip[b]:  # Only active, unsuccessful envs
+                                env_consecutive_failures[b] += 1
+                        
                         self.clear_data()
-                        consecutive_trajectory_failures += 1
                         
-                        # Check if we need to re-grasp
-                        if consecutive_trajectory_failures >= regrasp_after_failures:
+                        # Check if any ACTIVE env needs re-grasp
+                        active_need_regrasp = np.where((env_consecutive_failures >= regrasp_after_failures) & ~env_skip)[0]
+                        if len(active_need_regrasp) > 0:
                             print(f"\n{'!'*60}")
-                            print(f"CONSECUTIVE TRAJECTORY FAILURES: {consecutive_trajectory_failures}")
-                            print(f"RE-SELECTING GRASP (total attempt {total_grasp_attempts + 1}/{max_total_grasp_attempts})")
+                            print(f"Active envs {active_need_regrasp.tolist()} need re-grasping")
+                            print(f"RE-SELECTING GRASPS (total attempt {total_grasp_attempts + 1}/{max_total_grasp_attempts})")
                             print(f"{'!'*60}\n")
-                            break  # Exit trajectory loop to re-grasp
+                            break
                         
-                        # Continue to next restart attempt
                         continue
                     else:
-                        # Unknown error, re-raise
                         raise
                 
                 except Exception as e:
                     print(f"[ERROR] Unexpected error during execution: {type(e).__name__}: {e}")
-                    print(f"[ERROR] Attempting restart {restart_attempt + 1}/{max_restart_attempts}...")
-                    self.clear_data()
-                    consecutive_trajectory_failures += 1
                     
-                    # Check if we need to re-grasp
-                    if consecutive_trajectory_failures >= regrasp_after_failures:
+                    # Increment failure counter ONLY for ACTIVE envs that haven't succeeded
+                    for b in range(B):
+                        if not env_traj_success[b] and not env_skip[b]:  # Only active, unsuccessful envs
+                            env_consecutive_failures[b] += 1
+                    
+                    self.clear_data()
+                    
+                    # Check if any ACTIVE env needs re-grasp
+                    active_need_regrasp = np.where((env_consecutive_failures >= regrasp_after_failures) & ~env_skip)[0]
+                    if len(active_need_regrasp) > 0:
                         print(f"\n{'!'*60}")
-                        print(f"CONSECUTIVE TRAJECTORY FAILURES: {consecutive_trajectory_failures}")
-                        print(f"RE-SELECTING GRASP (total attempt {total_grasp_attempts + 1}/{max_total_grasp_attempts})")
+                        print(f"Active envs {active_need_regrasp.tolist()} need re-grasping")
+                        print(f"RE-SELECTING GRASPS (total attempt {total_grasp_attempts + 1}/{max_total_grasp_attempts})")
                         print(f"{'!'*60}\n")
-                        break  # Exit trajectory loop to re-grasp
+                        break
                     
                     continue
             
             # Check why we exited the trajectory loop
-            if consecutive_trajectory_failures >= regrasp_after_failures:
-                # We broke out to re-grasp
+            active_need_regrasp = np.where((env_consecutive_failures >= regrasp_after_failures) & ~env_skip)[0]
+            if len(active_need_regrasp) > 0:
+                # Some ACTIVE envs need new grasps
                 if total_grasp_attempts >= max_total_grasp_attempts:
-                    print(f"\n[FAILURE] Exhausted all grasp attempts ({max_total_grasp_attempts})")
+                    print(f"\n[FAILURE] Active envs {active_need_regrasp.tolist()} exhausted all grasp attempts ({max_total_grasp_attempts})")
                     return False
-                # Continue outer loop to select new grasp
+                # Continue outer loop to select new grasps for failed envs
                 continue
             else:
-                # We exhausted all restart attempts without hitting re-grasp threshold
+                # We exhausted all restart attempts
                 print(f"\n[FAILURE] Failed after {max_restart_attempts} trajectory restart attempts")
                 return False
         
         # If we exit the outer loop, we exhausted all grasp attempts
         print(f"\n[FAILURE] Failed after {max_total_grasp_attempts} total grasp selection attempts")
         return False
-
 # ───────────────────────────────────────────────────────────────────────────── Entry Point ─────────────────────────────────────────────────────────────────────────────
 def main():
     sim_cfgs = load_sim_parameters(BASE_DIR, args_cli.key)
