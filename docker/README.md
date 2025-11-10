@@ -35,6 +35,8 @@ if sometimes the group change does not take effect, you can also try:
    ```
 to switch to the `docker` group in the current terminal session.
 
+You also need to have NVIDIA CUDA Container Toolkit installed. See: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+
 ### Use Pre-Built Docker Image
 
 If you want to use a pre-built image from Docker Hub, you can pull it directly:

@@ -336,4 +336,4 @@ if __name__=="__main__":
     args=ap.parse_args()
 
     if args.key: key_in.value=args.key
-    demo.launch(share=args.share,server_port=args.port)
+    demo.launch(share=args.share,server_port=args.port,server_name="0.0.0.0")

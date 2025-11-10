@@ -26,7 +26,7 @@ We will use `openreal2sim:dev` image for the reconstruction and `isaaclab:dev` i
 
 Launch the docker container with mounted repository and data folder:
 ```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run openreal2sim
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run -p 7860:7860 openreal2sim
 ```
 
 The following steps are all performed inside the docker container.

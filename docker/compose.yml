@@ -23,6 +23,9 @@ services:
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
       - ../:/app
+      - ${HF_HOME:-~/.cache/huggingface}:/tmp/.cache/huggingface
+      - ~/.cache/torch_extensions:/tmp/.cache/torch_extensions
+      - ~/.cache/matplotlib:/tmp/.cache/matplotlib
     stdin_open: true
     user: "${HOST_UID}:${HOST_GID}"
     tty: true

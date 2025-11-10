@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
     libx11-6 libxrandr2 libxinerama1 libxcursor1 libxi6 libxxf86vm1 \
     mesa-utils libglfw3 libglew2.2 \
     mesa-vulkan-drivers libgl1-mesa-dri \
-    vim tree tmux \
+    vim tree tmux zsh \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
