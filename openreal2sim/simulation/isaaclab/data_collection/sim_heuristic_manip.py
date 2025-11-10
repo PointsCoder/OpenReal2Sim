@@ -219,7 +219,7 @@ class HeuristicManipulation(BaseSimulator):
         return pb, qb  # [B,3], [B,4]
 
     # ---------- Batched execution & lift-check ----------
-    def execute_and_lift_once_batch(self, info: dict, lift_height=0.06, position_threshold=0.1) -> tuple[np.ndarray, np.ndarray]:
+    def execute_and_lift_once_batch(self, info: dict, lift_height=0.06, position_threshold=0.2) -> tuple[np.ndarray, np.ndarray]:
         """
         Reset → pre → grasp → close → lift → hold; return (success[B], score[B]).
         Now propagates motion planning failures by returning (None, None).
@@ -692,9 +692,9 @@ class HeuristicManipulation(BaseSimulator):
                         self.save_data()
                         return True
                     else:
-                        print("[WARN] Task verification failed, but trajectory completed. Saving anyway...")
-                        self.save_data()
-                        return True
+                        print("[WARN] Task verification failed, but trajectory completed")
+                        print(f"[ERROR] Attempting restart")
+                        self.clear_data()
                         
                 except RuntimeError as e:
                     if "MotionPlanningFailure_RestartNeeded" in str(e):
