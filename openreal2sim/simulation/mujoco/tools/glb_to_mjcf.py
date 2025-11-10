@@ -210,19 +210,19 @@ def main(
     background_resolution: int = 12000,
     add_free_joint: bool = False,
 ) -> int:
-    """Convert GLB/GLTF assets into MuJoCo-ready MJCF packages.
-    
+    """Convert GLB/GLTF assets to MJCF with CoACD convex decomposition.
+
     Args:
         inputs: Input GLB/GLTF files or directories
-        scene_name: Process scene from outputs/<scene_name>/simulation/ directory
+        scene_name: Process scene from outputs/<scene_name>/simulation/
         outputs_root: Root directory containing outputs
         output_dir: Directory where results are written
-        coacd_threshold: CoACD concavity threshold for object assets
-        coacd_max_hulls: Maximum convex hulls for object assets
-        coacd_resolution: Sampling resolution for object assets
-        background_max_hulls: Maximum convex hulls for background assets
-        background_threshold: Concavity threshold for background assets
-        background_resolution: Sampling resolution for background assets
+        coacd_threshold: CoACD concavity threshold for objects
+        coacd_max_hulls: Maximum convex hulls for objects
+        coacd_resolution: Sampling resolution for objects
+        background_max_hulls: Maximum convex hulls for background
+        background_threshold: Concavity threshold for background
+        background_resolution: Sampling resolution for background
         add_free_joint: Add a freejoint to the root body
     """
     import coacd  # noqa: F401

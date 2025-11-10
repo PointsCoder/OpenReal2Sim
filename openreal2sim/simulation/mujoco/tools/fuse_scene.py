@@ -17,7 +17,6 @@ from utils.scene_fusion import (
     SceneFusion,
     CollisionDefaults,
     ContactParameters,
-    load_object_masses,
     load_object_metadata,
     load_scene_config,
 )
@@ -37,25 +36,25 @@ def main(
     robot_path: Path = DEFAULT_ROBOT_PATH,
     output: Optional[Path] = None,
     constants_path: Path = DEFAULT_CONSTANTS_PATH,
-    object_masses: Optional[Path] = None,
+    object_mass: List[str] = [],
     default_mass: float = 0.1,
     groundplane_height: float = 0.0,
     robot_pose: Optional[List[float]] = None,
 ) -> int:
     """Fuse robot MJCF with reconstructed assets.
-    
+
     Args:
         scene_name: Scene name in outputs/<scene_name>/simulation/
         outputs_root: Root directory containing outputs
         demo_path: Path to demo folder
-        asset_path: Directory that stores MJCF asset packages (defaults to demo path)
+        asset_path: Directory that stores MJCF asset packages
         robot_path: Directory that contains panda.xml and scene.xml
-        output: Path for fused XML (defaults to <demo>/scene.xml)
+        output: Path for fused XML
         constants_path: Path to constants YAML file
-        object_masses: Path to YAML file with object masses (name: mass mapping)
-        default_mass: Default mass (kg) for objects not in mass config file
-        groundplane_height: Height of the ground plane (z-coordinate)
-        robot_pose: Manual robot pose: [x, y, z, qw, qx, qy, qz]
+        object_mass: Object masses as key=value pairs
+        default_mass: Default mass for objects not specified
+        groundplane_height: Height of the ground plane
+        robot_pose: Manual robot pose [x, y, z, qw, qx, qy, qz]
     """
     # Scene mode: work with outputs/<scene_name>/simulation/
     if scene_name:
@@ -114,15 +113,30 @@ def main(
         friction=constants["contact_pair"]["friction"],
     )
 
-    # Load object masses with default fallback
-    if object_masses and object_masses.exists():
-        masses = load_object_masses(object_masses, scene_config, default_mass)
-    else:
-        masses = {}
-        for obj_cfg in scene_config["objects"].values():
-            obj_name = obj_cfg["name"]
+    # Parse object masses from CLI (key=value format)
+    mass_dict = {}
+    if object_mass:
+        for item in object_mass:
+            if "=" not in item:
+                logger.error(f"Invalid mass format: '{item}'. Expected key=value format (e.g., spoon=0.05)")
+                return 1
+            key, value = item.split("=", 1)
+            try:
+                mass_dict[key] = float(value)
+            except ValueError:
+                logger.error(f"Invalid mass value for '{key}': '{value}' is not a number")
+                return 1
+
+    # Build masses dict for all objects
+    masses = {}
+    for obj_cfg in scene_config["objects"].values():
+        obj_name = obj_cfg["name"]
+        if obj_name in mass_dict:
+            masses[obj_name] = mass_dict[obj_name]
+            logger.info(f"Using mass from CLI for '{obj_name}': {mass_dict[obj_name]} kg")
+        else:
             masses[obj_name] = default_mass
-            logger.warning(f"No mass config provided, using default mass for '{obj_name}': {default_mass} kg")
+            logger.warning(f"No mass specified for '{obj_name}', using default: {default_mass} kg")
 
     # Compute or load robot pose
     if robot_pose:

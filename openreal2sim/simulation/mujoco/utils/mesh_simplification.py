@@ -15,15 +15,7 @@ def simplify_glb_in_place(
     min_target_tris: int = 500,
     smooth_iters: int = 0,
 ) -> None:
-    """Simplify one GLB/GLTF mesh in-place.
-
-    Args:
-        glb_path: Path to GLB file to simplify
-        target_tris: Target number of triangles
-        min_tris_to_simplify: Skip files with fewer triangles
-        min_target_tris: Minimum target triangles
-        smooth_iters: Number of smoothing iterations to apply
-    """
+    """Simplify GLB mesh in-place using quadric edge collapse."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_dir = Path(tmpdir)
         tmp_obj = tmp_dir / "mesh.obj"
@@ -78,13 +70,7 @@ def simplify_glb_by_target_tris(
     output_path: Path,
     target_tris: int,
 ) -> None:
-    """Simplify a GLB/GLTF mesh file to a specific triangle count.
-
-    Args:
-        input_path: Input GLB/GLTF file path
-        output_path: Output GLB/GLTF file path
-        target_tris: Target number of triangles
-    """
+    """Simplify GLB mesh to target triangle count."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_dir = Path(tmpdir)
         tmp_obj = tmp_dir / "mesh.obj"

@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Automated mesh simplification for entire scene.
-
-This script simplifies all GLB meshes in a scene (background + objects) in place.
-
-Example:
-    python tools/simplify_scene.py --scene-name demo_genvideo
-"""
+"""Automated mesh simplification for entire scene."""
 
 from __future__ import annotations
 
@@ -34,18 +28,16 @@ def main(
     min_target_tris: int = 500,
     smooth_iters: int = 0,
 ) -> int:
-    """Simplify all meshes in a scene automatically.
-
-    WARNING: This will overwrite GLB files in place! Make sure you have backups.
+    """Simplify all meshes in a scene. WARNING: Overwrites GLB files in place.
 
     Args:
-        scene_name: Scene name (will process outputs/<scene_name>/simulation/)
+        scene_name: Scene name to process
         outputs_root: Root directory containing outputs
-        target_tris: Target number of triangles for object meshes
-        background_target_tris: Target number of triangles for background mesh
+        target_tris: Target number of triangles for objects
+        background_target_tris: Target number of triangles for background
         min_tris_to_simplify: Skip files with fewer triangles
         min_target_tris: Minimum target triangles
-        smooth_iters: Number of smoothing iterations to apply
+        smooth_iters: Number of smoothing iterations
     """
     outputs_root = outputs_root.expanduser().resolve()
     scene_dir = outputs_root / scene_name / "simulation"

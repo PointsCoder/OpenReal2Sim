@@ -4,7 +4,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import mujoco
 import mujoco.viewer
@@ -25,7 +25,6 @@ from utils.scene_fusion import (
     SceneFusion,
     CollisionDefaults,
     ContactParameters,
-    load_object_masses,
     load_object_metadata,
 )
 
@@ -35,17 +34,8 @@ DEFAULT_ROBOT_CONFIG_PATH = MUJOCO_DIR / "config" / "franka_panda_config.yaml"
 
 
 def map_docker_path_to_local(path_str: str, repo_root: Path) -> Path:
-    """Map docker paths (/app/...) to local filesystem paths.
-
-    Args:
-        path_str: Path string (may have /app/ prefix)
-        repo_root: Repository root directory
-
-    Returns:
-        Resolved local path
-    """
+    """Map docker paths (/app/...) to local filesystem."""
     if path_str.startswith("/app/"):
-        # Remove /app/ prefix and resolve relative to repo root
         rel_path = path_str[len("/app/"):]
         return repo_root / rel_path
     else:
@@ -63,14 +53,7 @@ def load_demo_config(demo_path: Path) -> dict:
 
 
 def load_trajectory_from_npy(demo_path: Path) -> list[dict]:
-    """Load trajectory from joint_pos.npy and gripper_cmd.npy.
-
-    Args:
-        demo_path: Path to demo directory
-
-    Returns:
-        List of trajectory keyframes with qpos, qvel, and gripper fields
-    """
+    """Load trajectory from .npy files."""
     joint_pos_path = demo_path / "joint_pos.npy"
     joint_vel_path = demo_path / "joint_vel.npy"
     gripper_cmd_path = demo_path / "gripper_cmd.npy"
@@ -107,23 +90,10 @@ def fuse_scene_from_config(
     robot_path: Path,
     constants_path: Path,
     output_xml: Path,
-    object_masses: Optional[Path] = None,
+    mass_dict: dict[str, float],
     default_mass: float = 0.1,
 ) -> Path:
-    """Fuse scene from demo config.
-
-    Args:
-        demo_config: Loaded demo config.json
-        repo_root: Repository root directory
-        robot_path: Path to robot assets
-        constants_path: Path to constants.yaml
-        output_xml: Where to save the fused scene XML
-        object_masses: Path to YAML file with object masses
-        default_mass: Default mass for objects
-
-    Returns:
-        Path to fused scene XML
-    """
+    """Fuse scene from demo config."""
     scene_cfg = demo_config["scene_cfg"]
     robot_cfg = demo_config["robot_cfg"]
 
@@ -181,15 +151,16 @@ def fuse_scene_from_config(
         friction=constants["contact_pair"]["friction"],
     )
 
-    # Load object masses (same logic as fuse_scene.py)
-    if object_masses and object_masses.exists():
-        masses = load_object_masses(object_masses, scene_config, default_mass)
-    else:
-        masses = {}
-        for obj_cfg in scene_config["objects"].values():
-            obj_name = obj_cfg["name"]
+    # Build masses dict for all objects
+    masses = {}
+    for obj_cfg in scene_config["objects"].values():
+        obj_name = obj_cfg["name"]
+        if obj_name in mass_dict:
+            masses[obj_name] = mass_dict[obj_name]
+            logger.info(f"Using mass from CLI for '{obj_name}': {mass_dict[obj_name]} kg")
+        else:
             masses[obj_name] = default_mass
-            logger.warning(f"No mass config provided, using default mass for '{obj_name}': {default_mass} kg")
+            logger.warning(f"No mass specified for '{obj_name}', using default: {default_mass} kg")
 
     # Create fusion object
     fusion = SceneFusion(
@@ -238,16 +209,7 @@ def replay_trajectory_interactive(
     scene_config: dict,
     loop: bool = False,
 ):
-    """Replay trajectory in interactive MuJoCo viewer with PD control.
-
-    Args:
-        model: MuJoCo model
-        data: MuJoCo data
-        trajectory: List of trajectory keyframes
-        robot_config: Robot configuration (PD gains, etc.)
-        scene_config: Scene configuration (for object positions)
-        loop: Whether to loop the trajectory
-    """
+    """Replay trajectory with PD control."""
     if len(trajectory) == 0:
         logger.error("Trajectory is empty")
         return
@@ -260,8 +222,8 @@ def replay_trajectory_interactive(
     control_frequency = robot_config["control_frequency"]
     arm_kp = np.array(robot_config["pd_gains"]["kp"][:7])
     arm_kd = np.array(robot_config["pd_gains"]["kd"][:7])
-    gripper_kp = robot_config["pd_gains"]["kp"][7]
-    gripper_kd = robot_config["pd_gains"]["kd"][7]
+    gripper_kp = robot_config["gripper_control"]["kp"]
+    gripper_kd = robot_config["gripper_control"]["kd"]
     gripper_max_opening = robot_config["gripper_control"]["max_opening"]
 
     # Find joint indices
@@ -526,24 +488,38 @@ def main(
     demo_path: Path,
     constants_path: Path = DEFAULT_CONSTANTS_PATH,
     robot_config_path: Path = DEFAULT_ROBOT_CONFIG_PATH,
-    object_masses: Optional[Path] = None,
+    object_mass: List[str] = [],
     default_mass: float = 0.1,
     loop: bool = False,
 ) -> int:
     """Replay trajectory from demo directory.
 
     Args:
-        demo_path: Path to demo directory (e.g., outputs/demo_genvideo/demos/demo_0/env_000)
+        demo_path: Path to demo directory
         constants_path: Path to constants YAML file
         robot_config_path: Path to robot configuration YAML file
-        object_masses: Path to YAML file with object masses (name: mass mapping)
-        default_mass: Default mass (kg) for objects not in mass config file
+        object_mass: Object masses as key=value pairs
+        default_mass: Default mass for objects not specified
         loop: Loop the trajectory playback
     """
     demo_path = demo_path.expanduser().resolve()
     constants_path = constants_path.expanduser().resolve()
     robot_config_path = robot_config_path.expanduser().resolve()
     robot_path = DEFAULT_ROBOT_PATH.expanduser().resolve()
+
+    # Parse object masses from CLI (key=value format)
+    mass_dict = {}
+    if object_mass:
+        for item in object_mass:
+            if "=" not in item:
+                logger.error(f"Invalid mass format: '{item}'. Expected key=value format (e.g., spoon=0.05)")
+                return 1
+            key, value = item.split("=", 1)
+            try:
+                mass_dict[key] = float(value)
+            except ValueError:
+                logger.error(f"Invalid mass value for '{key}': '{value}' is not a number")
+                return 1
 
     # Load demo config
     logger.info(f"Loading demo config from {demo_path}")
@@ -576,7 +552,7 @@ def main(
         robot_path=robot_path,
         constants_path=constants_path,
         output_xml=output_xml,
-        object_masses=object_masses,
+        mass_dict=mass_dict,
         default_mass=default_mass,
     )
 
