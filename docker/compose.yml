@@ -17,6 +17,7 @@ services:
       - HOME=/tmp
       - USER=dev
       - VSCODE_SERVER_DIR=/tmp/.vscode-server
+      - NUMBA_CACHE_DIR=/tmp/numba_cache
     working_dir: /app
     volumes:
       - /etc/passwd:/etc/passwd:ro
@@ -24,6 +25,7 @@ services:
       - ${HOME}:${HOME}
       - ../:/app
       - ${HF_HOME:-~/.cache/huggingface}:/tmp/.cache/huggingface
+      - ~/.cache/hy3dgen:/tmp/.cache/hy3dgen
       - ~/.cache/torch_extensions:/tmp/.cache/torch_extensions
       - ~/.cache/matplotlib:/tmp/.cache/matplotlib
     stdin_open: true

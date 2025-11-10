@@ -29,6 +29,8 @@ Launch the docker container with mounted repository and data folder:
 HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run -p 7860:7860 openreal2sim
 ```
 
+**Note**: We have mounted several volumes so that checkpoints will be cached even if the container is removed. You can change the volume mappings by modifying the `docker/compose.yml` file. For example, the cache directory for Hunyuan3D on the host machine is set to `~/.cache/hy3dgen`, you can change it to `/data/hy3dgen` if preferred.
+
 The following steps are all performed inside the docker container.
 
 For the first-time use, **inside the docker container**, run the following script to download pretrained checkpoints and compile c++/cuda extensions:
