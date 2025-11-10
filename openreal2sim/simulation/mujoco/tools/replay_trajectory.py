@@ -534,16 +534,14 @@ def main(
     logger.info(f"Loading trajectory from {demo_path}")
     trajectory = load_trajectory_from_npy(demo_path)
 
-    # Always fuse scene from demo config (don't use existing scene.xml)
-    # Save to simulation/mujoco/replay_scene.xml to maintain correct relative paths
-    # demo_path: outputs/<scene_name>/demos/demo_N/env_NNN
-    demo_parts = demo_path.parts
-    if "demos" in demo_parts:
-        demos_idx = demo_parts.index("demos")
-        scene_root = Path(*demo_parts[:demos_idx])
-        output_xml = scene_root / "simulation" / "mujoco" / "replay_scene.xml"
-    else:
-        raise ValueError(f"Unexpected demo path structure: {demo_path}")
+    # Infer simulation directory from background path in config
+    # This allows demo_path to be anywhere, as long as it has config.json
+    scene_cfg = demo_config["scene_cfg"]
+    background_path = map_docker_path_to_local(
+        scene_cfg["background"]["registered"], REPO_ROOT
+    )
+    simulation_dir = background_path.parent
+    output_xml = simulation_dir / "mujoco" / "replay_scene.xml"
 
     logger.info("Fusing scene from demo config...")
     scene_xml = fuse_scene_from_config(
