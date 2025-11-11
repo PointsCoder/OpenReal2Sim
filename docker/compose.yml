@@ -24,9 +24,10 @@ services:
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
       - ../:/app
+      - ${TORCH_HOME:-~/.cache/torch}:/tmp/.cache/torch
       - ${HF_HOME:-~/.cache/huggingface}:/tmp/.cache/huggingface
+      - ${HY3DGEN_MODELS:-~/.cache/hy3dgen}:/tmp/.cache/hy3dgen
       - ~/.cache/warp:/tmp/.cache/warp
-      - ~/.cache/hy3dgen:/tmp/.cache/hy3dgen
       - ~/.cache/torch_extensions:/tmp/.cache/torch_extensions
       - ~/.cache/matplotlib:/tmp/.cache/matplotlib
     stdin_open: true

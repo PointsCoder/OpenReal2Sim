@@ -37,7 +37,7 @@ def main(
     output: Optional[Path] = None,
     constants_path: Path = DEFAULT_CONSTANTS_PATH,
     object_mass: List[str] = [],
-    default_mass: float = 0.1,
+    default_mass: float = 0.2,
     groundplane_height: float = 0.0,
     robot_pose: Optional[List[float]] = None,
 ) -> int:
@@ -85,7 +85,7 @@ def main(
     # Extract parameters from constants
     z_offset = constants["defaults"]["z_offset"]
     inertia_scale = constants["defaults"]["inertia_scale"]
-    freejoint_damping = float(constants["joint"]["obj_freejoint_damping"])
+    freejoint_damping = float(constants["joint"]["freejoint_damping"])
     
     timestep = constants["simulation"]["timestep"]
     memory = constants["simulation"]["memory"]

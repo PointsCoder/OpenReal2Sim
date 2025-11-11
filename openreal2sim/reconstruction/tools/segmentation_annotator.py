@@ -280,6 +280,25 @@ def cb_prop():
 
     return "✅ Propagation finished and saved", render(cur_idx)
 
+def cb_reset(confirm_check):
+    """Reset all annotations: clear mask_dict, reset object ID counter, and clean up state"""
+    if "key" not in S: return "⚠️ Not loaded", render(S.get("cur",0)), gr.update(value=False)
+
+    if not confirm_check:
+        return "⚠️ Please check the confirmation box to reset", render(S.get("cur",0)), gr.update(value=False)
+
+    # Clear all mask data
+    S["mask_dict"] = {}
+    S["next_oid"] = 1
+    S["pending"] = None
+    S.pop("click", None)
+    S.pop("pending_info", None)
+
+    # Save the empty mask_dict to persist the reset
+    save_mask_dict(OUT_ROOT/S["key"], S["mask_dict"])
+
+    return "🔄 All annotations reset", render(S.get("cur", 0)), gr.update(value=False)
+
 # ────────── GUI ──────────
 css_prevent_image_drag = """
 #sam-image-box img {
@@ -307,6 +326,12 @@ with gr.Blocks(title="Grounded-SAM-2 Annotator", css=css_prevent_image_drag) as 
         del_oid = gr.Text(label="Delete oid")
         del_btn = gr.Button("Delete Object")
 
+    gr.Markdown("---")
+    gr.Markdown("⚠️ **DANGER ZONE**: Reset will permanently delete all annotations and cannot be undone!")
+    with gr.Row():
+        reset_confirm_check = gr.Checkbox(label="I understand this will delete all masks and reset object IDs", value=False)
+        reset_btn = gr.Button("⚠️ Reset All Annotations", variant="stop")
+
     slider = gr.Slider(0,1,1,label="Frame",interactive=False)
     imgbox = gr.Image(type="numpy",label="Preview", elem_id="sam-image-box")
 
@@ -324,6 +349,9 @@ with gr.Blocks(title="Grounded-SAM-2 Annotator", css=css_prevent_image_drag) as 
     save_btn.click(cb_save_dict, None,[logbox,imgbox])
     del_btn.click(cb_delete, del_oid,[logbox,imgbox])
     prop_btn.click(cb_prop, None,[logbox,imgbox])
+
+    # Reset button event
+    reset_btn.click(cb_reset, reset_confirm_check, [logbox, imgbox, reset_confirm_check])
 
 
 # ────────── CLI ──────────

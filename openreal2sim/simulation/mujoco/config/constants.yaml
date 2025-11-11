@@ -1,26 +1,17 @@
-# MuJoCo Simulation Physical Parameters
-# 
-# This file contains physical simulation parameters that users can safely modify
-# to tune the behavior of the MuJoCo simulation.
 
-# Collision contact parameters (for asset builder)
 collision:
   margin: "0.006"
   solref: "0.0005 1"
   solimp: "0.998 0.9999 0.0005"
 
-# Object collision parameters (for runtime fusion)
 object_collision:
   margin: "0.007"
   solref: "0.004 1.0"
   solimp: "0.98 0.995 0.0001"
 
-# Joint damping parameters
 joint:
-  freejoint_damping: "0.1"
-  obj_freejoint_damping: "0.078"
+  freejoint_damping: "0.078"
 
-# Simulation solver parameters
 simulation:
   timestep: "0.001"
   memory: "64M"
@@ -28,17 +19,14 @@ simulation:
   solver_ls_iterations: 35
   solver_noslip_iterations: 90
 
-# Material rendering parameters
 material:
   specular: "0.4"
   shininess: "0.001"
 
-# Default physical parameters for objects
 defaults:
   z_offset: 0.005
   inertia_scale: 0.002
 
-# Contact pair tuning (gripper pads and object meshes)
 contact_pair:
   condim: 4
   solref: "0.0006 1.5"
