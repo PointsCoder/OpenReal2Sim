@@ -91,7 +91,7 @@ def fuse_scene_from_config(
     constants_path: Path,
     output_xml: Path,
     mass_dict: dict[str, float],
-    default_mass: float = 0.1,
+    default_mass: float = 0.2,
 ) -> Path:
     """Fuse scene from demo config."""
     scene_cfg = demo_config["scene_cfg"]
@@ -123,7 +123,7 @@ def fuse_scene_from_config(
     # Extract parameters
     z_offset = constants["defaults"]["z_offset"]
     inertia_scale = constants["defaults"]["inertia_scale"]
-    freejoint_damping = float(constants["joint"]["obj_freejoint_damping"])
+    freejoint_damping = float(constants["joint"]["freejoint_damping"])
 
     timestep = constants["simulation"]["timestep"]
     memory = constants["simulation"]["memory"]
@@ -286,48 +286,6 @@ def replay_trajectory_interactive(
         if idx != -1:
             data.qpos[idx] = gripper_pos
 
-    # Initialize object positions from scene config
-    # Objects have freejoint, need to set qpos: [x, y, z, qw, qx, qy, qz]
-    for oid, obj_cfg in scene_config["objects"].items():
-        obj_name = obj_cfg["name"]
-        body_name = f"{oid}_{obj_name}_optimized"
-
-        # Find body and its freejoint
-        body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
-        if body_id == -1:
-            logger.warning(f"Object body '{body_name}' not found in model")
-            continue
-
-        # Find the freejoint for this body
-        # Look for a joint with qposadr that matches this body
-        obj_joint_id = -1
-        for jnt_id in range(model.njnt):
-            if model.jnt_type[jnt_id] == 0 and model.jnt_bodyid[jnt_id] == body_id:  # free joint
-                obj_joint_id = jnt_id
-                break
-
-        if obj_joint_id == -1:
-            logger.warning(f"No freejoint found for object '{body_name}'")
-            continue
-
-        qpos_addr = model.jnt_qposadr[obj_joint_id]
-        qvel_addr = model.jnt_dofadr[obj_joint_id]
-
-        # In the scene XML, the inertial pos is set to object_center (relative to body frame)
-        # So if we place the body frame at origin, the COM will be at object_center
-        # This is the correct initialization - body at origin, COM offset by inertial pos
-
-        # Set position to origin (x, y, z)
-        data.qpos[qpos_addr:qpos_addr+3] = [0, 0, 0]
-        # Set orientation to identity quaternion (qw, qx, qy, qz)
-        data.qpos[qpos_addr+3:qpos_addr+7] = [1, 0, 0, 0]
-
-        # IMPORTANT: Set velocities to zero to prevent bouncing
-        data.qvel[qvel_addr:qvel_addr+6] = 0
-
-        obj_center = obj_cfg["object_center"]
-        logger.debug(f"Initialized object '{obj_name}' with COM at {obj_center}")
-
     # Forward kinematics to compute derived quantities
     mujoco.mj_forward(model, data)
 
@@ -340,6 +298,7 @@ def replay_trajectory_interactive(
         def __init__(self):
             self.paused = False
             self.should_reset = False
+            self.should_quit = False
             self.frame_idx = 0
             self.last_frame_time = time.time()
             self.target_qpos = qpos[:7]
@@ -362,6 +321,9 @@ def replay_trajectory_interactive(
         elif key == 'r' or key == 'R':  # R: restart
             state.should_reset = True
             logger.info("Restarting trajectory")
+        elif key == 'q' or key == 'Q':  # Q: quit
+            state.should_quit = True
+            logger.info("Quitting...")
 
     # Launch viewer
     with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as viewer:
@@ -370,20 +332,21 @@ def replay_trajectory_interactive(
         viewer.cam.distance = 1.5
         viewer.cam.lookat[:] = [0, 0, 0.1]
 
-        logger.info("="*60)
-        logger.info("TRAJECTORY PLAYBACK")
-        logger.info("="*60)
-        logger.info(f"  Total frames: {len(trajectory)}")
-        logger.info(f"  Loop: {loop}")
-        logger.info(f"  Control frequency: {control_frequency} Hz")
-        logger.info("="*60)
-        logger.info("\nKEYBOARD CONTROLS:")
-        logger.info("  SPACE     - Play/Pause")
-        logger.info("  R         - Restart from beginning")
-        logger.info("  ESC/Close - Exit")
-        logger.info("="*60)
+        print("="*60)
+        print("TRAJECTORY PLAYBACK")
+        print("="*60)
+        print(f"  Total frames: {len(trajectory)}")
+        print(f"  Loop: {loop}")
+        print(f"  Control frequency: {control_frequency} Hz")
+        print("="*60)
+        print("\nKEYBOARD CONTROLS:")
+        print("  SPACE     - Play/Pause")
+        print("  R         - Restart from beginning")
+        print("  Q         - Quit")
+        print("  ESC/Close - Exit")
+        print("="*60)
 
-        while viewer.is_running():
+        while viewer.is_running() and not state.should_quit:
             current_time = time.time()
 
             # Handle reset request (thread-safe with viewer lock)
@@ -489,7 +452,7 @@ def main(
     constants_path: Path = DEFAULT_CONSTANTS_PATH,
     robot_config_path: Path = DEFAULT_ROBOT_CONFIG_PATH,
     object_mass: List[str] = [],
-    default_mass: float = 0.1,
+    default_mass: float = 0.2,
     loop: bool = False,
 ) -> int:
     """Replay trajectory from demo directory.
@@ -524,6 +487,18 @@ def main(
     # Load demo config
     logger.info(f"Loading demo config from {demo_path}")
     demo_config = load_demo_config(demo_path)
+
+    # Check for unused object masses
+    if mass_dict:
+        scene_object_names = set()
+        for obj_cfg in demo_config["scene_cfg"]["objects"].values():
+            scene_object_names.add(obj_cfg["name"])
+
+        unused_masses = set(mass_dict.keys()) - scene_object_names
+        if unused_masses:
+            logger.warning(
+                f"The following objects in --object-mass are not in the scene: {', '.join(sorted(unused_masses))}"
+            )
 
     # Load robot config
     logger.info(f"Loading robot config from {robot_config_path}")

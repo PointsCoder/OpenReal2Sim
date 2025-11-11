@@ -144,25 +144,6 @@ def convert_glb(
     return metadata
 
 
-def expand_inputs(inputs: List[str]) -> List[Path]:
-    glb_files: List[Path] = []
-    for item in inputs:
-        path = Path(item).expanduser()
-        if path.is_dir():
-            glb_files.extend(sorted(path.rglob("*.glb")))
-            glb_files.extend(sorted(path.rglob("*.gltf")))
-        elif path.is_file():
-            glb_files.append(path)
-    unique = []
-    seen = set()
-    for path in glb_files:
-        resolved = path.resolve()
-        if resolved not in seen:
-            seen.add(resolved)
-            unique.append(resolved)
-    return unique
-
-
 def build_processing_configs(
     add_free_joint: bool,
     coacd_threshold: float,
@@ -198,10 +179,8 @@ def build_processing_configs(
 
 
 def main(
-    inputs: List[str] = [],
-    scene_name: Optional[str] = None,
+    scene_name: str,
     outputs_root: Path = Path("outputs"),
-    output_dir: Optional[Path] = None,
     coacd_threshold: float = 0.05,
     coacd_max_hulls: int = 64,
     coacd_resolution: int = 4000,
@@ -213,10 +192,8 @@ def main(
     """Convert GLB/GLTF assets to MJCF with CoACD convex decomposition.
 
     Args:
-        inputs: Input GLB/GLTF files or directories
-        scene_name: Process scene from outputs/<scene_name>/simulation/
+        scene_name: Scene name to process from outputs/<scene_name>/simulation/
         outputs_root: Root directory containing outputs
-        output_dir: Directory where results are written
         coacd_threshold: CoACD concavity threshold for objects
         coacd_max_hulls: Maximum convex hulls for objects
         coacd_resolution: Sampling resolution for objects
@@ -227,70 +204,66 @@ def main(
     """
     import coacd  # noqa: F401
 
-    # Scene mode: process GLBs from outputs/<scene_name>/simulation/
-    if scene_name:
-        outputs_root = outputs_root.expanduser().resolve()
-        scene_dir = outputs_root / scene_name / "simulation"
-        scene_json_path = scene_dir / "scene.json"
-        with open(scene_json_path, "r") as f:
-            scene_config = json.load(f)
+    # Process GLBs from outputs/<scene_name>/simulation/
+    outputs_root = outputs_root.expanduser().resolve()
+    scene_dir = outputs_root / scene_name / "simulation"
+    scene_json_path = scene_dir / "scene.json"
 
-        # Collect GLB files
-        raw_inputs = []
-        background_files = []
-        object_files = []
+    if not scene_json_path.exists():
+        logger.error(f"scene.json not found: {scene_json_path}")
+        return 1
 
-        # Add background
-        if "background" in scene_config and "registered" in scene_config["background"]:
-            bg_path_str = scene_config["background"]["registered"]
-            if bg_path_str.startswith("/app/"):
-                bg_path_str = bg_path_str.replace("/app/", "")
-            bg_path = Path(bg_path_str)
-            if not bg_path.is_absolute():
-                bg_path = scene_dir / bg_path.name
-            raw_inputs.append(bg_path)
-            background_files.append(bg_path)
+    with open(scene_json_path, "r") as f:
+        scene_config = json.load(f)
 
-        # Add objects
-        for obj_id, obj_cfg in scene_config["objects"].items():
-            obj_name = obj_cfg["name"]
-            glb_name = f"{obj_id}_{obj_name}_optimized.glb"
-            glb_path = scene_dir / glb_name
-            raw_inputs.append(glb_path)
-            object_files.append((obj_name, glb_path))
+    # Collect GLB files
+    raw_inputs = []
+    background_files = []
+    object_files = []
 
-        # Set output directory
-        output_root = scene_dir / "mujoco" / "mjcf"
-        output_root.mkdir(parents=True, exist_ok=True)
+    # Add background
+    if "background" in scene_config and "registered" in scene_config["background"]:
+        bg_path_str = scene_config["background"]["registered"]
+        if bg_path_str.startswith("/app/"):
+            bg_path_str = bg_path_str.replace("/app/", "")
+        bg_path = Path(bg_path_str)
+        if not bg_path.is_absolute():
+            bg_path = scene_dir / bg_path.name
+        raw_inputs.append(bg_path)
+        background_files.append(bg_path)
 
-        logger.info(f"Processing scene '{scene_name}'")
-        logger.info(f"  Input: {scene_dir}")
-        logger.info(f"  Output: {output_root}")
-        logger.info(f"Found {len(raw_inputs)} GLB files to convert:")
-        if background_files:
-            logger.info(f"  Background: {len(background_files)} file(s)")
-            for bg_file in background_files:
-                logger.info(f"    - {bg_file.name}")
-        if object_files:
-            logger.info(f"  Objects: {len(object_files)} file(s)")
-            for obj_name, obj_file in object_files:
-                logger.info(f"    - {obj_name} ({obj_file.name})")
-    else:
-        # Standard mode: use provided inputs
-        raw_inputs = [Path(p).expanduser() for p in inputs]
-        output_root = output_dir.expanduser().resolve() if output_dir is not None else None
+    # Add objects
+    for obj_id, obj_cfg in scene_config["objects"].items():
+        obj_name = obj_cfg["name"]
+        glb_name = f"{obj_id}_{obj_name}_optimized.glb"
+        glb_path = scene_dir / glb_name
+        raw_inputs.append(glb_path)
+        object_files.append((obj_name, glb_path))
 
-        if output_root is None and len(raw_inputs) > 1:
-            candidate = raw_inputs[-1]
-            if candidate.suffix.lower() not in {".glb", ".gltf"}:
-                output_root = candidate
-                raw_inputs = raw_inputs[:-1]
+    # Set output directory
+    output_root = scene_dir / "mujoco" / "mjcf"
+    output_root.mkdir(parents=True, exist_ok=True)
 
-        if output_root is not None:
-            output_root = output_root.resolve()
-            output_root.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Processing scene '{scene_name}'")
+    logger.info(f"  Input: {scene_dir}")
+    logger.info(f"  Output: {output_root}")
+    logger.info(f"Found {len(raw_inputs)} GLB files to convert:")
+    if background_files:
+        logger.info(f"  Background: {len(background_files)} file(s)")
+        for bg_file in background_files:
+            logger.info(f"    - {bg_file.name}")
+    if object_files:
+        logger.info(f"  Objects: {len(object_files)} file(s)")
+        for obj_name, obj_file in object_files:
+            logger.info(f"    - {obj_name} ({obj_file.name})")
 
-    glb_files = expand_inputs([str(p) for p in raw_inputs])
+    # Resolve all paths
+    glb_files = [p.resolve() for p in raw_inputs if p.exists()]
+
+    if not glb_files:
+        logger.error(f"No GLB files found for scene '{scene_name}'")
+        return 1
+
     object_cfg, background_cfg = build_processing_configs(
         add_free_joint, coacd_threshold, coacd_max_hulls, coacd_resolution,
         background_threshold, background_max_hulls, background_resolution

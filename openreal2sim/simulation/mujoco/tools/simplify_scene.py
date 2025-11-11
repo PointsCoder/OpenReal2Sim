@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Optional
@@ -12,11 +13,21 @@ from loguru import logger
 # Add parent directory to path
 TOOLS_DIR = Path(__file__).resolve().parent
 MUJOCO_DIR = TOOLS_DIR.parent
+REPO_ROOT = MUJOCO_DIR.parent.parent.parent
 
 if str(MUJOCO_DIR) not in sys.path:
     sys.path.insert(0, str(MUJOCO_DIR))
 
 from utils.mesh_simplification import simplify_glb_in_place
+
+
+def map_docker_path_to_local(path_str: str, repo_root: Path) -> Path:
+    """Map docker paths (/app/...) to local filesystem."""
+    if path_str.startswith("/app/"):
+        rel_path = path_str[len("/app/"):]
+        return repo_root / rel_path
+    else:
+        return Path(path_str)
 
 
 def main(
@@ -46,29 +57,56 @@ def main(
         logger.error(f"Scene directory not found: {scene_dir}")
         return 1
 
-    # Collect all GLB files (skip scene_optimized.glb)
-    glb_files = sorted([
-        f for f in scene_dir.glob("*.glb")
-        if f.name != "scene_optimized.glb"
-    ])
+    # Load scene.json to get GLB files
+    scene_json_path = scene_dir / "scene.json"
+    if not scene_json_path.exists():
+        logger.error(f"scene.json not found: {scene_json_path}")
+        return 1
+
+    with open(scene_json_path, "r") as f:
+        scene_config = json.load(f)
+
+    # Collect GLB files from scene.json
+    background_files = []
+    object_files = []
+
+    # Add background
+    if "background" in scene_config and "registered" in scene_config["background"]:
+        bg_path_str = scene_config["background"]["registered"]
+        bg_path = map_docker_path_to_local(bg_path_str, REPO_ROOT)
+        if not bg_path.is_absolute():
+            bg_path = scene_dir / bg_path.name
+        if bg_path.exists():
+            background_files.append(bg_path)
+        else:
+            logger.warning(f"Background GLB not found: {bg_path}")
+
+    # Add objects
+    for obj_id, obj_cfg in scene_config["objects"].items():
+        obj_name = obj_cfg["name"]
+        if "optimized" in obj_cfg:
+            obj_path_str = obj_cfg["optimized"]
+            obj_path = map_docker_path_to_local(obj_path_str, REPO_ROOT)
+            if not obj_path.is_absolute():
+                obj_path = scene_dir / obj_path.name
+            if obj_path.exists():
+                object_files.append(obj_path)
+            else:
+                logger.warning(f"Object GLB not found for '{obj_name}': {obj_path}")
+
+    glb_files = background_files + object_files
 
     if not glb_files:
-        logger.error(f"No GLB files found in {scene_dir}")
+        logger.error(f"No GLB files found in scene.json")
         return 1
 
     logger.warning("WARNING: This will overwrite GLB files in place! Make sure you have backups.")
 
     logger.info(f"Found {len(glb_files)} GLB files to simplify:")
-    background_files = []
-    object_files = []
-
-    for glb in glb_files:
-        if "background" in glb.stem.lower():
-            background_files.append(glb)
-            logger.info(f"  [BACKGROUND] {glb.name} (target_tris={background_target_tris})")
-        else:
-            object_files.append(glb)
-            logger.info(f"  [OBJECT]     {glb.name} (target_tris={target_tris})")
+    for glb in background_files:
+        logger.info(f"  [BACKGROUND] {glb.name} (target_tris={background_target_tris})")
+    for glb in object_files:
+        logger.info(f"  [OBJECT]     {glb.name} (target_tris={target_tris})")
 
     logger.info("")
     response = input("Proceed with simplification? (yes/no): ")

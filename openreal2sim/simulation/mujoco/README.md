@@ -30,26 +30,21 @@ Launch the container:
 docker compose -f docker/compose.yml up -d mujoco
 docker compose -f docker/compose.yml exec mujoco bash
 ```
-
 ### Virtual Environment Installation
 
 Alternatively, install dependencies in a virtual environment:
-
 ```bash
 pip install -r docker/mujoco/requirements.docker.txt
 ```
 
-Then run the tools under `openreal2sim/simulation/mujoco/tools` directly.
-
 ## Workflow
 
-### (Optional) Simplify GLB Meshes
+### (Optional) Simplify Meshes
 
 ```bash
 python openreal2sim/simulation/mujoco/tools/simplify_scene.py --scene-name demo_genvideo
 ```
-
-**WARNING**: This overwrites GLB files **in place**. Make sure you have backups!
+**Warning**: This overwrites GLB files **in place**.
 
 ### GLB to MJCF Conversion
 
@@ -64,12 +59,11 @@ Converts GLB meshes to MJCF using CoACD for convex decomposition. Outputs to `ou
 ```bash
 python openreal2sim/simulation/mujoco/tools/fuse_scene.py --scene-name demo_genvideo
 ```
+Fuses MJCF assets with Franka Panda robot. Output: `outputs/<scene>/simulation/mujoco/scene.xml`
 
-Fuses MJCF assets with Franka Panda robot. Outputs to `outputs/<scene_name>/simulation/mujoco/scene.xml`.
-
-**Options:**
-- `--object-mass`: Object masses (e.g., `spoon=0.05 plate=1.0`)
-- `--default-mass`: Default mass for unspecified objects (default: 0.1 kg)
+Options:
+- `--object-mass`: Object masses (e.g., `object_1=1.0 object_2=2.0`)
+- `--default-mass`: Default mass (default: 0.2 kg)
 
 Simulation parameters are in `config/constants.yaml`.
 
@@ -83,11 +77,11 @@ python -m mujoco.viewer --mjcf outputs/demo_genvideo/simulation/mujoco/scene.xml
 
 ```bash
 python openreal2sim/simulation/mujoco/tools/replay_trajectory.py \
-  --demo-path outputs/demo_genvideo/demos/demo_0/env_000 \
-  --object-mass spoon=0.05 plate=1.0
+  --demo-path outputs/demo_genvideo/demos/demo_0/env_000
 ```
+Replays trajectories with PD control. Keyboard: Space (pause), R (restart), Q (quit).
 
-Replays trajectories with PD control. Keyboard: Space (pause), R (restart).
+You can override object masses with `--object-mass object_1=1.0 object_2=2.0`.
 
 **Note:** Trajectories from Isaac Sim may not always succeed in MuJoCo due to dynamics differences, especially contact handling. You may need to tune the simulation parameters or modify the GLB to MJCF settings.
 
