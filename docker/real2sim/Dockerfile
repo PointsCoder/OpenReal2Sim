@@ -50,6 +50,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements.docker.txt
 # -------------------------------------------------------------------------
 # Third-Party compiled Python deps
 # -------------------------------------------------------------------------
+# PromptDA
+COPY third_party/PromptDA /app/third_party/PromptDA
+RUN cd /app/third_party/PromptDA && python setup.py install
 
 # mega-sam
 COPY third_party/mega-sam /app/third_party/mega-sam

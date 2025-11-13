@@ -198,13 +198,18 @@ def run_moge(key_name: str, key_cfgs: dict):
 
 def mode_check(key_name: str) -> str:
     scene_path = Path("outputs") / key_name / "scene" / "scene.pkl"
+    depth_path = Path("outputs") / key_name 
     with open(scene_path, "rb") as f:
         scene_data = pickle.load(f)
     n_frames = scene_data["n_frames"]
     if n_frames == 1:
         return "image"
     else:
-        return "video"
+        if scene_data["depths"] is not None:
+            return "r3d"
+        else:
+            return "video"
+    
 
 def main(config_file: str = "config/config.yaml", key_name: str = None):
     """Main function: load config and run depth prediction."""
@@ -222,6 +227,8 @@ def main(config_file: str = "config/config.yaml", key_name: str = None):
         if mode == "video":
             print(f"[Info] Running mega-sam for video: {key}")
             run_megasam(key, key_cfgs)
+        elif mode == "r3d":
+            print(f"[Info] No post-processing for r3d: {key}")
         else:
             print(f"[Info] Running moge for image: {key}")
             run_moge(key, key_cfgs)
