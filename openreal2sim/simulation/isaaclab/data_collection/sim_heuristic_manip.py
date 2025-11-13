@@ -871,7 +871,7 @@ class HeuristicManipulation(BaseSimulator):
         def compose_video(b):
             # Use the offset environment ID where data was actually saved
             save_env_id = b + env_offset
-            success = self.compose_real_video(env_id=save_env_id)
+            success = self.compose_real_video(env_id=save_env_id, demo_path=save_root)
             return save_env_id, success
         
         with ThreadPoolExecutor(max_workers=min(len(active_envs), 4)) as executor:

@@ -503,6 +503,12 @@ class BaseSimulator:
         Works with batched envs. If inputs are 1D, they will be broadcast to all envs.
         """
         traj, success = self.motion_planning(position, quaternion)
+        
+        # Check if motion planning failed critically
+        if traj is None or success is None:
+            print("[ERROR] Motion planning returned None - critical failure")
+            return None, None
+        
         BT7 = traj
         T = BT7.shape[1]
         last = None
@@ -515,12 +521,13 @@ class BaseSimulator:
             last = joint_pos_des
         return last, success
 
-    def compose_real_video(self, env_id: int = 0):
+    def compose_real_video(self, env_id: int = 0, demo_path: Path = None):
         """
         Composite simulated video onto real background using mask-based rendering.
         
         Args:
             env_id: Environment ID to process
+            demo_path: Optional explicit demo path (if None, uses self._demo_dir())
         """
     
         def pad_to_even(frame):
@@ -535,12 +542,14 @@ class BaseSimulator:
         
         # Construct paths
         base_path = self.out_dir / self.img_folder
-        demo_path = self._demo_dir() / f"env_{env_id:03d}"
+        if demo_path is None:
+            demo_path = self._demo_dir()
+        env_demo_path = demo_path / f"env_{env_id:03d}"
         
-        SIM_VIDEO_PATH = demo_path / "sim_video.mp4"
-        MASK_VIDEO_PATH = demo_path / "mask_video.mp4"
+        SIM_VIDEO_PATH = env_demo_path / "sim_video.mp4"
+        MASK_VIDEO_PATH = env_demo_path / "mask_video.mp4"
         REAL_BACKGROUND_PATH = base_path / "reconstruction" / "background.jpg"
-        OUTPUT_PATH = demo_path / "real_video.mp4"
+        OUTPUT_PATH = env_demo_path / "real_video.mp4"
         
         # Check if required files exist
         if not SIM_VIDEO_PATH.exists():
