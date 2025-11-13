@@ -20,10 +20,12 @@ parser.add_argument("--num_envs", type=int, default=4)
 parser.add_argument("--num_trials", type=int, default=1)
 parser.add_argument("--teleop_device", type=str, default="keyboard")
 parser.add_argument("--sensitivity", type=float, default=1.0)
+parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+parser.add_argument("--target_successes", type=int, default=None, help="Minimum number of successful demonstrations to collect (will rerun until target is met)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
-args_cli.headless = True  # headless mode for batch execution
+args_cli.headless = False  # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
@@ -80,7 +82,13 @@ class HeuristicManipulation(BaseSimulator):
         self.grasp_idx = sim_cfgs["demo_cfg"]["grasp_idx"]
         self.grasp_pre = sim_cfgs["demo_cfg"]["grasp_pre"]
         self.grasp_delta = sim_cfgs["demo_cfg"]["grasp_delta"]
+        self.verbose = args_cli.debug
         self.load_obj_goal_traj()
+    
+    def vprint(self, *args, **kwargs):
+        """Print only if verbose flag is enabled"""
+        if self.verbose:
+            print(*args, **kwargs)
 
     def load_obj_goal_traj(self):
         """
@@ -107,6 +115,38 @@ class HeuristicManipulation(BaseSimulator):
         obj_state_np = obj_state.detach().cpu().numpy().astype(np.float32)
         offset_np = np.asarray(self.goal_offset, dtype=np.float32).reshape(3)
         obj_state_np[:, :3] += offset_np  # raise a bit to avoid collision
+
+        # Add small random variations to avoid background dynamics issues
+        rng = np.random.default_rng()
+        
+        # Position variations: ±1-2cm in x,y,z
+        pos_variations = rng.uniform(-0.015, 0.015, size=(B, 3)).astype(np.float32)  # ±1.5cm
+        obj_state_np[:, :3] += pos_variations
+        
+        # Orientation variations: small rotations around each axis (±5-10 degrees)
+        for b in range(B):
+            # Convert quaternion to axis-angle for easier manipulation
+            quat = obj_state_np[b, 3:7]
+            
+            # Generate small random rotations (±5-10 degrees = ±0.087-0.174 radians)
+            rot_x = rng.uniform(-0.087, 0.087)  # ±5 degrees
+            rot_y = rng.uniform(-0.087, 0.087)  # ±5 degrees  
+            rot_z = rng.uniform(-0.087, 0.087)  # ±5 degrees
+            
+            # Apply rotations sequentially
+            if abs(rot_x) > 1e-6:
+                quat_x = transforms3d.quaternions.axangle2quat([1, 0, 0], rot_x)
+                quat = transforms3d.quaternions.qmult(quat, quat_x)
+            if abs(rot_y) > 1e-6:
+                quat_y = transforms3d.quaternions.axangle2quat([0, 1, 0], rot_y)
+                quat = transforms3d.quaternions.qmult(quat, quat_y)
+            if abs(rot_z) > 1e-6:
+                quat_z = transforms3d.quaternions.axangle2quat([0, 0, 1], rot_z)
+                quat = transforms3d.quaternions.qmult(quat, quat_z)
+            
+            # Normalize quaternion to ensure validity
+            quat = quat / np.linalg.norm(quat)
+            obj_state_np[b, 3:7] = quat.astype(np.float32)
 
         # Note: here the relative traj Δ_w is defined in world frame with origin (0,0,0),
         # Hence, we need to normalize it to each env's origin frame.
@@ -157,7 +197,8 @@ class HeuristicManipulation(BaseSimulator):
 
         for t in t_iter:
             goal_pos_list, goal_quat_list = [], []
-            print(f"[INFO] follow object goal step {t}/{T}")
+            if self.verbose:
+                print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
                 if skip_envs[b]:
                     # Dummy goal for skipped env
@@ -213,7 +254,8 @@ class HeuristicManipulation(BaseSimulator):
         t_iter = list(range(0, goals.shape[1], sample_step))
         t_iter = t_iter + [goals.shape[1]-1] if t_iter[-1] != goals.shape[1]-1 else t_iter
         for t in t_iter:
-            print(f"[INFO] viz object goal step {t}/{goals.shape[1]}")
+            if self.verbose:
+                print(f"[INFO] viz object goal step {t}/{goals.shape[1]}")
             pos_list, quat_list = [], []
             for b in range(B):
                 pos, quat = mat_to_pose(goals[b, t])
@@ -279,7 +321,8 @@ class HeuristicManipulation(BaseSimulator):
         ee_p0 = ee_w[:, :3]
         robot_ee_z0 = ee_p0[:, 2].clone()
         obj_z0 = obj0[:, 2].clone()
-        print(f"[INFO] mean object z0={obj_z0.mean().item():.3f} m, mean EE z0={robot_ee_z0.mean().item():.3f} m")
+        if self.verbose:
+            print(f"[INFO] mean object z0={obj_z0.mean().item():.3f} m, mean EE z0={robot_ee_z0.mean().item():.3f} m")
 
         # lift: keep orientation, add height
         ee_q = ee_w[:, 3:7]
@@ -307,7 +350,8 @@ class HeuristicManipulation(BaseSimulator):
         ee_w1 = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
         robot_ee_z1 = ee_w1[:, 2]
         obj_z1 = obj1[:, 2]
-        print(f"[INFO] mean object z1={obj_z1.mean().item():.3f} m, mean EE z1={robot_ee_z1.mean().item():.3f} m")
+        if self.verbose:
+            print(f"[INFO] mean object z1={obj_z1.mean().item():.3f} m, mean EE z1={robot_ee_z1.mean().item():.3f} m")
 
         # Lift check
         ee_diff  = robot_ee_z1 - robot_ee_z0
@@ -334,17 +378,18 @@ class HeuristicManipulation(BaseSimulator):
             epsilon = 0.001
             score[lifted] = base_score / (distances[lifted] + epsilon)
         
-        print(f"[INFO] Lift check passed: {lift_check.sum().item()}/{B}")
-        print(f"[INFO] Proximity check passed: {proximity_check.sum().item()}/{B}")
-        print(f"[INFO] Final lifted flag (both checks): {lifted.sum().item()}/{B}")
-        
-        if B <= 10:  # Detailed output for small batches
-            for b in range(B):
-                print(f"  Env {b}: lift={lift_check[b].item()}, prox={proximity_check[b].item()}, "
-                    f"dist={distances[b].item():.4f}m, score={score[b].item():.2f}")
-        else:
-            print(f"[INFO] Distance to goal - mean: {distances.mean().item():.4f}m, "
-                f"min: {distances.min().item():.4f}m, max: {distances.max().item():.4f}m")
+        if self.verbose:
+            print(f"[INFO] Lift check passed: {lift_check.sum().item()}/{B}")
+            print(f"[INFO] Proximity check passed: {proximity_check.sum().item()}/{B}")
+            print(f"[INFO] Final lifted flag (both checks): {lifted.sum().item()}/{B}")
+            
+            if B <= 10:  # Detailed output for small batches
+                for b in range(B):
+                    print(f"  Env {b}: lift={lift_check[b].item()}, prox={proximity_check[b].item()}, "
+                        f"dist={distances[b].item():.4f}m, score={score[b].item():.2f}")
+            else:
+                print(f"[INFO] Distance to goal - mean: {distances.mean().item():.4f}m, "
+                    f"min: {distances.min().item():.4f}m, max: {distances.max().item():.4f}m")
         
         return lifted.detach().cpu().numpy().astype(bool), score.detach().cpu().numpy().astype(np.float32)
 
@@ -424,7 +469,8 @@ class HeuristicManipulation(BaseSimulator):
         # Initialize skip mask from existing one or create new
         if existing_skip_mask is not None:
             env_skip = existing_skip_mask.copy()
-            print(f"[INFO] Starting grasp trials with {env_skip.sum()} pre-skipped environments: {np.where(env_skip)[0].tolist()}")
+            if self.verbose:
+                print(f"[INFO] Starting grasp trials with {env_skip.sum()} pre-skipped environments: {np.where(env_skip)[0].tolist()}")
         else:
             env_skip = np.zeros(B, dtype=bool)  # Track envs to skip due to exhausted retries
         
@@ -441,8 +487,9 @@ class HeuristicManipulation(BaseSimulator):
                 if np.all(env_success[active_mask]):
                     successful_envs = np.where(env_success & ~env_skip)[0]
                     skipped_envs = np.where(env_skip)[0]
-                    print(f"[SUCCESS] All active environments found valid grasps!")
-                    if len(skipped_envs) > 0:
+                    if self.verbose:
+                        print(f"[SUCCESS] All active environments found valid grasps!")
+                    if len(skipped_envs) > 0 and self.verbose:
                         print(f"[INFO] Skipped {len(skipped_envs)} failed environments: {skipped_envs.tolist()}")
                     break
                 
@@ -455,7 +502,8 @@ class HeuristicManipulation(BaseSimulator):
                     # All remaining envs are either successful or skipped
                     break
                 
-                print(f"[INFO] {n_failed} environments still searching for grasps: {failed_env_ids.tolist()}")
+                if self.verbose:
+                    print(f"[INFO] {n_failed} environments still searching for grasps: {failed_env_ids.tolist()}")
                 
                 # Iterate through grasp proposals
                 for start in range(0, len(idx_all), B):
@@ -511,18 +559,21 @@ class HeuristicManipulation(BaseSimulator):
                                 env_chosen_pre[b] = pre_dist_batch[b]
                                 env_chosen_delta[b] = delta_batch[b]
                                 env_best_score[b] = score_batch[b]
-                                print(f"[SUCCESS] Env {b} found valid grasp (score: {score_batch[b]:.2f})")
+                                if self.verbose:
+                                    print(f"[SUCCESS] Env {b} found valid grasp (score: {score_batch[b]:.2f})")
                     
                     # Check if all active envs now succeeded
                     active_mask = ~env_skip
                     newly_successful = np.sum(env_success[active_failed_mask])
-                    print(f"[SEARCH] block[{start}:{start+B}] -> {newly_successful}/{n_failed} previously-failed envs now successful")
+                    if self.verbose:
+                        print(f"[SEARCH] block[{start}:{start+B}] -> {newly_successful}/{n_failed} previously-failed envs now successful")
                     
                     if np.all(env_success[active_mask]):
                         successful_envs = np.where(env_success & ~env_skip)[0]
                         skipped_envs = np.where(env_skip)[0]
-                        print(f"[SUCCESS] All active environments found valid grasps on attempt {retry_attempt + 1}!")
-                        if len(skipped_envs) > 0:
+                        if self.verbose:
+                            print(f"[SUCCESS] All active environments found valid grasps on attempt {retry_attempt + 1}!")
+                        if len(skipped_envs) > 0 and self.verbose:
                             print(f"[INFO] {len(skipped_envs)} environments skipped: {skipped_envs.tolist()}")
                         return {
                             "success": env_success,
@@ -536,18 +587,22 @@ class HeuristicManipulation(BaseSimulator):
                 active_mask = ~env_skip
                 if not np.all(env_success[active_mask]):
                     still_failed = np.where((~env_success) & (~env_skip))[0]
-                    print(f"[WARN] {len(still_failed)} envs still need grasps after attempt {retry_attempt + 1}: {still_failed.tolist()}")
+                    if self.verbose:
+                        print(f"[WARN] {len(still_failed)} envs still need grasps after attempt {retry_attempt + 1}: {still_failed.tolist()}")
                     if retry_attempt < max_retries - 1:
-                        print("[INFO] Retrying grasp selection for failed environments...")
+                        if self.verbose:
+                            print("[INFO] Retrying grasp selection for failed environments...")
                         continue
                     else:
                         # Last attempt exhausted - mark remaining failed envs as skipped
-                        print(f"[WARN] Exhausted all {max_retries} grasp attempts")
-                        print(f"[INFO] Marking {len(still_failed)} failed environments to skip: {still_failed.tolist()}")
+                        if self.verbose:
+                            print(f"[WARN] Exhausted all {max_retries} grasp attempts")
+                            print(f"[INFO] Marking {len(still_failed)} failed environments to skip: {still_failed.tolist()}")
                         env_skip[still_failed] = True
                         
                         successful_envs = np.where(env_success)[0]
-                        print(f"[INFO] Proceeding with {len(successful_envs)} successful environments: {successful_envs.tolist()}")
+                        if self.verbose:
+                            print(f"[INFO] Proceeding with {len(successful_envs)} successful environments: {successful_envs.tolist()}")
                         
                         return {
                             "success": env_success,
@@ -571,8 +626,9 @@ class HeuristicManipulation(BaseSimulator):
                         print("[ERR] Grasp trial failed after all retry attempts")
                         # Mark all currently failed envs as skipped
                         failed_envs = np.where((~env_success) & (~env_skip))[0]
-                        if len(failed_envs) > 0:
+                        if len(failed_envs) > 0 and self.verbose:
                             print(f"[INFO] Marking {len(failed_envs)} failed environments to skip: {failed_envs.tolist()}")
+                        if len(failed_envs) > 0:
                             env_skip[failed_envs] = True
                         return {
                             "success": env_success,
@@ -593,8 +649,9 @@ class HeuristicManipulation(BaseSimulator):
                 else:
                     # Mark all currently failed envs as skipped
                     failed_envs = np.where((~env_success) & (~env_skip))[0]
-                    if len(failed_envs) > 0:
+                    if len(failed_envs) > 0 and self.verbose:
                         print(f"[INFO] Marking {len(failed_envs)} failed environments to skip: {failed_envs.tolist()}")
+                    if len(failed_envs) > 0:
                         env_skip[failed_envs] = True
                     
                     # Replace None values with dummy poses for skipped envs to avoid downstream NoneType errors
@@ -695,14 +752,41 @@ class HeuristicManipulation(BaseSimulator):
         
         return bool(all_success)
     
-    def save_data_selective(self, skip_envs: np.ndarray, ignore_keys: List[str] = None):
+    def save_data_selective(self, skip_envs: np.ndarray, ignore_keys: List[str] = None, 
+                           demo_id: int = None, env_offset: int = 0):
+        """
+        Save data for successful environments.
+        
+        Args:
+            skip_envs: Boolean array indicating which envs to skip
+            ignore_keys: Keys to not save
+            demo_id: Optional demo ID to use (if None, generates new ID)
+            env_offset: Offset to add to environment IDs when saving (for multi-run collection)
+        """
         if ignore_keys is None:
             ignore_keys = []
             
         save_root = self._demo_dir()
+        if demo_id is not None:
+            # Use provided demo_id instead of auto-generated one
+            save_root = self.out_dir / img_folder / "demos" / f"demo_{demo_id}"
         save_root.mkdir(parents=True, exist_ok=True)
 
-        stacked = {k: np.array(v) for k, v in self.save_dict.items()}
+        # Stack data with proper shape handling
+        stacked = {}
+        for k, v in self.save_dict.items():
+            try:
+                arr = np.array(v)
+                # Check if we got an object array (inconsistent shapes)
+                if arr.dtype == object:
+                    # Try to stack with explicit dtype
+                    if len(v) > 0 and hasattr(v[0], 'shape'):
+                        arr = np.stack(v, axis=0)
+                stacked[k] = arr
+            except Exception as e:
+                if self.verbose:
+                    print(f"[WARN] Failed to stack {k}: {e}. Saving as list.")
+                stacked[k] = v
         
         active_envs = np.where(~skip_envs)[0]
         print(f"[INFO] Saving data for {len(active_envs)} active environments: {active_envs.tolist()}")
@@ -710,11 +794,27 @@ class HeuristicManipulation(BaseSimulator):
         def save_env_data(b):
             """Save data for a single environment"""
             start_time = time.time()
-            env_dir = self._env_dir(save_root, b)
+            # Add env_offset to the saved environment ID
+            save_env_id = b + env_offset
+            env_dir = self._env_dir(save_root, save_env_id)
             
             for key, arr in stacked.items():
                 if key in ignore_keys:
                     continue
+                    
+                # Handle different array types/shapes
+                if isinstance(arr, list):
+                    # If stacking failed, handle as list
+                    if self.verbose:
+                        print(f"[WARN] Skipping {key} for env {b} (failed to stack)")
+                    continue
+                    
+                # Check array dimensions
+                if arr.ndim < 2:
+                    if self.verbose:
+                        print(f"[WARN] Skipping {key} for env {b} (array is {arr.ndim}D, expected at least 2D)")
+                    continue
+                
                 if key == "rgb":
                     video_path = env_dir / "sim_video.mp4"
                     writer = imageio.get_writer(
@@ -752,31 +852,37 @@ class HeuristicManipulation(BaseSimulator):
             
             json.dump(self.sim_cfgs, open(env_dir / "config.json", "w"), indent=2)
             elapsed = time.time() - start_time
-            print(f"[INFO] Env {b} saved in {elapsed:.1f}s")
+            if self.verbose:
+                print(f"[INFO] Env {save_env_id} saved in {elapsed:.1f}s")
             return b
 
         # Save environments in parallel
-        print("[INFO] Starting parallel video encoding...")
+        if self.verbose:
+            print("[INFO] Starting parallel video encoding...")
         with ThreadPoolExecutor(max_workers=min(len(active_envs), 4)) as executor:
             list(executor.map(save_env_data, active_envs))
         
         print("[INFO]: Demonstration is saved at: ", save_root)
         
         # Compose real videos (can also be parallelized)
-        print("\n[INFO] Composing real videos with background...")
+        if self.verbose:
+            print("\n[INFO] Composing real videos with background...")
         
         def compose_video(b):
-            success = self.compose_real_video(env_id=b)
-            return b, success
+            # Use the offset environment ID where data was actually saved
+            save_env_id = b + env_offset
+            success = self.compose_real_video(env_id=save_env_id)
+            return save_env_id, success
         
         with ThreadPoolExecutor(max_workers=min(len(active_envs), 4)) as executor:
             results = list(executor.map(compose_video, active_envs))
         
-        for b, success in results:
-            if success:
-                print(f"[INFO] Real video composed successfully for env {b}")
-            else:
-                print(f"[WARN] Failed to compose real video for env {b}")
+        if self.verbose:
+            for save_env_id, success in results:
+                if success:
+                    print(f"[INFO] Real video composed successfully for env {save_env_id}")
+                else:
+                    print(f"[WARN] Failed to compose real video for env {save_env_id}")
 
         demo_root = self.out_dir / "all_demos"
         demo_root.mkdir(parents=True, exist_ok=True)
@@ -793,10 +899,14 @@ class HeuristicManipulation(BaseSimulator):
             json.dump(meta_info, f)
         os.system(f"cp -r {save_root}/* {demo_save_path}")
         print("[INFO]: Demonstration is saved at: ", demo_save_path)
+        
+        # Return number of successful environments saved
+        return len(active_envs)
 
 
     def inference(self, std: float = 0.0, max_grasp_retries: int = 1, 
-              max_traj_retries: int = 3, position_threshold: float = 0.15) -> bool:  # ← ADD THIS
+              max_traj_retries: int = 3, position_threshold: float = 0.15,
+              demo_id: int = None, env_offset: int = 0) -> int:
         """
         Main function with decoupled grasp selection and trajectory execution.
         
@@ -805,6 +915,13 @@ class HeuristicManipulation(BaseSimulator):
         Phase 3: Save only successful environments
         
         NO re-grasping during trajectory phase.
+        
+        Args:
+            demo_id: Optional demo ID to use for saving (for multi-run collection)
+            env_offset: Offset to add to environment IDs when saving
+            
+        Returns:
+            Number of successful environments saved
         """
         B = self.scene.num_envs
         
@@ -830,8 +947,9 @@ class HeuristicManipulation(BaseSimulator):
             # Fixed grasp index mode - all envs use same grasp
             if self.grasp_idx >= len(gg):
                 print(f"[ERR] grasp_idx {self.grasp_idx} out of range [0,{len(gg)})")
-                return False
-            print(f"[INFO] using fixed grasp index {self.grasp_idx} for all envs.")
+                return 0
+            if self.verbose:
+                print(f"[INFO] using fixed grasp index {self.grasp_idx} for all envs.")
             p_w, q_w = grasp_to_world(gg[int(self.grasp_idx)])
             
             # Prepare per-env format
@@ -853,11 +971,12 @@ class HeuristicManipulation(BaseSimulator):
         active_envs = np.where(~env_skip)[0]
         if len(active_envs) == 0:
             print("[ERR] All environments failed grasp selection")
-            return False
+            return 0
         
-        print(f"\n[GRASP SELECTION COMPLETE]")
-        print(f"  Active envs: {active_envs.tolist()}")
-        if env_skip.sum() > 0:
+        if self.verbose:
+            print(f"\n[GRASP SELECTION COMPLETE]")
+            print(f"  Active envs: {active_envs.tolist()}")
+        if env_skip.sum() > 0 and self.verbose:
             print(f"  Skipped envs (failed grasp): {np.where(env_skip)[0].tolist()}")
         
         # ========== PHASE 2: TRAJECTORY EXECUTION (WITH PER-ENV RETRY) ==========
@@ -877,13 +996,14 @@ class HeuristicManipulation(BaseSimulator):
                 if len(active_envs) == 0:
                     # All non-skipped envs have succeeded!
                     successful_envs = np.where(env_traj_success)[0]
-                    print(f"\n[SUCCESS] All {len(successful_envs)} environments completed!")
-                    print(f"  Successful envs: {successful_envs.tolist()}")
-                    if env_skip.sum() > 0:
+                    if self.verbose:
+                        print(f"\n[SUCCESS] All {len(successful_envs)} environments completed!")
+                        print(f"  Successful envs: {successful_envs.tolist()}")
+                    if env_skip.sum() > 0 and self.verbose:
                         print(f"  Skipped envs: {np.where(env_skip)[0].tolist()}")
                     
                     # Restore successful environment data
-                    if successful_env_data:
+                    if successful_env_data and self.verbose:
                         print(f"[INFO] Restoring data for {len(successful_env_data)} previously successful environments")
                         for env_id, saved_data in successful_env_data.items():
                             for key, data in saved_data.items():
@@ -892,16 +1012,18 @@ class HeuristicManipulation(BaseSimulator):
                                     if t < len(saved_data[key]):
                                         self.save_dict[key][t][env_id] = saved_data[key][t]
                     
-                    self.save_data_selective(env_skip)
-                    return True
+                    num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset)
+                    return num_saved
                 
                 print(f"\n{'='*60}")
                 print(f"TRAJECTORY ATTEMPT {traj_attempt + 1}/{max_traj_retries}")
-                print(f"Envs needing attempt: {active_envs.tolist()}")
+                if self.verbose:
+                    print(f"Envs needing attempt: {active_envs.tolist()}")
                 already_successful = np.where(env_traj_success & ~env_skip)[0]
-                if len(already_successful) > 0:
+                if len(already_successful) > 0 and self.verbose:
                     print(f"Envs already successful (skipping): {already_successful.tolist()}")
-                print(f"Skipped envs: {np.where(env_skip)[0].tolist()}")
+                if self.verbose:
+                    print(f"Skipped envs: {np.where(env_skip)[0].tolist()}")
                 print(f"{'='*60}\n")
                 
                 # Prepare grasp info for ALL envs
@@ -941,7 +1063,8 @@ class HeuristicManipulation(BaseSimulator):
                 self.wait(gripper_open=True, steps=4)
 
                 # Pre-grasp
-                print("[INFO] Moving to pre-grasp positions...")
+                if self.verbose:
+                    print("[INFO] Moving to pre-grasp positions...")
                 jp, success = self.move_to(info_all["pre_p_b"], info_all["pre_q_b"], gripper_open=True)
                 if jp is None or success is None:
                     print("[WARN] Pre-grasp motion planning failed")
@@ -959,7 +1082,8 @@ class HeuristicManipulation(BaseSimulator):
                 jp = self.wait(gripper_open=True, steps=3)
 
                 # Grasp
-                print("[INFO] Moving to grasp positions...")
+                if self.verbose:
+                    print("[INFO] Moving to grasp positions...")
                 jp, success = self.move_to(info_all["p_b"], info_all["q_b"], gripper_open=True)
                 if jp is None or success is None:
                     print("[WARN] Grasp motion planning failed")
@@ -973,7 +1097,8 @@ class HeuristicManipulation(BaseSimulator):
                 self.save_dict["actions"].append(np.concatenate([p_b_data, q_b_data, np.zeros((B, 1))], axis=1))
 
                 # Close gripper
-                print("[INFO] Closing grippers...")
+                if self.verbose:
+                    print("[INFO] Closing grippers...")
                 jp = self.wait(gripper_open=False, steps=50)
                 
                 p_close_data = info_all["p_b"].cpu().numpy()
@@ -984,12 +1109,14 @@ class HeuristicManipulation(BaseSimulator):
                 self.save_dict["actions"].append(np.concatenate([p_close_data, q_close_data, np.ones((B, 1))], axis=1))
 
                 # Follow object trajectory (skip already successful + skipped envs)
-                print("[INFO] Following object trajectories...")
+                if self.verbose:
+                    print("[INFO] Following object trajectories...")
                 skip_for_traj = env_skip | env_traj_success
                 jp = self.follow_object_goals(jp, sample_step=5, visualize=True, skip_envs=skip_for_traj)
                 
                 # Trajectory execution completed - verify which envs succeeded
-                print("[INFO] Trajectory execution completed, verifying goal positions...")
+                if self.verbose:
+                    print("[INFO] Trajectory execution completed, verifying goal positions...")
                 
                 # Get per-env success status
                 final_goal_matrices = self.obj_goal_traj_w[:, -1, :, :]
@@ -1000,9 +1127,10 @@ class HeuristicManipulation(BaseSimulator):
                 per_env_success = (distances <= position_threshold).cpu().numpy()
                 
                 # Check results ONLY for envs that attempted this round
-                print("\n" + "="*50)
-                print("PER-ENVIRONMENT TRAJECTORY RESULTS")
-                print("="*50)
+                if self.verbose:
+                    print("\n" + "="*50)
+                    print("PER-ENVIRONMENT TRAJECTORY RESULTS")
+                    print("="*50)
                 
                 newly_successful_envs = []
                 for b in active_envs:  # Only check envs that attempted
@@ -1010,10 +1138,12 @@ class HeuristicManipulation(BaseSimulator):
                     if per_env_success[b]:
                         env_traj_success[b] = True
                         newly_successful_envs.append(b)
-                        print(f"Env {b}: SUCCESS (distance: {distances[b].item():.4f}m)")
+                        if self.verbose:
+                            print(f"Env {b}: SUCCESS (distance: {distances[b].item():.4f}m)")
                         
                         # Save this environment's data NOW before any reset
-                        print(f"[INFO] Saving successful data for Env {b}")
+                        if self.verbose:
+                            print(f"[INFO] Saving successful data for Env {b}")
                         successful_env_data[b] = {}
                         for key in self.save_dict.keys():
                             # Extract all timesteps for this environment
@@ -1022,30 +1152,35 @@ class HeuristicManipulation(BaseSimulator):
                                 successful_env_data[b][key].append(self.save_dict[key][t][b].copy())
                                 
                     else:
-                        print(f"Env {b}: FAILED (distance: {distances[b].item():.4f}m, attempt {env_traj_attempts[b]}/{max_traj_retries})")
+                        if self.verbose:
+                            print(f"Env {b}: FAILED (distance: {distances[b].item():.4f}m, attempt {env_traj_attempts[b]}/{max_traj_retries})")
                         if env_traj_attempts[b] >= max_traj_retries:
                             env_skip[b] = True
-                            print(f"  → Marking Env {b} as SKIPPED (exhausted {max_traj_retries} trajectory attempts)")
+                            if self.verbose:
+                                print(f"  → Marking Env {b} as SKIPPED (exhausted {max_traj_retries} trajectory attempts)")
                 
-                print("="*50 + "\n")
+                if self.verbose:
+                    print("="*50 + "\n")
                 
                 # Check if all non-skipped envs succeeded
                 remaining_active = np.where(~env_skip)[0]
                 if len(remaining_active) == 0:
                     print("[ERR] All environments have been skipped")
-                    return False
+                    return 0
                 
                 all_remaining_succeeded = np.all(env_traj_success[remaining_active])
                 
                 if all_remaining_succeeded:
-                    print(f"[SUCCESS] All {len(remaining_active)} remaining environments succeeded!")
-                    print(f"  Successful envs: {remaining_active.tolist()}")
-                    if env_skip.sum() > 0:
+                    if self.verbose:
+                        print(f"[SUCCESS] All {len(remaining_active)} remaining environments succeeded!")
+                        print(f"  Successful envs: {remaining_active.tolist()}")
+                    if env_skip.sum() > 0 and self.verbose:
                         print(f"  Skipped envs: {np.where(env_skip)[0].tolist()}")
                     
                     # Restore successful environment data before saving
-                    if successful_env_data:
+                    if successful_env_data and self.verbose:
                         print(f"[INFO] Restoring data for {len(successful_env_data)} successful environments")
+                    if successful_env_data:
                         for env_id, saved_data in successful_env_data.items():
                             for key, data in saved_data.items():
                                 for t in range(len(self.save_dict[key])):
@@ -1053,42 +1188,47 @@ class HeuristicManipulation(BaseSimulator):
                                         self.save_dict[key][t][env_id] = saved_data[key][t]
                     
                     # Save data for successful environments only
-                    self.save_data_selective(env_skip)
-                    return True
+                    num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset)
+                    return num_saved
                 else:
                     # Some envs still need retry
                     still_need_attempt = np.where((~env_skip) & (~env_traj_success))[0]
-                    print(f"[INFO] {len(still_need_attempt)} environments still need attempts: {still_need_attempt.tolist()}")
+                    if self.verbose:
+                        print(f"[INFO] {len(still_need_attempt)} environments still need attempts: {still_need_attempt.tolist()}")
                     
                     if traj_attempt < max_traj_retries - 1:
-                        print(f"[INFO] Retrying trajectory execution (attempt {traj_attempt + 2}/{max_traj_retries})...")
+                        if self.verbose:
+                            print(f"[INFO] Retrying trajectory execution (attempt {traj_attempt + 2}/{max_traj_retries})...")
                         self.clear_data()  # This will wipe save_dict, but we have successful data saved
                         continue
                     else:
                         # Last attempt - mark remaining failures as skipped
                         for b in still_need_attempt:
                             env_skip[b] = True
-                            print(f"[INFO] Marking Env {b} as SKIPPED (failed all {max_traj_retries} trajectory attempts)")
+                            if self.verbose:
+                                print(f"[INFO] Marking Env {b} as SKIPPED (failed all {max_traj_retries} trajectory attempts)")
                         
                         # Check if any succeeded
                         final_successful = np.where(env_traj_success)[0]
                         if len(final_successful) > 0:
-                            print(f"\n[PARTIAL SUCCESS] Saving data for {len(final_successful)} successful environments: {final_successful.tolist()}")
+                            if self.verbose:
+                                print(f"\n[PARTIAL SUCCESS] Saving data for {len(final_successful)} successful environments: {final_successful.tolist()}")
                             
                             # Restore successful environment data
-                            if successful_env_data:
+                            if successful_env_data and self.verbose:
                                 print(f"[INFO] Restoring data for {len(successful_env_data)} successful environments")
+                            if successful_env_data:
                                 for env_id, saved_data in successful_env_data.items():
                                     for key, data in saved_data.items():
                                         for t in range(len(self.save_dict[key])):
                                             if t < len(saved_data[key]):
                                                 self.save_dict[key][t][env_id] = saved_data[key][t]
                             
-                            self.save_data_selective(env_skip)
-                            return True
+                            num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset)
+                            return num_saved
                         else:
                             print("[ERR] All environments failed")
-                            return False
+                            return 0
             except RuntimeError as e:
                 error_msg = str(e)
                 print(f"\n[ERROR] Runtime error during trajectory execution: {error_msg}")
@@ -1101,7 +1241,8 @@ class HeuristicManipulation(BaseSimulator):
                 for b in active_envs:
                     if env_traj_attempts[b] >= max_traj_retries:
                         env_skip[b] = True
-                        print(f"[INFO] Marking Env {b} as SKIPPED (exhausted attempts after error)")
+                        if self.verbose:
+                            print(f"[INFO] Marking Env {b} as SKIPPED (exhausted attempts after error)")
                 
                 self.clear_data()
                 
@@ -1109,25 +1250,28 @@ class HeuristicManipulation(BaseSimulator):
                 remaining_active = np.where(~env_skip)[0]
                 if len(remaining_active) == 0:
                     print("[ERR] All environments have been skipped after errors")
-                    return False
+                    return 0
                 
                 if traj_attempt < max_traj_retries - 1:
-                    print(f"[INFO] Retrying with {len(remaining_active)} remaining environments...")
+                    if self.verbose:
+                        print(f"[INFO] Retrying with {len(remaining_active)} remaining environments...")
                     continue
                 else:
-                    print(f"[PARTIAL SUCCESS] Saving {len(remaining_active)} environments that didn't encounter errors")
+                    if self.verbose:
+                        print(f"[PARTIAL SUCCESS] Saving {len(remaining_active)} environments that didn't encounter errors")
                     
                     # Restore successful environment data before saving
-                    if successful_env_data:
+                    if successful_env_data and self.verbose:
                         print(f"[INFO] Restoring data for {len(successful_env_data)} successful environments")
+                    if successful_env_data:
                         for env_id, saved_data in successful_env_data.items():
                             for key, data in saved_data.items():
                                 for t in range(len(self.save_dict[key])):
                                     if t < len(saved_data[key]):
                                         self.save_dict[key][t][env_id] = saved_data[key][t]
                     
-                    self.save_data_selective(env_skip)
-                    return True
+                    num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset)
+                    return num_saved
                     
             except Exception as e:
                 print(f"[ERROR] Unexpected error: {type(e).__name__}: {e}")
@@ -1148,7 +1292,7 @@ class HeuristicManipulation(BaseSimulator):
                 remaining_active = np.where(~env_skip)[0]
                 if len(remaining_active) == 0:
                     print("[ERR] All environments have been skipped after errors")
-                    return False
+                    return 0
                 
                 if traj_attempt < max_traj_retries - 1:
                     print(f"[INFO] Retrying with {len(remaining_active)} remaining environments...")
@@ -1168,11 +1312,11 @@ class HeuristicManipulation(BaseSimulator):
                                         if t < len(saved_data[key]):
                                             self.save_dict[key][t][env_id] = saved_data[key][t]
                         
-                        self.save_data_selective(env_skip)
-                        return True
+                        num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset)
+                        return num_saved
                     else:
                         print("[ERR] All environments failed")
-                        return False
+                        return 0
 # ───────────────────────────────────────────────────────────────────────────── Entry Point ─────────────────────────────────────────────────────────────────────────────
 def main():
     sim_cfgs = load_sim_parameters(BASE_DIR, args_cli.key)
@@ -1186,17 +1330,61 @@ def main():
     my_sim = HeuristicManipulation(sim, scene, sim_cfgs=sim_cfgs)
 
     demo_root = (out_dir / img_folder / "demos").resolve()
+    
+    # If target_successes is specified, collect data until we reach that target
+    if args_cli.target_successes is not None:
+        target = args_cli.target_successes
+        total_successes = 0
+        env_offset = 0
+        
+        # Get or create a demo_id for this collection session
+        demo_id = get_next_demo_id(demo_root)
+        
+        print(f"\n{'='*80}")
+        print(f"TARGET SUCCESS MODE: Collecting {target} successful demonstrations")
+        print(f"Saving all successful envs to demo_{demo_id}")
+        print(f"{'='*80}\n")
+        
+        run_count = 0
+        while total_successes < target:
+            run_count += 1
+            print(f"\n{'#'*80}")
+            print(f"RUN {run_count}: Current total successes: {total_successes}/{target}")
+            print(f"{'#'*80}\n")
+            
+            robot_pose = torch.tensor(sim_cfgs["robot_cfg"]["robot_pose"], dtype=torch.float32, device=my_sim.sim.device)
+            my_sim.set_robot_pose(robot_pose)
+            my_sim.reset()
+            
+            # Run inference with shared demo_id and cumulative env_offset
+            num_saved = my_sim.inference(demo_id=demo_id, env_offset=env_offset)
+            
+            total_successes += num_saved
+            env_offset += num_saved
+            
+            print(f"\n[RUN {run_count} COMPLETE] Saved {num_saved} successful environments")
+            print(f"[PROGRESS] Total successes so far: {total_successes}/{target}\n")
+            
+            if total_successes >= target:
+                print(f"\n{'='*80}")
+                print(f"TARGET REACHED! Collected {total_successes} successful demonstrations")
+                print(f"All data saved in demo_{demo_id}")
+                print(f"{'='*80}\n")
+                break
+                
+            if num_saved == 0:
+                print(f"[WARN] No successful environments in run {run_count}")
+                # Continue trying - don't give up
+    else:
+        # Original behavior: single trial per num_trials
+        for _ in range(args_cli.num_trials):
 
-    for _ in range(args_cli.num_trials):
-
-        robot_pose = torch.tensor(sim_cfgs["robot_cfg"]["robot_pose"], dtype=torch.float32, device=my_sim.sim.device)  # [7], pos(3)+quat(wxyz)(4)
-        my_sim.set_robot_pose(robot_pose)
-        my_sim.demo_id = get_next_demo_id(demo_root)
-        my_sim.reset()
-        print(f"[INFO] start simulation demo_{my_sim.demo_id}")
-        # Note: if you set viz_object_goals(), remember to disable gravity and collision for object
-        # my_sim.viz_object_goals(sample_step=10, hold_steps=40)
-        my_sim.inference()
+            robot_pose = torch.tensor(sim_cfgs["robot_cfg"]["robot_pose"], dtype=torch.float32, device=my_sim.sim.device)
+            my_sim.set_robot_pose(robot_pose)
+            my_sim.demo_id = get_next_demo_id(demo_root)
+            my_sim.reset()
+            print(f"[INFO] start simulation demo_{my_sim.demo_id}")
+            my_sim.inference()
 
     env.close()
     simulation_app.close()
