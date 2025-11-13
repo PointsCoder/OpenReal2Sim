@@ -141,17 +141,11 @@ def center_and_scale_mesh(mesh, scale_factor):
     mesh.vertices += center
     return mesh
 
-def slow_registration(target_pcd_o3d, obj_info, object_dir, normal):
+def slow_registration(target_pcd_o3d, obj_info, object_dir):
     """
-    Slow but accurate mesh to point cloud registration
+    Slow but very accurate mesh to point cloud registration
     """
 
-    fg_mesh_orig = trimesh.load_mesh(obj_info["glb"])
-    if isinstance(fg_mesh_orig, trimesh.Scene):
-        fg_mesh_orig = list(fg_mesh_orig.geometry.values())[0]
-    T_flip = get_flip(fg_mesh_orig)
-
-    # we use open3d to simplify the mesh first
     fg_mesh_o3d = o3d.io.read_triangle_mesh(str(obj_info["glb"]))  # legacy
 
     if fg_mesh_o3d.has_triangle_uvs():
@@ -174,9 +168,6 @@ def slow_registration(target_pcd_o3d, obj_info, object_dir, normal):
 
     fg_mesh_register = trimesh.Trimesh(vertices=v_pos, faces=t_idx, process=False)
 
-    # apply the flip transform
-    fg_mesh_register.apply_transform(T_flip)
-
     # resize the mesh to point cloud scale
     points_masked = np.asarray(target_pcd_o3d.points, dtype=np.float32)
     min_p = points_masked.min(axis=0)
@@ -188,19 +179,15 @@ def slow_registration(target_pcd_o3d, obj_info, object_dir, normal):
     distance_mesh = float(np.linalg.norm(max_m - min_m))
 
     scale_factor = distance_points / max(distance_mesh, 1e-12)
-   
+
 
     # Optional：use z axis to compute scale
+    distance_points_z = max_p[2] - min_p[2]
     distance_mesh_z = max_m[2] - min_m[2]
-    points_dot_normal = np.dot(points_masked, normal)
-    min_proj = points_dot_normal.min()
-    max_proj = points_dot_normal.max()
-    distance_points_z = max_proj - min_proj
-    if distance_points_z > 0.3 * distance_mesh_z:
+    if distance_mesh_z > 0.3 * distance_mesh:
         scale_factor_z = distance_points_z / max(distance_mesh_z, 1e-12)
         fg_mesh_register = center_and_scale_mesh(fg_mesh_register, scale_factor_z)
-    else:
-        fg_mesh_register = center_and_scale_mesh(fg_mesh_register, scale_factor)
+
 
     # using trimesh registration to place the object mesh in correct position
     print(f"[Info] Running trimesh registration ...")
@@ -212,11 +199,13 @@ def slow_registration(target_pcd_o3d, obj_info, object_dir, normal):
     )
     print(f"[Info] Registration results: {T}")
 
-    fg_mesh = fg_mesh_orig.copy()
-    fg_mesh.apply_transform(T_flip)                # flip
-    fg_mesh = center_and_scale_mesh(fg_mesh, scale_factor)  # scale
-    fg_mesh.apply_transform(T)                     # rigid placement from mesh_other
-    
+    fg_mesh = trimesh.load_mesh(obj_info["glb"])
+    if isinstance(fg_mesh, trimesh.Scene):
+        fg_mesh = list(fg_mesh.geometry.values())[0]
+
+    # transform the mesh
+    fg_mesh = center_and_scale_mesh(fg_mesh, scale_factor)
+    fg_mesh.apply_transform(T)
     return fg_mesh
 
 
@@ -330,7 +319,7 @@ def register_scene_meshes(key, fg_meshes, obj_infos, scene_dict):
     """
     background_mesh_path = scene_dict["info"]["background"]["original"]
     bg_mesh = trimesh.load(background_mesh_path)
-
+   
     normal = scene_dict["recon"]["normal"]
     T_gravity, cam_pose = gravity_alignment(normal)
     print(f"Gravity transform: {T_gravity}")
@@ -377,6 +366,16 @@ def register_scene_meshes(key, fg_meshes, obj_infos, scene_dict):
     cam_info["cx"] = float(scene_dict["intrinsics"][0,2])
     cam_info["cy"] = float(scene_dict["intrinsics"][1,2])
 
+    base_dir = Path.cwd()
+    background_pts = scene_dict["recon"]["bg_pts"][..., 0:3].reshape(-1, 3)
+    bpt_homo = np.hstack([background_pts[..., 0:3], np.ones((background_pts.shape[0], 1))])
+    bpt_homo = bpt_homo @ T_gravity.T
+    bpt_homo = bpt_homo @ T_to_origin.T
+    background_pts = bpt_homo[..., 0:3]
+    background_pts = background_pts.reshape(scene_dict["height"], scene_dict["width"], 3)
+    bpt_path = base_dir / Path(f"outputs/{key}/reconstruction/background_pts.npy")
+    np.save(bpt_path, background_pts)
+    scene_dict["info"]["background_pts"] = str(bpt_path)
     # transform object meshes
     base_dir = Path.cwd()
     save_obj_infos = {}
@@ -436,6 +435,7 @@ def register_scene_meshes(key, fg_meshes, obj_infos, scene_dict):
     return scene_dict
 
 
+    
 def scenario_construction(keys, key_scene_dicts, key_cfgs):
     base_dir = Path.cwd()
     for key in keys:
@@ -464,6 +464,8 @@ def scenario_construction(keys, key_scene_dicts, key_cfgs):
             pickle.dump(scene_dict, f)
 
     return key_scene_dicts
+
+
 
 if __name__ == "__main__":
     base_dir = Path.cwd()

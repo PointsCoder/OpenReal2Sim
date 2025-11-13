@@ -24,6 +24,7 @@ BOX_ANN   = sv.BoxAnnotator()
 LABEL_ANN = sv.LabelAnnotator()
 
 
+
 #========================================================================================
 # Saving
 #========================================================================================
@@ -64,7 +65,7 @@ def save_masks(output_directory: object, mask_dict: Dict[int, Dict]):
     with open(scene_path, "rb") as f:
         scene_dict = pickle.load(f)
 
-    scene_dict["mask"] = mask_dict.copy()
+    scene_dict["mask"] = mask_dict
 
     with open(scene_path, "wb") as f:
         pickle.dump(scene_dict, f)
@@ -101,6 +102,7 @@ def add_mask(segmented_video: object, mask_dict: object, frame_idx:int, name:str
             return
         
     mask_dict[frame_idx][object_id]={"name": name, "bbox": bound_box, "mask": mask}
+
 
 def propagate_maks(segmented_video: object, output_directory: Path):
     cur_idx=segmented_video.get("cur",0);     

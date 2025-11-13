@@ -46,6 +46,7 @@ def ensure_unit_normal(n):
         raise ValueError("Plane normal has near-zero length.")
     return n / norm
 
+
 def sort_object_static(obj_dict):
     z_mins = []
     for oid, obj_info in obj_dict.items():
@@ -191,7 +192,7 @@ def optimise_sdf_z(mesh_path, sdf_pack,
             dz_extra = 0.0
 
     mesh.vertices = moved.cpu().numpy()
-    return mesh#, dz_extra
+    return mesh, dz_extra
 
 # ──────────────── Plane-based lift ──────────────── #
 def refine_by_plane_clearance(mesh_path, plane_point, plane_normal, clearance=0.004, force_on_ground=False):
@@ -223,7 +224,7 @@ def refine_by_plane_clearance(mesh_path, plane_point, plane_normal, clearance=0.
         print(f"lifted by {np.linalg.norm(delta):.6f} along normal")
         delta = delta[2]
     
-    return mesh#, delta
+    return mesh, delta
 
 
 # ──────────────── main function ──────────────── #
@@ -252,9 +253,10 @@ def scenario_collision_optimization(keys, key_scene_dicts, key_cfgs):
 
         static_obj_list = sort_object_static(scene_dict["info"]["objects"])
 
-
-
         # per-object refine
+        scene = trimesh.Scene()
+        scene.add_geometry(trimesh_single(scene_dict["info"]["background"]["registered"]), 'background')
+
         for oid in static_obj_list:
             obj = scene_dict["info"]["objects"][oid]
             name = obj["name"]
@@ -272,10 +274,6 @@ def scenario_collision_optimization(keys, key_scene_dicts, key_cfgs):
                 refined, trans = optimise_sdf_z(temp_mesh_path, (necessary_sdf_t, necessary_org_t, necessary_vox_t), clearance=clearance, force_on_ground=True)
                 os.remove(temp_mesh_path)
             elif mode == "plane" and len(necessary_oids) > 0:
-                for oid in necessary_oids:
-                    obj_mesh = scene_dict["info"]["objects"][oid]["optimized"]
-                    obj_height_z = abs(trimesh_single(obj_mesh).bounds[1][2] - trimesh_single(obj_mesh).bounds[0][2])
-                    p0[2] += obj_height_z
                 refined, trans = refine_by_plane_clearance(in_path, p0, n, clearance=clearance, force_on_ground=False)
             else:
                 if mode == "sdf":
@@ -300,13 +298,46 @@ def scenario_collision_optimization(keys, key_scene_dicts, key_cfgs):
 
             # update scene_dict
             scene_dict["info"]["objects"][oid] = obj
+        
+        manipulated_oid = scene_dict["info"]["manipulated_oid"]
+        manipulated_start_mesh_path = scene_dict["info"]["objects"][manipulated_oid]["fdpose"]
+        manipulated_end_mesh_path = scene_dict["info"]["objects"][manipulated_oid]["end_mesh"]
+        if mode == "sdf":
+            temp_mesh_path = base_dir / Path(f"outputs/{key}/reconstruction/scenario") / f"temp_mesh_{manipulated_oid}.glb"
+            scene.export(str(temp_mesh_path))
+            manip_sdf_t, manip_org_t, manip_vox_t = build_sdf_kaolin(temp_mesh_path, res=sdf_res)
+            manip_refined, manip_trans = optimise_sdf_z(manipulated_start_mesh_path, (manip_sdf_t, manip_org_t, manip_vox_t), clearance=clearance, force_on_ground=True)
+            _, end_trans = optimise_sdf_z(manipulated_end_mesh_path, (manip_sdf_t, manip_org_t, manip_vox_t), clearance=clearance, force_on_ground=True)
+            os.remove(temp_mesh_path)
+        elif mode == "plane":
+            manip_refined, manip_trans = refine_by_plane_clearance(manipulated_start_mesh_path, p0, n, clearance=clearance, force_on_ground=False)
+            end_refined, end_trans = refine_by_plane_clearance(manipulated_end_mesh_path, p0, n, clearance=clearance, force_on_ground=False)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+        name = scene_dict["info"]["objects"][manipulated_oid]["name"]
+        scene.add_geometry(manip_refined, f"obj{manipulated_oid}_{name}")
+        out_path = Path(manipulated_start_mesh_path).parent / f"{manipulated_oid}_{name}_optimized.glb"
+        manip_refined.export(str(out_path))
+        scene_dict["info"]["objects"][manipulated_oid]["optimized"] = str(out_path)
+        print(f"[Info] [{key}] collision optimized object is saved to {out_path}")
+        abs_trajs = np.load(scene_dict["info"]["objects"][manipulated_oid]["abs_trajs"])
+       # import pdb; pdb.set_trace()
+        abs_trajs[0][2,3] += manip_trans
+        abs_trajs[-1][2,3] += end_trans
+        scene_dict["info"]["objects"][manipulated_oid]["abs_pose"] = abs_trajs[0].tolist()
+        np.save(scene_dict["info"]["objects"][manipulated_oid]["abs_trajs"], abs_trajs)
+        rel_trajs = []
+        for i in range(len(abs_trajs)):
+            rel_trajs.append(abs_trajs[i] @ np.linalg.inv(abs_trajs[0]))
+        fdpose_path = scene_dict["info"]["objects"][manipulated_oid]["fdpose_trajs"]
+        np.save(fdpose_path, np.array(rel_trajs))
+        scene.add_geometry(manip_refined, f"obj{manipulated_oid}_{name}_optimized")
+        scene.add_geometry(end_refined, f"obj{manipulated_oid}_{name}_optimized_end")
+        bounds = trimesh_single(str(out_path)).bounds
+        scene_dict["info"]["objects"][manipulated_oid]["object_min"]    = bounds[0].tolist()
+        scene_dict["info"]["objects"][manipulated_oid]["object_max"]    = bounds[1].tolist()
+        scene_dict["info"]["objects"][manipulated_oid]["object_center"] = (0.5 * (bounds[0] + bounds[1])).tolist()
 
-        # merge & save
-        scene = trimesh.Scene()
-        scene.add_geometry(trimesh_single(scene_dict["info"]["background"]["registered"]), 'background')
-        for oid, obj in scene_dict["info"]["objects"].items():
-            name = obj["name"]
-            scene.add_geometry(trimesh_single(obj["optimized"]), f"obj{oid}_{name}")
         merged = base_dir / Path(f"outputs/{key}/reconstruction/scenario") / "scene_optimized.glb"
         scene.export(str(merged))
         scene_dict["info"]["scene_mesh"]["optimized"] = str(merged)

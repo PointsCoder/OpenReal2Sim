@@ -4,10 +4,25 @@ import pickle
 import yaml
 import json
 import argparse
-import shutil
+import numpy as np
 
 from modules.utils.compose_config import compose_configs
 from modules.utils.notification import notify_started, notify_failed, notify_success
+
+
+class NumpyJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer, np.int8, np.int16, np.int32, np.int64,
+                           np.uint8, np.uint16, np.uint32, np.uint64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        return super().default(obj)
 
 class ReconAgent:
     def __init__(self, stage=None, key=None):
@@ -30,7 +45,9 @@ class ReconAgent:
             "background_mesh_generation",
             "object_mesh_generation",
             "scenario_construction",
+            "demo_hand_process",
             "scenario_fdpose_optimization",
+            "demo_motion_process",
             "scenario_collision_optimization"
         ]
         if stage is not None:
@@ -47,56 +64,12 @@ class ReconAgent:
                 pickle.dump(scene_dict, f)
         print('[Info] Scene dictionaries saved.')
 
-    def save_assets(self):
+    def save_scene_jsons(self):
         for key, scene_dict in self.key_scene_dicts.items():
             scene_json = scene_dict["info"]
-            save_dir = self.base_dir / f'outputs/{key}/simulation'
-            save_dir.mkdir(parents=True, exist_ok=True)
-
-            bg_glb_path = scene_json["background"]["registered"]
-            new_bg_glb_path = save_dir / Path(bg_glb_path).name
-            scene_json["background"] = {"registered": str(new_bg_glb_path)}
-            shutil.copy(bg_glb_path, new_bg_glb_path)
-
-            scene_glb_path = scene_json["scene_mesh"]["optimized"]
-            new_scene_glb_path = save_dir / Path(scene_glb_path).name
-            scene_json["scene_mesh"] = {"optimized": str(new_scene_glb_path)}
-            shutil.copy(scene_glb_path, new_scene_glb_path)
-
-            bg_rgb_path = scene_dict["recon"]["background"]
-            new_bg_rgb_path = save_dir / Path(bg_rgb_path).name
-            shutil.copy(bg_rgb_path, new_bg_rgb_path)
-            scene_json["bg_rgb_path"] = str(new_bg_rgb_path)
-
-            for oid, obj in scene_json["objects"].items():
-                obj_glb_path = obj["optimized"]
-                new_obj_glb_path = save_dir / Path(obj_glb_path).name
-                shutil.copy(obj_glb_path, new_obj_glb_path)
-                obj_fdpose_trajs_path = obj["fdpose_trajs"]
-                new_obj_fdpose_trajs_path = save_dir / Path(obj_fdpose_trajs_path).name
-                shutil.copy(obj_fdpose_trajs_path, new_obj_fdpose_trajs_path)
-                obj_simple_trajs_path = obj["simple_trajs"]
-                new_obj_simple_trajs_path = save_dir / Path(obj_simple_trajs_path).name
-                shutil.copy(obj_simple_trajs_path, new_obj_simple_trajs_path)
-                obj_hybrid_trajs_path = obj["hybrid_trajs"]
-                new_obj_hybrid_trajs_path = save_dir / Path(obj_hybrid_trajs_path).name
-                shutil.copy(obj_hybrid_trajs_path, new_obj_hybrid_trajs_path)
-
-                scene_json["objects"][oid] = {
-                    "oid": obj["oid"],
-                    "name": obj["name"],
-                    "object_center": obj["object_center"],
-                    "object_min": obj["object_min"],
-                    "object_max": obj["object_max"],
-                    "optimized": str(new_obj_glb_path),
-                    "fdpose_trajs": str(new_obj_fdpose_trajs_path),
-                    "simple_trajs": str(new_obj_simple_trajs_path),
-                    "hybrid_trajs": str(new_obj_hybrid_trajs_path)
-                }
-
-            json_path = save_dir / "scene.json"
+            json_path = self.base_dir / f'outputs/{key}/scene/scene.json'
             with open(json_path, 'w') as f:
-                json.dump(scene_json, f, indent=2)
+                json.dump(scene_json, f, indent=2, cls=NumpyJSONEncoder)
         print('[Info] Scene JSON files saved.')
 
     def mask_propagation(self):
@@ -139,6 +112,16 @@ class ReconAgent:
         self.key_scene_dicts = scenario_collision_optimization(self.keys, self.key_scene_dicts, self.key_cfgs)
         print('[Info] Scenario collision optimization completed.')
 
+    def demo_motion_process(self):
+        from modules.demo_motion_process import demo_motion_process
+        self.key_scene_dicts = demo_motion_process(self.keys, self.key_scene_dicts, self.key_cfgs)
+        print('[Info] Demo motion process completed.')
+    
+    def demo_hand_process(self):
+        from modules.demo_hand_process import demo_hand_process
+        self.key_scene_dicts = demo_hand_process(self.keys, self.key_scene_dicts, self.key_cfgs)
+        print('[Info] Demo hand process completed.')
+
     def run(self):
         if "mask_propagation" in self.stages:
             self.mask_propagation()
@@ -152,11 +135,16 @@ class ReconAgent:
             self.object_mesh_generation()
         if "scenario_construction" in self.stages:
             self.scenario_construction()
+        if "demo_hand_process" in self.stages:
+            self.demo_hand_process()
         if "scenario_fdpose_optimization" in self.stages:
             self.scenario_fdpose_optimization()
+        if "demo_motion_process" in self.stages:
+            self.demo_motion_process()
         if "scenario_collision_optimization" in self.stages:
             self.scenario_collision_optimization()
-        self.save_assets()
+
+        self.save_scene_jsons()
         print('[Info] ReconAgent run completed.')
         return self.key_scene_dicts
 

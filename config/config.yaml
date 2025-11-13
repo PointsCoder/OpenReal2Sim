@@ -1,7 +1,7 @@
 keys:
-  - demo_image
-  - demo_video
-  - demo_genvideo
+  # - demo_image
+  - new
+  # - demo_genvideo
 
 # global settings, can be overridden by local settings
 global:
@@ -13,7 +13,10 @@ global:
     depth_refinement: true
   
   reconstruction:
-    gpu: "0" 
+    gpu: "0"
+
+  simulation:
+    gpu: "0"
 
 
 # local settings for each key
@@ -35,3 +38,9 @@ local:
       cy: 241.204
       depth_scale: 0.0010000000474974513
       depth_max: 1.6 # this is to clip the real depth for removing outliers
+
+  new:
+    preprocess: # stage
+      resize: 0.3
+      gpu: "0"
+      fps: 15

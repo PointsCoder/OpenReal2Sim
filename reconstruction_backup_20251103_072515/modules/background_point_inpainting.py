@@ -252,7 +252,7 @@ def hybrid_fill(depth0: np.ndarray, fg_img: np.ndarray, bg_img: np.ndarray, K: n
     for plane_mask in plane_masks:
         if (plane_mask & left_obj_msk).sum() > 0:
             #depth_filled = plane_fill(depth0, K, plane_mask, left_obj_msk & plane_mask)
-            depth_filled = vanilla_plane_fill(depth0, K, plane_mask & ~left_obj_msk, left_obj_msk & plane_mask)
+            depth_filled = plane_fill(depth0, K, plane_mask & ~left_obj_msk, left_obj_msk & plane_mask)
             depth_bg[plane_mask & left_obj_msk] = depth_filled[plane_mask & left_obj_msk]
         left_obj_msk = left_obj_msk & ~plane_mask
     depth_moge = run_moge_depth(bg_img, device)

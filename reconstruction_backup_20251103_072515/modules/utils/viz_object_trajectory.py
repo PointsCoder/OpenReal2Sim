@@ -119,7 +119,7 @@ def visualize_world_trajs_all(
     Render a single combined PLY (and optional GLB) for one key.
 
     Args:
-        key: scene key under outputs/<key>/simulation/scene.json
+        key: scene key under outputs/<key>/scene/scene.json
         out_dir: if None -> outputs/<key>/debug ; otherwise results write to <out_dir>/<key>/
         bg_samples, obj_samples: sample counts
         bg_voxel, obj_voxel: voxel sizes in meters
@@ -133,7 +133,7 @@ def visualize_world_trajs_all(
         dict: {"ply": <Path>, "glb": <Path or None>, "frames": int, "points": int}
     """
     base = Path.cwd()
-    scene_json = base / "outputs" / key / "simulation" / "scene.json"
+    scene_json = base / "outputs" / key / "scene" / "scene.json"
     out_dir = base / "outputs" / key / "reconstruction" / "debug"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,13 +178,20 @@ def visualize_world_trajs_all(
         obj_pts0 = voxel_downsample(obj_pts0, obj_voxel)
         center0 = base_mesh.centroid.view(np.ndarray)
 
+        #3) get object type
+        obj_type = obj["type"]
+        if obj_type == "static":
+            rel = np.stack([np.eye(4)] * N, axis=0)
+        else:
+            rel = rel
         obj_infos.append({
             "name": name,
             "base_mesh": base_mesh,
             "rel": rel.astype(np.float64),
             "pts0": obj_pts0.astype(np.float64),
             "center0": center0.astype(np.float64),
-            "color": palette[0].astype(np.uint8)
+            "color": palette[0].astype(np.uint8),
+            "type": obj_type
         })
         print(f"[{key}] object {name}: traj_len={N}, pts0={len(obj_pts0)}")
 
@@ -265,8 +272,8 @@ def parse_args():
     ap.add_argument("--stride", type=int, default=5, help="frame stride (1 = all frames)")
     ap.add_argument("--save_glb_all", action="store_true", help="export a single GLB containing all frames")
     ap.add_argument("--encode_time_in_alpha", action="store_true", help="encode time as alpha in PLY colors")
-    ap.add_argument("--mesh_key", type=str, default="optimized", help="object mesh field name (e.g., fdpose or optimized)")
-    ap.add_argument("--traj_key", type=str, default="hybrid_trajs", help="trajectory field name (e.g., fdpose_trajs/simple_trajs/hybrid_trajs)")
+    ap.add_argument("--mesh_key", type=str, default="fdpose", help="object mesh field name (e.g., fdpose or optimized)")
+    ap.add_argument("--traj_key", type=str, default="fdpose_trajs", help="trajectory field name (e.g., fdpose_trajs/simple_trajs/hybrid_trajs)")
     return ap.parse_args()
 
 def main():

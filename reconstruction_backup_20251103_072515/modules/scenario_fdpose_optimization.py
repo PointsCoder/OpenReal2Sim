@@ -32,6 +32,7 @@ import numpy as np
 import cv2, imageio
 import trimesh
 import yaml
+from scipy.spatial.transform import Rotation as R
 
 BASE_DIR = Path.cwd()
 OUTPUT_DIR = BASE_DIR / "outputs"
@@ -42,8 +43,8 @@ sys.path.append(REPO_DIR)
 from estimater import *  # FoundationPose, ScorePredictor, PoseRefinePredictor, draw_posed_3d_box, draw_xyz_axis, set_seed
 import nvdiffrast.torch as dr
 
-
-
+### FIXME: currently non-moving object moves. do not know why.
+# ------------------------- utils -------------------------
 # pq: I haven't tested this yet.
 def determine_object_symmetry(obj_mesh_path, eps=0.01, sample_num=1000, test_angles=None):
     """
@@ -159,9 +160,6 @@ def calculate_pos_change(
     rot_change = np.degrees(np.arccos(np.clip((np.trace(pose_curr[:3, :3] @ pose_prev[:3, :3].T) - 1) / 2, -1.0, 1.0)))
     return trans_change, rot_change
 
-
-
-# ------------------------- utils -------------------------
 def set_logging():
     logging.basicConfig(format='[%(asctime)s] %(levelname)s: %(message)s', level=logging.INFO)
 
@@ -382,12 +380,11 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
         pose_tracking_mode = key_cfg["fdpose_tracking_mode"]
         est_refine_iter = key_cfg["fdpose_est_refine_iter"]
         track_refine_iter = key_cfg["fdpose_track_refine_iter"]
-        resize_factor = key_cfg.get("fdpose_resize_factor", 0.5)
         objects = scene_dict["info"]["objects"]
         debug_dir = base_dir / Path(f"outputs/{key}/reconstruction/debug")
         debug_dir.mkdir(parents=True, exist_ok=True)
         placed_meshes: List[Tuple[str, trimesh.Trimesh]] = []
-        extrinsics = scene_dict["extrinsics"]
+
         for obj_id, obj_ent in objects.items():
             oid   = obj_ent["oid"]
             oname = obj_ent["name"]
@@ -408,14 +405,15 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             Ks = scene_dict["intrinsics"].astype(np.float32)
             N = imgs.shape[0]
             Ks = np.repeat(Ks[None, ...], N, axis=0)
+            extrinsics = scene_dict["extrinsics"]
             # imageio.imwrite(droot / "track_vis" / f"{0:06d}_mask.png", mask_array[0]*255)
             reader = FoundationPoseReader(
                 imgs=imgs, depths=depths, Ks=Ks,
                 mask_array=mask_array,
-                shorter_side= resize_factor * min(scene_dict["height"], scene_dict["width"]),
+                shorter_side=None,
                 zfar=float("inf")
             )
-
+ 
             mesh_path_tmp, tmpdir = convert_glb_to_obj_temp(mesh_in_path)
             sym_axes = determine_object_symmetry(mesh_path_tmp, sample_num=1000, test_angles=None)
             print(f"[object {oid}] sym_axes: {sym_axes}")
@@ -435,14 +433,24 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             )
 
             all_poses: List[np.ndarray] = []
+
             pose_prev: Optional[np.ndarray] = None
+            centers_cam: List[Optional[np.ndarray]] = []
+            for i in range(N):
+                m_i = reader.get_mask(i)
+                c_i = masked_center_cam(
+                    depth=reader.get_depth(i),
+                    mask=m_i,
+                    K=reader.get_K(i),
+                )
+                centers_cam.append(c_i)            
 
             for i in range(len(reader)):
                 K_i   = reader.Ks[i].astype(np.float64, copy=False)
                 color = reader.get_color(i)
                 depth = reader.get_depth(i)
 
-                 if pose_tracking_mode == "perframe":
+                if pose_tracking_mode == "perframe":
                     ob_mask_i = reader.get_mask(i).astype(bool)
                     pose = est.register(K=K_i, rgb=color, depth=depth, ob_mask=ob_mask_i,
                                             iteration=max(1, est_refine_iter))
@@ -453,14 +461,12 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                         pose = est.register(K=K_i, rgb=color, depth=depth,
                                             ob_mask=ob_mask_0, iteration=est_refine_iter)
                     else:
-                        ### pq: I made small modifications to FDpose codebase to support this guess changing. If you don't want to use this, please comment out the last pose.
                         current_guess = np.linalg.inv(extrinsics[i]) @ extrinsics[i-1] @ pose_prev
-                        pose = est.track_one(rgb=color, depth=depth, K=K_i,# last_pose = current_guess,
+                        pose = est.track_one(rgb=color, depth=depth, K=K_i, last_pose = current_guess,
                                              iteration=track_refine_iter)
                         pose = disable_certain_axes(pose, sym_axes)
                         trans_change, rot_change = calculate_pos_change(current_guess, pose)
-                        trans_bias = np.linalg.norm(pose[:3, 3] - centers_cam[i])
-                        if trans_change > 0.10 or rot_change > 30.0 or trans_bias > 0.05:
+                        if trans_change > 0.10 or rot_change > 30.0:
                             pose = est.register(K=K_i, rgb=color, depth=depth,
                                                 ob_mask=reader.get_mask(i).astype(bool),
                                                 iteration= 3 * est_refine_iter)
@@ -468,16 +474,15 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                             pose = disable_certain_axes(pose, sym_axes)
                             print("[Warning] Large translation or rotation detected, re-registering...")
                             trans_change, rot_change = calculate_pos_change(current_guess, pose)
-                            trans_bias = np.linalg.norm(pose[:3, 3] - centers_cam[i])
-                            if trans_change > 0.10 or rot_change > 30.0 or trans_bias > 0.05:
+                            if trans_change > 0.10 or rot_change > 30.0:
                                 # Fallback: same transformation as current_guess (cam_{i-1} -> cam_i)
                                 pose = np.linalg.inv(extrinsics[i]) @ extrinsics[i-1] @ pose_prev
                                 pose[:3, 3] = centers_cam[i]
-                all_poses.append(np.linalg.inv(pose.reshape(4,4)))
+                all_poses.append(np.linalg.inv(extrinsics[0]) @ (extrinsics[i] @ pose.reshape(4,4)))
                 pose_prev = pose.reshape(4,4)
 
                 if debug_level >= 1:
-                    np.savetxt(droot / "ob_in_cam" / f"{i:06d}.txt", pose.reshape(4,4))
+                    np.savetxt(droot / "ob_in_cam" / f"{i:06d}.txt",np.linalg.inv(extrinsics[0]) @ (extrinsics[i] @ pose.reshape(4,4)))
 
                 if debug_level >= 1:
                     center_pose = pose @ np.linalg.inv(to_origin)
@@ -501,14 +506,18 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             T0_w_inv    = np.linalg.inv(T_obj_w_abs[0])
             rel_w       = T_obj_w_abs @ T0_w_inv                           # [N,4,4]
 
-            pose_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_trajs.npy"
+            abs_pose_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_trajs_abs.npy"
+            pose_save_path = base_dir / f"outputs/{key}/reconstruction/motions" / f"{oid}_{oname}_trajs_rel.npy"
             pose_save_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(abs_pose_save_path, T_obj_w_abs.astype(np.float32))
             np.save(pose_save_path, rel_w.astype(np.float32))
             scene_dict["info"]["objects"][obj_id]["fdpose_trajs"] = str(pose_save_path)
-            logging.info(f"[object {oid}] relative trajs(rel_world) -> {pose_save_path}")
+            scene_dict["info"]["objects"][obj_id]["abs_fdpose_trajs"] = str(abs_pose_save_path)
+            logging.info(f"[object {oid}] relative fdpose trajs(rel_world) -> {pose_save_path}")
+            logging.info(f"[object {oid}] absolute fdpose trajs(abs_world) -> {abs_pose_save_path}")
 
             # transform the object mesh with the fdpose estimated pose at frame 0
-            T_obj_w_0 = (T_c2w @ all_poses_np[0]).astype(np.float64)
+            T_obj_w_0 = T_obj_w_abs[0].astype(np.float64)
             m_base = trimesh.load(mesh_in_path, force='mesh')
             m_fd = m_base.copy(); m_fd.apply_transform(T_obj_w_0)
             fdpose_path = base_dir / f"outputs/{key}/reconstruction/objects" / f"{oid}_{oname}_fdpose.glb"
@@ -520,16 +529,7 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
 
             ####  add simple trajs (from mask+depth only) ####
             logging.info(f"[object] oid={oid}, name={oname} - simple trajs from mask+depth only")
-            centers_cam: List[Optional[np.ndarray]] = []
-            for i in range(N):
-                m_i = reader.get_mask(i)
-                c_i = masked_center_cam(
-                    depth=reader.get_depth(i),
-                    mask=m_i,
-                    K=reader.get_K(i),
-                )
-                centers_cam.append(c_i)            
-
+    
             # Fill in gaps using nearest valid values
             nearest_valid_fill_inplace(centers_cam)
             # camera->world: p_w(t) = R_cw @ p_c(t) + t_w

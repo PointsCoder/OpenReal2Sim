@@ -2,6 +2,7 @@
 
 ### assign object types, determine start and end frame,  downsample traj, compute stacking sequence and assign mask.
 ### TODO: 加一个ending的mesh进来 就这样。
+### A visualizer left.
 import yaml
 import numpy as np
 from pyquaternion import Quaternion
