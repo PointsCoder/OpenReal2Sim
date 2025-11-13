@@ -314,18 +314,21 @@ def process_key(key: str, key_cfgs: dict) -> None:
     return
 
 # --------------------- main: read YAML and run ---------------------
-def main(config_file: str = "config/config.yaml"):
+def main(config_file: str = "config/config.yaml", key_name: str = None):
     """Main function: load config and process depth calibration."""
     cfg_path = base_dir / config_file
     cfg = yaml.safe_load(cfg_path.open("r"))
     keys = cfg["keys"]
+    if key_name is not None:
+        keys = [key_name]
     for key in keys:
         key_cfgs = compose_configs(key, cfg)
         process_key(key, key_cfgs)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--key_name", type=str, default=None, help="If set, run only this key")
     parser.add_argument("--config", type=str, default="config/config.yaml", help="YAML with keys: [lab1, ...]")
     args = parser.parse_args()
 
-    main(args.config)
+    main(args.config, args.key_name)

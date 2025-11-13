@@ -1,0 +1,26 @@
+# Franka Panda Robot Configuration
+
+joint_names:
+  - joint1
+  - joint2
+  - joint3
+  - joint4
+  - joint5
+  - joint6
+  - joint7
+
+gripper_joint_names:
+  - finger_joint1
+  - finger_joint2
+
+control_frequency: 50
+
+pd_gains:
+  kp: [5000.0, 5000.0, 5000.0, 5000.0, 5000.0, 5000.0, 5000.0]
+  kd: [220.0, 220.0, 220.0, 220.0, 220.0, 220.0, 220.0]
+
+gripper_control:
+  max_opening: 0.04
+  kp: 10000.0
+  kd: 500.0
+

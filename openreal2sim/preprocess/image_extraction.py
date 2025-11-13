@@ -332,12 +332,14 @@ def mode_check(key_name: str) -> Path:
         mode.append("r3d")
     return mode
 
-def main(config_file: str = "config/config.yaml"):
+def main(config_file: str = "config/config.yaml", key_name: str = None):
     """Main function: load config and process videos."""
     with open(config_file, "r") as f:
         config = yaml.safe_load(f)
 
     keys = config["keys"]
+    if key_name is not None:
+        keys = [key_name]
 
     for key_name in keys:
         key_config = compose_configs(key_name, config)
@@ -352,7 +354,8 @@ def main(config_file: str = "config/config.yaml"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--key_name", type=str, default=None, help="If set, run only this key")
     parser.add_argument("--config", type=str, default="config/config.yaml", help="YAML with keys: [lab1, ...]")
     args = parser.parse_args()
 
-    main(args.config)
+    main(args.config, args.key_name)

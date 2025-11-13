@@ -66,7 +66,7 @@ class HeuristicManipulation(BaseSimulator):
             device=sim.device
         )
         super().__init__(
-            sim=sim, scene=scene, args=args,
+            sim=sim, sim_cfgs=sim_cfgs, scene=scene, args=args_cli,
             robot_pose=robot_pose, cam_dict=sim_cfgs["cam_cfg"],
             out_dir=out_dir, img_folder=img_folder, demo_dir = demo_dir, data_dir = data_dir,
             enable_motion_planning=True,
@@ -410,7 +410,7 @@ class HeuristicManipulation(BaseSimulator):
         delta_batch: np.ndarray          # (B,)
     ) -> dict:
         """
-        返回与 _build_info 相同结构，但每个 env 的抓取都可不同。
+        return grasp info dict for all envs in batch.
         """
         B = self.scene.num_envs
         p_w   = np.asarray(grasp_pos_w_batch,  dtype=np.float32).reshape(B, 3)

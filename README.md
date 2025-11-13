@@ -1,5 +1,18 @@
 # OpenReal2Sim
-A toolbox for real-to-sim reconstruction and robotic simulation
+OpenReal2Sim is a toolbox for real-to-sim reconstruction and robotic simulation. 
+
+It supports our multiple research projects, including [PhysWorld](https://pointscoder.github.io/PhysWorld_Web/) and [RoLA](https://sihengz02.github.io/RoLA/).
+
+![image](./assets/real_1x4.jpg)
+![image](./assets/sim_1x4.jpg)
+
+## What We Can Do
+
+- [x] Real-to-sim assets reconstruction from images and (generated) videos
+- [x] IsaacLab support for scenario import, camera setup, and rendering from the same input viewpoint 
+- [x] Preliminary IsaacLab support for robotic trajectory generation by cross-embodiment transfer from videos
+- [x] Preliminary Maniskills support
+- [x] Preliminary Mujoco support
 
 ## Installation
 
@@ -14,38 +27,31 @@ Please refer to [docker installation](docker/README.md) for launching the docker
 
 ## How to Use
 
-Our framework contains several stages:
-- [Preprocess](openreal2sim/preprocess/README.md): collect or estimate depths and camera information from images and videos
-- [Reconstruction](openreal2sim/reconstruction/README.md): build physically interactable scenes from images and videos
-- [Simulation](openreal2sim/simulation/README.md): import physical scenes into the simulator, collect robotic demonstrations
+Please follow the step-by-step user guide [here](docs/HowToUse.md).
 
-### Preprocess
-
-Running this scripts for all preprocessing steps:
+## Citation
+If you find this repository useful in your research, please consider citing:
 ```
-python openreal2sim/preprocess/preprocess_manager.py
+@misc{openreal2sim,
+  title={OpenReal2Sim: A Toolbox for Real-to-Sim Reconstruction and Robotic Simulation},
+  author={OpenReal2Sim Development Team},
+  year={2025}
+}
 ```
-
-### Reconstruction
-
-We first need to segment objects that needs to be reconstructed. We provide a GUI for this purpose:
 ```
-python openreal2sim/reconstruction/tools/segmentation_annotator.py
+@inproceedings{physworld,
+  title={Robot Learning from a Physical World Model},
+  author = {Mao, Jiageng and He, Sicheng and Wu, Hao-Ning and You, Yang and Sun, Shuyang and Wang, Zhicheng and Bao, Yanan and Chen, Huizhong and Guibas, Leonidas and Guizilini, Vitor and Zhou, Howard and Wang, Yue},
+  year={2025},
+}   
 ```
-
-**How to use the GUI annotator:**
-
-1. Input `key_name` (e.g. `demo_image`) in the `Output-key` textbox and press `load` to load image frames
-
-2. Select the objects you want to segment by simply clicking on the image
-
-3. Modify the object name from the default `pc_obj` to the class name in the `Point-click name` and press `Confirm mask` and `Save mask_dict`.
-
-4. If you are processing a video, press the `PROPAGATE & SAVE` button to propagate the segmentation masks across frames.
-
-**Please note that we must have a `ground` mask annotated, since we need this to find the ground plane for reconstruction.**
-
-Then, run the whole physical scene reconstruction pipeline:
 ```
-python openreal2sim/reconstruction/recon_agent.py
+@inproceedings{rola,
+  title={Robot learning from any images},
+  author={Zhao, Siheng and Mao, Jiageng and Chow, Wei and Shangguan, Zeyu and Shi, Tianheng and Xue, Rong and Zheng, Yuxi and Weng, Yijia and You, Yang and Seita, Daniel and others},
+  booktitle={Conference on Robot Learning},
+  pages={4226--4245},
+  year={2025},
+  organization={PMLR}
+}
 ```

@@ -137,10 +137,11 @@ def run_megasam(video_name: str, key_cfgs: dict):
     }
     with open(scene_path, "wb") as f:
         pickle.dump(saved_dict, f)
-    
-    print(f"[Visualization] Saving dynamic PCD HTML")
-    from utils.viz_dynamic_pcd import save_dynamic_pcd
-    save_dynamic_pcd(video_name, max_points=5000)
+
+    # visualizing dynamic point cloud in html    
+    # print(f"[Visualization] Saving dynamic PCD HTML")
+    # from utils.viz_dynamic_pcd import save_dynamic_pcd
+    # save_dynamic_pcd(video_name, max_points=5000)
 
     print(f"[Done] {video_name}")
 
@@ -187,9 +188,10 @@ def run_moge(key_name: str, key_cfgs: dict):
         with open(scene_path, "wb") as f:
             pickle.dump(saved_dict, f)
 
-    print(f"[Visualization] Saving dynamic PCD HTML")
-    from utils.viz_dynamic_pcd import save_dynamic_pcd
-    save_dynamic_pcd(key_name, max_points=None)
+    # visualizing dynamic point cloud in html
+    # print(f"[Visualization] Saving dynamic PCD HTML")
+    # from utils.viz_dynamic_pcd import save_dynamic_pcd
+    # save_dynamic_pcd(key_name, max_points=None)
 
     print(f"[Done] {key_name}")
     return

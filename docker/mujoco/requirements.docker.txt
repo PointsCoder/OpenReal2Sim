@@ -1,0 +1,14 @@
+mujoco
+numpy
+scipy
+imageio
+Pillow
+trimesh
+networkx
+lxml
+coacd
+pymeshlab
+loguru
+transforms3d
+tyro
+pyyaml

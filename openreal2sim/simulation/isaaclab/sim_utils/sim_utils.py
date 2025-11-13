@@ -8,11 +8,34 @@ import transforms3d
 
 from sim_utils.calibration_utils import calibration_to_robot_pose, load_extrinsics
 
+default_config = {
+    "physics": "default",
+    "extrinsics": None,
+    "goal_offset": 0,
+    "grasp_idx": -1,
+    "grasp_pre": None,
+    "grasp_delta": None,
+    "traj_key": "fdpose_trajs", # "fdpose_trajs", "simple_trajs", "hybrid_trajs"
+    "manip_object_id": "1",
+}
+
+def compose_configs(key_name: str, config: dict) -> dict:
+    ret_key_config = {}
+    local_config = config["local"].get(key_name, {})
+    local_config = local_config.get("simulation", {})
+    global_config = config.get("global", {})
+    global_config = global_config.get("simulation", {})
+    for param in default_config.keys():
+        value = local_config.get(param, global_config.get(param, default_config[param]))
+        ret_key_config[param] = value
+    print(f"[Info] Config for {key_name}: {ret_key_config}")
+    return ret_key_config
+
 def load_sim_parameters(basedir, key) -> dict:
     scene_json_path = Path(basedir) / "outputs" / key / "simulation" / "scene.json"
     scene_json   = json.load(open(scene_json_path, "r"))
     exp_config = yaml.load(open(Path(basedir) / "config/config.yaml"), Loader=yaml.FullLoader)
-    exp_config = exp_config["local"][key]["simulation"]
+    exp_config = compose_configs(key, exp_config)
 
     # cam configs
     cam_cfg = {
@@ -111,7 +134,7 @@ viz_obj_physics = {
 
 def robot_placement_candidates_v2(
     scene_info: dict,
-    reachability=(0.3, 0.85),
+    reachability=(0.3, 0.65),
     reachability_zcenter_offset=0.3,
     robot_aabb=(0.12, 0.12, 0.72),
     num_radius_steps=10,

@@ -53,6 +53,11 @@ class ReconAgent:
             save_dir = self.base_dir / f'outputs/{key}/simulation'
             save_dir.mkdir(parents=True, exist_ok=True)
 
+            background_image_path = self.base_dir / f'outputs/{key}/reconstruction/background.jpg'
+            new_background_image_path = save_dir / 'background.jpg'
+            scene_json["background_image"] = str(new_background_image_path)
+            shutil.copy(background_image_path, new_background_image_path)
+
             bg_glb_path = scene_json["background"]["registered"]
             new_bg_glb_path = save_dir / Path(bg_glb_path).name
             scene_json["background"] = {"registered": str(new_bg_glb_path)}
@@ -62,11 +67,6 @@ class ReconAgent:
             new_scene_glb_path = save_dir / Path(scene_glb_path).name
             scene_json["scene_mesh"] = {"optimized": str(new_scene_glb_path)}
             shutil.copy(scene_glb_path, new_scene_glb_path)
-
-            bg_rgb_path = scene_dict["recon"]["background"]
-            new_bg_rgb_path = save_dir / Path(bg_rgb_path).name
-            shutil.copy(bg_rgb_path, new_bg_rgb_path)
-            scene_json["bg_rgb_path"] = str(new_bg_rgb_path)
 
             for oid, obj in scene_json["objects"].items():
                 obj_glb_path = obj["optimized"]
@@ -101,7 +101,7 @@ class ReconAgent:
 
     def mask_propagation(self):
         from tools.segmentation_mask_propagation import mask_propagation
-        mask_propagation(self.keys)
+        self.key_scene_dicts = mask_propagation(self.keys, self.key_scene_dicts)
         print("[Info] Mask propagation completed.")
 
     def background_pixel_inpainting(self):

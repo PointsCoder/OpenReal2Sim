@@ -17,12 +17,19 @@ services:
       - HOME=/tmp
       - USER=dev
       - VSCODE_SERVER_DIR=/tmp/.vscode-server
+      - NUMBA_CACHE_DIR=/tmp/numba_cache
     working_dir: /app
     volumes:
       - /etc/passwd:/etc/passwd:ro
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
       - ../:/app
+      - ${TORCH_HOME:-~/.cache/torch}:/tmp/.cache/torch
+      - ${HF_HOME:-~/.cache/huggingface}:/tmp/.cache/huggingface
+      - ${HY3DGEN_MODELS:-~/.cache/hy3dgen}:/tmp/.cache/hy3dgen
+      - ~/.cache/warp:/tmp/.cache/warp
+      - ~/.cache/torch_extensions:/tmp/.cache/torch_extensions
+      - ~/.cache/matplotlib:/tmp/.cache/matplotlib
     stdin_open: true
     user: "${HOST_UID}:${HOST_GID}"
     tty: true
@@ -33,6 +40,7 @@ services:
       context: ..
       dockerfile: docker/isaaclab/Dockerfile
     image: isaaclab:dev
+    user: "${HOST_UID}:${HOST_GID}"
     deploy:
       resources:
         reservations:
@@ -66,3 +74,25 @@ services:
     command: bash
 
     runtime: nvidia
+    network_mode: "host"
+
+  mujoco:
+    build:
+      context: ..
+      dockerfile: docker/mujoco/Dockerfile
+    image: mujoco:dev
+    working_dir: /app
+    volumes:
+      - ../:/app
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - MUJOCO_GL=glfw
+    devices:
+      - /dev/dri:/dev/dri
+    shm_size: "2g"
+    stdin_open: true
+    tty: true
+    command: bash
+    network_mode: "host"

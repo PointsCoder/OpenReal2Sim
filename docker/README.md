@@ -5,6 +5,7 @@ Docker provides a sharable environment to run the code in this repository.
 We provide separate Dockerfiles for real2sim reconstruction and different robot simulation environments:
 - `docker/real2sim/Dockerfile` — for Real2Sim preprocessing and reconstruction.
 - `docker/isaaclab/Dockerfile` — for IsaacLab simulation and policy training.
+- `docker/mujoco/Dockerfile` — for Mujoco simulation.
 
 Each can be built and run independently depending on your use case.
 
@@ -34,6 +35,8 @@ if sometimes the group change does not take effect, you can also try:
    newgrp docker
    ```
 to switch to the `docker` group in the current terminal session.
+
+You also need to have NVIDIA CUDA Container Toolkit installed. See: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
 
 ### Use Pre-Built Docker Image
 
@@ -72,12 +75,6 @@ Every time you want to run a script inside the repo, follow these steps:
    ```
 
 **Inside the docker container**, run the following script to download pretrained checkpoints and compile c++/cuda extensions:
-```
-bash scripts/installation/install.sh
-```
-
-**Note:** on the previous script sometimes gdwon fails download the files. Alternatively the following python script can be used: 
-
 ```
 python scripts/installation/install.py
 ```
