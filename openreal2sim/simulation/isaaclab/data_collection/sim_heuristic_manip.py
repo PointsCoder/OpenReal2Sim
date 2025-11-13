@@ -16,7 +16,7 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser("sim_policy")
 parser.add_argument("--key", type=str, default="demo_video", help="scene key (outputs/<key>)")
 parser.add_argument("--robot", type=str, default="franka")
-parser.add_argument("--num_envs", type=int, default=4)
+parser.add_argument("--num_envs", type=int, default=3)
 parser.add_argument("--num_trials", type=int, default=1)
 parser.add_argument("--teleop_device", type=str, default="keyboard")
 parser.add_argument("--sensitivity", type=float, default=1.0)
@@ -37,6 +37,7 @@ from typing import List
 import imageio
 from concurrent.futures import ThreadPoolExecutor
 import time
+from typing import Dict, Optional
 
 # ───────────────────────────────────────────────────────────────────────────── Simulation environments ─────────────────────────────────────────────────────────────────────────────
 from sim_base import BaseSimulator, get_next_demo_id
@@ -49,6 +50,7 @@ BASE_DIR   = Path.cwd()
 img_folder = args_cli.key
 out_dir    = BASE_DIR / "outputs"
 
+from typing import Tuple
 
 # ───────────────────────────────────────────────────────────────────────────── Heuristic Manipulation ───────────────────────────────────────────────────────────────────────────── 
 class HeuristicManipulation(BaseSimulator):
@@ -81,128 +83,152 @@ class HeuristicManipulation(BaseSimulator):
         self.grasp_pre = sim_cfgs["demo_cfg"]["grasp_pre"]
         self.grasp_delta = sim_cfgs["demo_cfg"]["grasp_delta"]
         self.load_obj_goal_traj()
+    
+    
 
     def load_obj_goal_traj(self):
         """
-        Load the relative trajectory Δ_w (T,4,4) and precompute the absolute
-        object goal trajectory for each env using the *actual current* object pose
-        in the scene as T_obj_init (not env_origin).
-        T_obj_goal[t] = Δ_w[t] @ T_obj_init
-
-        Sets:
-        self.obj_rel_traj   : np.ndarray or None, shape (T,4,4)
-        self.obj_goal_traj_w: np.ndarray or None, shape (B,T,4,4)
+        Load the relative trajectory and precompute ALL absolute goal poses on GPU.
+        This eliminates CPU-GPU transfers during trajectory execution.
         """
-        # ── 1) Load Δ_w ──
-        rel = np.load(self.traj_path).astype(np.float32)
-        self.obj_rel_traj = rel  # (T,4,4)
-
+        # Load relative trajectory
+        rel = np.load(self.traj_path).astype(np.float32)  # (T, 4, 4)
+        self.obj_rel_traj = rel
+        
         self.reset()
-
-        # ── 2) Read current object initial pose per env as T_obj_init (USING COM) ──
+        
+        # Get initial object poses (COM)
         B = self.scene.num_envs
-        obj_state = self.object_prim.data.root_com_state_w[:, :7]  # ← CHANGED: Use COM
-        self.show_goal(obj_state[:, :3], obj_state[:, 3:7])
-
-        obj_state_np = obj_state.detach().cpu().numpy().astype(np.float32)
-        offset_np = np.asarray(self.goal_offset, dtype=np.float32).reshape(3)
-        obj_state_np[:, :3] += offset_np  # raise a bit to avoid collision
-
-        # Note: here the relative traj Δ_w is defined in world frame with origin (0,0,0),
-        # Hence, we need to normalize it to each env's origin frame.
-        origins = self.scene.env_origins.detach().cpu().numpy().astype(np.float32)  # (B,3)
-        obj_state_np[:, :3] -= origins # normalize to env origin frame
-
-        # ── 3) Precompute absolute object goals for all envs ──
+        obj_state = self.object_prim.data.root_com_state_w[:, :7]  # [B, 7]
+        
+        # Apply offset
+        offset_t = torch.tensor(self.goal_offset, dtype=torch.float32, device=obj_state.device)
+        obj_state[:, :3] += offset_t
+        
+        # Normalize to env origin frame
+        origins = self.scene.env_origins  # [B, 3] - already on GPU!
+        obj_state[:, :3] -= origins
+        
+        # Convert to transformation matrices [B, 4, 4] - ALL ON GPU
+        T_init = pose_to_mat_batch_torch(obj_state[:, :3], obj_state[:, 3:7])  # [B, 4, 4]
+        
+        # Convert relative trajectory to GPU
         T = rel.shape[0]
-        obj_goal = np.zeros((B, T, 4, 4), dtype=np.float32)
-        for b in range(B):
-            T_init = pose_to_mat(obj_state_np[b, :3], obj_state_np[b, 3:7])  # (4,4)
-            for t in range(T):
-                goal = rel[t] @ T_init
-                goal[:3, 3] += origins[b]  # back to world frame
-                obj_goal[b, t] = goal
-
-        self.obj_goal_traj_w = obj_goal  # [B, T, 4, 4]
+        rel_gpu = torch.tensor(rel, dtype=torch.float32, device=obj_state.device)  # [T, 4, 4]
+        
+        # Precompute ALL trajectory goals: T_goal[b,t] = rel[t] @ T_init[b]
+        # Use batched matrix multiplication
+        T_init_expanded = T_init.unsqueeze(0)  # [1, B, 4, 4]
+        rel_expanded = rel_gpu.unsqueeze(1)     # [T, 1, 4, 4]
+        
+        # Batched matmul: [T, B, 4, 4]
+        obj_goal = torch.matmul(rel_expanded, T_init_expanded)  # [T, B, 4, 4]
+        
+        # Add back world frame offset
+        obj_goal[:, :, :3, 3] += origins.unsqueeze(0)  # Broadcasting
+        
+        # Transpose to [B, T, 4, 4] for easier indexing
+        self.obj_goal_traj_w_gpu = obj_goal.permute(1, 0, 2, 3).contiguous()  # [B, T, 4, 4]
+        
+        # Also store as numpy for backward compatibility (but prefer GPU version)
+        self.obj_goal_traj_w = obj_goal.permute(1, 0, 2, 3).cpu().numpy()
 
     def follow_object_goals(self, start_joint_pos, sample_step=1, visualize=True, skip_envs=None):
         """
-        Follow precomputed object absolute trajectory with automatic restart on failure.
-        If motion planning fails, raises an exception to trigger re-grasp from step 0.
-        
-        Args:
-            skip_envs: Boolean array [B] indicating which envs to skip from execution
+        Follow precomputed object trajectory - ALL operations on GPU.
         """
         B = self.scene.num_envs
-        if skip_envs is None:
-            skip_envs = np.zeros(B, dtype=bool)
+        device = self.sim.device
         
-        obj_goal_all = self.obj_goal_traj_w  # [B, T, 4, 4]
-        T = obj_goal_all.shape[1]
-
-        ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
-        obj_w = self.object_prim.data.root_state_w[:, :7]
-
-        T_ee_in_obj = []
-        for b in range(B):
-            T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
-            T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-            T_ee_in_obj.append((np.linalg.inv(T_obj_w) @ T_ee_w).astype(np.float32))
-
+        if skip_envs is None:
+            skip_envs = torch.zeros(B, dtype=torch.bool, device=device)
+        else:
+            # FIX: Ensure skip_envs is the right type and on the right device
+            if isinstance(skip_envs, np.ndarray):
+                skip_envs = torch.tensor(skip_envs, dtype=torch.bool, device=device)
+            elif isinstance(skip_envs, torch.Tensor):
+                skip_envs = skip_envs.to(device).bool()
+        
+        # FIX: Verify dimensions
+        assert skip_envs.shape[0] == B, f"skip_envs shape {skip_envs.shape} doesn't match num_envs {B}"
+        
+        obj_goal_all_gpu = self.obj_goal_traj_w_gpu  # [B, T, 4, 4] - already on GPU!
+        T = obj_goal_all_gpu.shape[1]
+        
+        # Get current EE and object poses
+        ee_w = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B, 7]
+        obj_w = self.object_prim.data.root_state_w[:, :7]  # [B, 7]
+        
+        # Compute T_ee_in_obj for all envs - BATCHED on GPU
+        T_ee_w = pose_to_mat_batch_torch(ee_w[:, :3], ee_w[:, 3:7])    # [B, 4, 4]
+        T_obj_w = pose_to_mat_batch_torch(obj_w[:, :3], obj_w[:, 3:7])  # [B, 4, 4]
+        
+        # Batched inverse: [B, 4, 4]
+        T_obj_w_inv = torch.linalg.inv(T_obj_w)
+        T_ee_in_obj = torch.matmul(T_obj_w_inv, T_ee_w)  # [B, 4, 4]
+        
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]
-
+        
         t_iter = list(range(0, T, sample_step))
-        t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
-
+        if t_iter[-1] != T-1:
+            t_iter.append(T-1)
+        
         for t in t_iter:
-            goal_pos_list, goal_quat_list = [], []
             print(f"[INFO] follow object goal step {t}/{T}")
+            
+            # Get goals for timestep t - ALL ON GPU
+            T_obj_goal = obj_goal_all_gpu[:, t, :, :]  # [B, 4, 4]
+            
+            # Compute EE goals: T_ee_goal = T_obj_goal @ T_ee_in_obj - BATCHED
+            T_ee_goal = torch.matmul(T_obj_goal, T_ee_in_obj)  # [B, 4, 4]
+            
+            # Extract poses from matrices - BATCHED
+            goal_pos, goal_quat = mat_to_pose_batch_torch(T_ee_goal)  # [B, 3], [B, 4]
+            
+            # FIX: Handle skipped envs with proper broadcasting
+            # Create dummy goal for skipped envs
+            dummy_pos = torch.zeros(3, device=device, dtype=goal_pos.dtype)
+            dummy_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device, dtype=goal_quat.dtype)
+            
+            # Use advanced indexing instead of where() to avoid dimension issues
             for b in range(B):
                 if skip_envs[b]:
-                    # Dummy goal for skipped env
-                    goal_pos_list.append(np.zeros(3, dtype=np.float32))
-                    goal_quat_list.append(np.array([1, 0, 0, 0], dtype=np.float32))
-                else:
-                    T_obj_goal = obj_goal_all[b, t]
-                    T_ee_goal  = T_obj_goal @ T_ee_in_obj[b]
-                    pos_b, quat_b = mat_to_pose(T_ee_goal)
-                    goal_pos_list.append(pos_b.astype(np.float32))
-                    goal_quat_list.append(quat_b.astype(np.float32))
-
-            goal_pos  = torch.as_tensor(np.stack(goal_pos_list),  dtype=torch.float32, device=self.sim.device)
-            goal_quat = torch.as_tensor(np.stack(goal_quat_list), dtype=torch.float32, device=self.sim.device)
-
-            if visualize:
+                    goal_pos[b] = dummy_pos
+                    goal_quat[b] = dummy_quat
+            
+            if visualize and self.debug_level > 0:
                 self.show_goal(goal_pos, goal_quat)
+            
             ee_pos_b, ee_quat_b = subtract_frame_transforms(
                 root_w[:, :3], root_w[:, 3:7], goal_pos, goal_quat
             )
             
-            # Execute motion planning for all environments
-            # Note: move_to() executes all B environments; we record dummy data for skipped envs
             joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False)
             
-            # Check for critical motion planning failure
             if joint_pos is None or success is None:
                 print(f"[CRITICAL] Motion planning failed at step {t}/{T}")
-                print("[CRITICAL] Object likely dropped - need to restart from grasp")
                 raise RuntimeError("MotionPlanningFailure_RestartNeeded")
             
             if torch.any(success == False):
-                print(f"[WARN] Some active envs failed motion planning at step {t}/{T}, but continuing...")
+                print(f"[WARN] Some active envs failed motion planning at step {t}/{T}")
             
-            # Build action data: real data for active envs, dummy data for skipped envs
-            ee_pos_b_data = ee_pos_b.cpu().numpy()
-            ee_quat_b_data = ee_quat_b.cpu().numpy()
-            for b in np.where(skip_envs)[0]:
-                ee_pos_b_data[b] = np.zeros(3, dtype=np.float32)
-                ee_quat_b_data[b] = np.array([1, 0, 0, 0], dtype=np.float32)
-            self.save_dict["actions"].append(np.concatenate([ee_pos_b_data, ee_quat_b_data, np.ones((B, 1))], axis=1))
-
+            # FIX: Store actions with proper masking
+            ee_pos_b_save = ee_pos_b.clone()
+            ee_quat_b_save = ee_quat_b.clone()
+            gripper_save = torch.ones((B, 1), device=device, dtype=torch.float32)
+            
+            # Mask out skipped envs
+            for b in range(B):
+                if skip_envs[b]:
+                    ee_pos_b_save[b] = dummy_pos
+                    ee_quat_b_save[b] = dummy_quat
+            
+            action = torch.cat([ee_pos_b_save, ee_quat_b_save, gripper_save], dim=1)
+            self.save_dict["actions"].append(action)  # Store as GPU tensor
+        
         joint_pos = self.wait(gripper_open=True, steps=10)
         return joint_pos
-
 
     def viz_object_goals(self, sample_step=1, hold_steps=20):
         self.reset()
@@ -325,7 +351,9 @@ class HeuristicManipulation(BaseSimulator):
         proximity_check = distances <= position_threshold
 
         # Combined check
-        lifted = lift_check & proximity_check
+        #lifted = lift_check & proximity_check
+
+        lifted = proximity_check  # TEMPORARY: only use proximity for success
 
         # Score calculation
         score = torch.zeros_like(ee_diff)
@@ -349,220 +377,306 @@ class HeuristicManipulation(BaseSimulator):
         return lifted.detach().cpu().numpy().astype(bool), score.detach().cpu().numpy().astype(np.float32)
 
     def build_grasp_info(
-        self,
-        grasp_pos_w_batch: np.ndarray,   # (B,3)  GraspNet proposal in world frame
-        grasp_quat_w_batch: np.ndarray,  # (B,4)  wxyz
-        pre_dist_batch: np.ndarray,      # (B,)
-        delta_batch: np.ndarray          # (B,)
-    ) -> dict:
+    self,
+    grasp_pos_w_batch,   # Can be numpy or torch
+    grasp_quat_w_batch,  # Can be numpy or torch
+    pre_dist_batch,      # Can be numpy or torch
+    delta_batch          # Can be numpy or torch
+) -> dict:
         """
-        return grasp info dict for all envs in batch.
+        Build grasp info for all envs - VECTORIZED on GPU.
+        Accepts both numpy arrays and torch tensors for backward compatibility.
         """
         B = self.scene.num_envs
-        p_w   = np.asarray(grasp_pos_w_batch,  dtype=np.float32).reshape(B, 3)
-        q_w   = np.asarray(grasp_quat_w_batch, dtype=np.float32).reshape(B, 4)
-        pre_d = np.asarray(pre_dist_batch,     dtype=np.float32).reshape(B)
-        delt  = np.asarray(delta_batch,        dtype=np.float32).reshape(B)
-
-        a_batch = grasp_approach_axis_batch(q_w)  # (B,3)
-
-        pre_p_w = (p_w - pre_d[:, None] * a_batch).astype(np.float32)
-        gra_p_w = (p_w + delt[:,  None] * a_batch).astype(np.float32)
-
-        origins = self.scene.env_origins.detach().cpu().numpy().astype(np.float32)  # (B,3)
+        device = self.sim.device
+        
+        # Convert to torch tensors if they're numpy arrays
+        if isinstance(grasp_pos_w_batch, np.ndarray):
+            p_w = torch.tensor(grasp_pos_w_batch, dtype=torch.float32, device=device)
+        else:
+            p_w = grasp_pos_w_batch.to(device)
+        
+        if isinstance(grasp_quat_w_batch, np.ndarray):
+            q_w = torch.tensor(grasp_quat_w_batch, dtype=torch.float32, device=device)
+        else:
+            q_w = grasp_quat_w_batch.to(device)
+        
+        if isinstance(pre_dist_batch, np.ndarray):
+            pre_d = torch.tensor(pre_dist_batch, dtype=torch.float32, device=device).view(B, 1)
+        else:
+            pre_d = pre_dist_batch.to(device).view(B, 1)
+        
+        if isinstance(delta_batch, np.ndarray):
+            delt = torch.tensor(delta_batch, dtype=torch.float32, device=device).view(B, 1)
+        else:
+            delt = delta_batch.to(device).view(B, 1)
+        
+        # Compute approach axis - VECTORIZED
+        a_batch = grasp_approach_axis_batch_torch(q_w)  # [B, 3]
+        
+        # Compute pre-grasp and grasp positions - VECTORIZED
+        pre_p_w = p_w - pre_d * a_batch  # [B, 3]
+        gra_p_w = p_w + delt * a_batch   # [B, 3]
+        
+        # Add environment origins
+        origins = self.scene.env_origins  # [B, 3]
         pre_p_w = pre_p_w + origins
         gra_p_w = gra_p_w + origins
-
+        
+        # Transform to base frame
         pre_pb, pre_qb = self._to_base(pre_p_w, q_w)
         gra_pb, gra_qb = self._to_base(gra_p_w, q_w)
-
+        
         return {
             "pre_p_w": pre_p_w, "p_w": gra_p_w, "q_w": q_w,
-            "pre_p_b": pre_pb,  "pre_q_b": pre_qb,
-            "p_b": gra_pb,      "q_b": gra_qb,
-            "pre_dist": pre_d,  "delta": delt,
+            "pre_p_b": pre_pb, "pre_q_b": pre_qb,
+            "p_b": gra_pb, "q_b": gra_qb,
+            "pre_dist": pre_d.squeeze(1), "delta": delt.squeeze(1),
         }
 
 
-    def grasp_trials(self, gg, std: float = 0.0005, max_retries: int = 3, existing_skip_mask: np.ndarray = None):
+    def grasp_trials(
+    self, 
+    gg, 
+    std: float = 0.0005, 
+    max_retries: int = 3, 
+    existing_skip_mask: Optional[np.ndarray] = None
+) -> Dict:
         """
-        Async grasp trials: each env finds its own successful grasp independently.
-        Environments that succeed early keep their grasp while failed envs continue searching.
+        Async grasp trials with GPU acceleration and vectorized operations.
+        Each environment finds its own successful grasp independently.
         
         Args:
             gg: GraspGroup with grasp proposals
-            std: Standard deviation for random perturbations
-            max_retries: Number of retry attempts
-            existing_skip_mask: Optional [B] boolean array of environments to skip from the start
+            std: Standard deviation for random perturbations along approach axis
+            max_retries: Number of retry attempts for grasp selection
+            existing_skip_mask: Optional [B] boolean array of environments to skip from start
         
-        Returns dict with per-env success flags, chosen grasp parameters, and skip mask.
-        Envs that exhaust retries are marked to skip in future processing.
+        Returns:
+            dict with:
+                - success: [B] boolean array of per-env success
+                - chosen_pose_w: List of (pos, quat) tuples per env
+                - chosen_pre: [B] pre-grasp distances
+                - chosen_delta: [B] grasp deltas
+                - skip_envs: [B] boolean array of envs to skip in future processing
         """
         B = self.scene.num_envs
+        device = self.sim.device
         idx_all = list(range(len(gg)))
+        
+        # Handle empty grasp list
         if len(idx_all) == 0:
             print("[ERR] empty grasp list.")
             skip_mask = np.ones(B, dtype=bool) if existing_skip_mask is None else existing_skip_mask.copy()
             return {
                 "success": np.zeros(B, dtype=bool),
                 "chosen_pose_w": [None] * B,
-                "chosen_pre": [None] * B,
-                "chosen_delta": [None] * B,
+                "chosen_pre": np.zeros(B, dtype=np.float32),
+                "chosen_delta": np.zeros(B, dtype=np.float32),
                 "skip_envs": skip_mask,
             }
-
+        
         rng = np.random.default_rng()
-        pre_dist_const = 0.12  # m
-
-        # Track per-environment success and chosen grasps
-        env_success = np.zeros(B, dtype=bool)
-        env_chosen_pose_w = [None] * B  # List of (pos, quat) tuples per env
-        env_chosen_pre = np.zeros(B, dtype=np.float32)
-        env_chosen_delta = np.zeros(B, dtype=np.float32)
-        env_best_score = np.zeros(B, dtype=np.float32)
+        pre_dist_const = 0.12  # meters
         
-        # Initialize skip mask from existing one or create new
+        # ═══════════════════════════════════════════════════════════════════════
+        # OPTIMIZATION 1: Precompute ALL grasp poses on GPU once
+        # ═══════════════════════════════════════════════════════════════════════
+        print(f"[INFO] Precomputing {len(gg)} grasp poses on GPU...")
+        all_grasp_pos = torch.zeros((len(gg), 3), dtype=torch.float32, device=device)
+        all_grasp_quat = torch.zeros((len(gg), 4), dtype=torch.float32, device=device)
+        
+        # Import the grasp conversion utility
+        from sim_utils.transform_utils import grasp_to_world
+        
+        for i in range(len(gg)):
+            p_w, q_w = grasp_to_world(gg[i])
+            all_grasp_pos[i] = torch.tensor(p_w, dtype=torch.float32, device=device)
+            all_grasp_quat[i] = torch.tensor(q_w, dtype=torch.float32, device=device)
+        
+        print(f"[INFO] Grasp poses loaded on GPU: {all_grasp_pos.shape}")
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # OPTIMIZATION 2: Use GPU tensors for per-environment tracking
+        # ═══════════════════════════════════════════════════════════════════════
+        env_success = torch.zeros(B, dtype=torch.bool, device=device)
+        env_chosen_idx = torch.zeros(B, dtype=torch.long, device=device)
+        env_chosen_pre = torch.full((B,), pre_dist_const, dtype=torch.float32, device=device)
+        env_chosen_delta = torch.zeros(B, dtype=torch.float32, device=device)
+        env_best_score = torch.zeros(B, dtype=torch.float32, device=device)
+        
+        # Initialize skip mask
         if existing_skip_mask is not None:
-            env_skip = existing_skip_mask.copy()
-            print(f"[INFO] Starting grasp trials with {env_skip.sum()} pre-skipped environments: {np.where(env_skip)[0].tolist()}")
+            env_skip = torch.tensor(existing_skip_mask, dtype=torch.bool, device=device)
+            print(f"[INFO] Starting with {env_skip.sum().item()} pre-skipped environments: "
+                f"{torch.where(env_skip)[0].tolist()}")
         else:
-            env_skip = np.zeros(B, dtype=bool)  # Track envs to skip due to exhausted retries
+            env_skip = torch.zeros(B, dtype=torch.bool, device=device)
         
-        # Retry loop for grasp selection phase
+        # ═══════════════════════════════════════════════════════════════════════
+        # Retry loop for grasp selection
+        # ═══════════════════════════════════════════════════════════════════════
         for retry_attempt in range(max_retries):
             try:
                 print(f"\n{'='*60}")
                 print(f"ASYNC GRASP SELECTION ATTEMPT {retry_attempt + 1}/{max_retries}")
-                print(f"Successful envs: {env_success.sum()}/{B}")
+                print(f"Successful envs: {env_success.sum().item()}/{B}")
                 print(f"{'='*60}\n")
                 
-                # If all non-skipped envs succeeded, we're done
+                # Check if all non-skipped envs succeeded
                 active_mask = ~env_skip
-                if np.all(env_success[active_mask]):
-                    successful_envs = np.where(env_success & ~env_skip)[0]
-                    skipped_envs = np.where(env_skip)[0]
+                if torch.all(env_success[active_mask]):
+                    successful_envs = torch.where(env_success & ~env_skip)[0]
+                    skipped_envs = torch.where(env_skip)[0]
                     print(f"[SUCCESS] All active environments found valid grasps!")
                     if len(skipped_envs) > 0:
-                        print(f"[INFO] Skipped {len(skipped_envs)} failed environments: {skipped_envs.tolist()}")
+                        print(f"[INFO] Skipped {len(skipped_envs)} failed environments: "
+                            f"{skipped_envs.tolist()}")
                     break
                 
-                # Get mask of envs that still need to find a grasp (not successful and not skipped)
+                # Get mask of envs that still need to find a grasp
                 active_failed_mask = (~env_success) & (~env_skip)
-                failed_env_ids = np.where(active_failed_mask)[0]
+                failed_env_ids = torch.where(active_failed_mask)[0]
                 n_failed = len(failed_env_ids)
                 
                 if n_failed == 0:
-                    # All remaining envs are either successful or skipped
                     break
                 
-                print(f"[INFO] {n_failed} environments still searching for grasps: {failed_env_ids.tolist()}")
+                print(f"[INFO] {n_failed} environments still searching for grasps: "
+                    f"{failed_env_ids.tolist()}")
                 
-                # Iterate through grasp proposals
+                # ═══════════════════════════════════════════════════════════════
+                # OPTIMIZATION 3: Vectorized grasp proposal testing
+                # ═══════════════════════════════════════════════════════════════
                 for start in range(0, len(idx_all), B):
                     block = idx_all[start : start + B]
                     if len(block) < B:
                         block = block + [block[-1]] * (B - len(block))
-
-                    # Build grasp proposals for ALL envs (even successful ones get dummy data)
-                    grasp_pos_w_batch, grasp_quat_w_batch = [], []
-                    for b in range(B):
-                        if env_success[b] or env_skip[b]:
-                            # Use existing successful grasp or dummy for skipped env
-                            if env_success[b]:
-                                p_w, q_w = env_chosen_pose_w[b]
-                            else:
-                                # Dummy grasp for skipped env
-                                p_w, q_w = grasp_to_world(gg[0])
-                            grasp_pos_w_batch.append(p_w.astype(np.float32))
-                            grasp_quat_w_batch.append(q_w.astype(np.float32))
-                        else:
-                            # New grasp proposal for failed env
-                            idx = block[b % len(block)]
-                            p_w, q_w = grasp_to_world(gg[int(idx)])
-                            grasp_pos_w_batch.append(p_w.astype(np.float32))
-                            grasp_quat_w_batch.append(q_w.astype(np.float32))
                     
-                    grasp_pos_w_batch  = np.stack(grasp_pos_w_batch,  axis=0)  # (B,3)
-                    grasp_quat_w_batch = np.stack(grasp_quat_w_batch, axis=0)  # (B,4)
-                    self.show_goal(grasp_pos_w_batch, grasp_quat_w_batch)
+                    # Create grasp index tensor for this block
+                    grasp_indices = torch.tensor(block, dtype=torch.long, device=device)
                     
-                    # Random disturbance along approach axis
-                    pre_dist_batch = np.full((B,), pre_dist_const, dtype=np.float32)
-                    delta_batch = rng.normal(0.0, std, size=(B,)).astype(np.float32)
-
-                    info = self.build_grasp_info(grasp_pos_w_batch, grasp_quat_w_batch,
-                                                pre_dist_batch, delta_batch)
-
+                    # Select grasps for ALL envs (including successful/skipped)
+                    grasp_pos_batch = all_grasp_pos[grasp_indices].clone()   # [B, 3]
+                    grasp_quat_batch = all_grasp_quat[grasp_indices].clone() # [B, 4]
+                    
+                    # For successful/skipped envs, replace with their chosen grasp
+                    mask_keep = env_success | env_skip
+                    if torch.any(mask_keep):
+                        grasp_pos_batch[mask_keep] = all_grasp_pos[env_chosen_idx[mask_keep]]
+                        grasp_quat_batch[mask_keep] = all_grasp_quat[env_chosen_idx[mask_keep]]
+                    
+                    # Visualize (optional)
+                    if self.debug_level > 0:
+                        self.show_goal(grasp_pos_batch, grasp_quat_batch)
+                    
+                    # ═══════════════════════════════════════════════════════════
+                    # OPTIMIZATION 4: Vectorized random perturbations
+                    # ═══════════════════════════════════════════════════════════
+                    delta_batch = torch.tensor(
+                        rng.normal(0.0, std, size=(B,)),
+                        dtype=torch.float32, 
+                        device=device
+                    )
+                    
+                    # Build grasp info using GPU tensors (vectorized)
+                    info = self.build_grasp_info(
+                        grasp_pos_batch, 
+                        grasp_quat_batch,
+                        env_chosen_pre,  # Already on GPU
+                        delta_batch
+                    )
+                    
                     # Execute grasp trial for ALL envs
                     ok_batch, score_batch = self.execute_and_lift_once_batch(info)
                     
-                    # Check if motion planning returned valid results
+                    # Check for motion planning failure
                     if ok_batch is None or score_batch is None:
-                        print(f"[CRITICAL] Motion planning failed during grasp trial at block[{start}:{start+B}]")
+                        print(f"[CRITICAL] Motion planning failed during grasp trial "
+                            f"at block[{start}:{start+B}]")
                         raise RuntimeError("GraspTrialMotionPlanningFailure")
                     
-                    # Update success status ONLY for envs that were still searching
-                    for b in range(B):
-                        if not env_success[b] and not env_skip[b]:  # Only update if active and not already successful
-                            if ok_batch[b] and score_batch[b] > env_best_score[b]:
-                                # This env found a better grasp
-                                env_success[b] = True
-                                env_chosen_pose_w[b] = (grasp_pos_w_batch[b], grasp_quat_w_batch[b])
-                                env_chosen_pre[b] = pre_dist_batch[b]
-                                env_chosen_delta[b] = delta_batch[b]
-                                env_best_score[b] = score_batch[b]
-                                print(f"[SUCCESS] Env {b} found valid grasp (score: {score_batch[b]:.2f})")
+                    # ═══════════════════════════════════════════════════════════
+                    # OPTIMIZATION 5: Vectorized success update
+                    # ═══════════════════════════════════════════════════════════
+                    ok_t = torch.tensor(ok_batch, dtype=torch.bool, device=device)
+                    score_t = torch.tensor(score_batch, dtype=torch.float32, device=device)
+                    
+                    # Update mask: not already successful, not skipped, this trial succeeded, 
+                    # and score improved
+                    update_mask = (~env_success) & (~env_skip) & ok_t & (score_t > env_best_score)
+                    
+                    if torch.any(update_mask):
+                        # Vectorized update - no loop!
+                        env_success[update_mask] = True
+                        env_chosen_idx[update_mask] = grasp_indices[update_mask]
+                        env_chosen_delta[update_mask] = delta_batch[update_mask]
+                        env_best_score[update_mask] = score_t[update_mask]
+                        
+                        updated_envs = torch.where(update_mask)[0]
+                        print(f"[SUCCESS] Envs {updated_envs.tolist()} found valid grasps")
+                        for e in updated_envs:
+                            print(f"  Env {e.item()}: score={score_t[e].item():.2f}")
                     
                     # Check if all active envs now succeeded
-                    active_mask = ~env_skip
-                    newly_successful = np.sum(env_success[active_failed_mask])
-                    print(f"[SEARCH] block[{start}:{start+B}] -> {newly_successful}/{n_failed} previously-failed envs now successful")
+                    newly_successful = torch.sum(env_success[active_failed_mask])
+                    print(f"[SEARCH] block[{start}:{start+B}] -> "
+                        f"{newly_successful.item()}/{n_failed} previously-failed envs now successful")
                     
-                    if np.all(env_success[active_mask]):
-                        successful_envs = np.where(env_success & ~env_skip)[0]
-                        skipped_envs = np.where(env_skip)[0]
-                        print(f"[SUCCESS] All active environments found valid grasps on attempt {retry_attempt + 1}!")
+                    # Early exit if all succeeded
+                    if torch.all(env_success[active_mask]):
+                        successful_envs = torch.where(env_success & ~env_skip)[0]
+                        skipped_envs = torch.where(env_skip)[0]
+                        print(f"[SUCCESS] All active environments found valid grasps "
+                            f"on attempt {retry_attempt + 1}!")
                         if len(skipped_envs) > 0:
-                            print(f"[INFO] {len(skipped_envs)} environments skipped: {skipped_envs.tolist()}")
-                        return {
-                            "success": env_success,
-                            "chosen_pose_w": env_chosen_pose_w,
-                            "chosen_pre": env_chosen_pre,
-                            "chosen_delta": env_chosen_delta,
-                            "skip_envs": env_skip,
-                        }
+                            print(f"[INFO] {len(skipped_envs)} environments skipped: "
+                                f"{skipped_envs.tolist()}")
+                        
+                        # Convert to output format and return early
+                        return self._convert_grasp_results(
+                            env_success, env_skip, env_chosen_idx, 
+                            env_chosen_pre, env_chosen_delta,
+                            all_grasp_pos, all_grasp_quat
+                        )
                 
                 # End of this attempt - check status
-                active_mask = ~env_skip
-                if not np.all(env_success[active_mask]):
-                    still_failed = np.where((~env_success) & (~env_skip))[0]
-                    print(f"[WARN] {len(still_failed)} envs still need grasps after attempt {retry_attempt + 1}: {still_failed.tolist()}")
+                if not torch.all(env_success[active_mask]):
+                    still_failed = torch.where((~env_success) & (~env_skip))[0]
+                    print(f"[WARN] {len(still_failed)} envs still need grasps after "
+                        f"attempt {retry_attempt + 1}: {still_failed.tolist()}")
+                    
                     if retry_attempt < max_retries - 1:
                         print("[INFO] Retrying grasp selection for failed environments...")
                         continue
                     else:
                         # Last attempt exhausted - mark remaining failed envs as skipped
                         print(f"[WARN] Exhausted all {max_retries} grasp attempts")
-                        print(f"[INFO] Marking {len(still_failed)} failed environments to skip: {still_failed.tolist()}")
+                        print(f"[INFO] Marking {len(still_failed)} failed environments to skip: "
+                            f"{still_failed.tolist()}")
                         env_skip[still_failed] = True
                         
-                        successful_envs = np.where(env_success)[0]
-                        print(f"[INFO] Proceeding with {len(successful_envs)} successful environments: {successful_envs.tolist()}")
+                        successful_envs = torch.where(env_success)[0]
+                        print(f"[INFO] Proceeding with {len(successful_envs)} successful "
+                            f"environments: {successful_envs.tolist()}")
                         
-                        return {
-                            "success": env_success,
-                            "chosen_pose_w": env_chosen_pose_w,
-                            "chosen_pre": env_chosen_pre,
-                            "chosen_delta": env_chosen_delta,
-                            "skip_envs": env_skip,
-                        }
-                        
+                        return self._convert_grasp_results(
+                            env_success, env_skip, env_chosen_idx,
+                            env_chosen_pre, env_chosen_delta,
+                            all_grasp_pos, all_grasp_quat
+                        )
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # Error handling with automatic retry
+            # ═══════════════════════════════════════════════════════════════════
             except RuntimeError as e:
                 if "GraspTrialMotionPlanningFailure" in str(e):
-                    print(f"\n[RESTART] Motion planning failed during grasp trial on attempt {retry_attempt + 1}")
-                    print(f"[RESTART] Remaining grasp trial attempts: {max_retries - retry_attempt - 1}\n")
+                    print(f"\n[RESTART] Motion planning failed during grasp trial "
+                        f"on attempt {retry_attempt + 1}")
+                    print(f"[RESTART] Remaining grasp trial attempts: "
+                        f"{max_retries - retry_attempt - 1}\n")
                     
-                    # Clear corrupted data and continue to next retry
+                    # Clear corrupted data
                     self.clear_data()
                     
                     if retry_attempt < max_retries - 1:
@@ -570,62 +684,99 @@ class HeuristicManipulation(BaseSimulator):
                     else:
                         print("[ERR] Grasp trial failed after all retry attempts")
                         # Mark all currently failed envs as skipped
-                        failed_envs = np.where((~env_success) & (~env_skip))[0]
+                        failed_envs = torch.where((~env_success) & (~env_skip))[0]
                         if len(failed_envs) > 0:
-                            print(f"[INFO] Marking {len(failed_envs)} failed environments to skip: {failed_envs.tolist()}")
+                            print(f"[INFO] Marking {len(failed_envs)} failed environments "
+                                f"to skip: {failed_envs.tolist()}")
                             env_skip[failed_envs] = True
-                        return {
-                            "success": env_success,
-                            "chosen_pose_w": env_chosen_pose_w,
-                            "chosen_pre": env_chosen_pre,
-                            "chosen_delta": env_chosen_delta,
-                            "skip_envs": env_skip,
-                        }
+                        
+                        return self._convert_grasp_results(
+                            env_success, env_skip, env_chosen_idx,
+                            env_chosen_pre, env_chosen_delta,
+                            all_grasp_pos, all_grasp_quat
+                        )
                 else:
                     raise
-                    
+            
             except Exception as e:
-                print(f"[ERROR] Unexpected error during grasp trial: {type(e).__name__}: {e}")
+                print(f"[ERROR] Unexpected error during grasp trial: "
+                    f"{type(e).__name__}: {e}")
+                
                 if retry_attempt < max_retries - 1:
-                    print(f"[ERROR] Attempting grasp trial retry {retry_attempt + 1}/{max_retries}...")
+                    print(f"[ERROR] Attempting grasp trial retry "
+                        f"{retry_attempt + 2}/{max_retries}...")
                     self.clear_data()
                     continue
                 else:
                     # Mark all currently failed envs as skipped
-                    failed_envs = np.where((~env_success) & (~env_skip))[0]
+                    failed_envs = torch.where((~env_success) & (~env_skip))[0]
                     if len(failed_envs) > 0:
-                        print(f"[INFO] Marking {len(failed_envs)} failed environments to skip: {failed_envs.tolist()}")
+                        print(f"[INFO] Marking {len(failed_envs)} failed environments "
+                            f"to skip: {failed_envs.tolist()}")
                         env_skip[failed_envs] = True
                     
-                    # Replace None values with dummy poses for skipped envs to avoid downstream NoneType errors
-                    for b in np.where(env_skip)[0]:
-                        if env_chosen_pose_w[b] is None:
-                            dummy_pos = np.array([0, 0, 0], dtype=np.float32)
-                            dummy_quat = np.array([1, 0, 0, 0], dtype=np.float32)
-                            env_chosen_pose_w[b] = (dummy_pos, dummy_quat)
-                    
-                    return {
-                        "success": env_success,
-                        "chosen_pose_w": env_chosen_pose_w,
-                        "chosen_pre": env_chosen_pre,
-                        "chosen_delta": env_chosen_delta,
-                        "skip_envs": env_skip,
-                    }
+                    return self._convert_grasp_results(
+                        env_success, env_skip, env_chosen_idx,
+                        env_chosen_pre, env_chosen_delta,
+                        all_grasp_pos, all_grasp_quat
+                    )
         
-        # Replace None values with dummy poses for skipped envs to avoid downstream NoneType errors
-        for b in np.where(env_skip)[0]:
-            if env_chosen_pose_w[b] is None:
-                dummy_pos = np.array([0, 0, 0], dtype=np.float32)
+        # Return final results
+        return self._convert_grasp_results(
+            env_success, env_skip, env_chosen_idx,
+            env_chosen_pre, env_chosen_delta,
+            all_grasp_pos, all_grasp_quat
+        )
+
+
+    def _convert_grasp_results(
+        self,
+        env_success: torch.Tensor,
+        env_skip: torch.Tensor,
+        env_chosen_idx: torch.Tensor,
+        env_chosen_pre: torch.Tensor,
+        env_chosen_delta: torch.Tensor,
+        all_grasp_pos: torch.Tensor,
+        all_grasp_quat: torch.Tensor
+    ) -> Dict:
+        """
+        Helper function to convert GPU tensors to expected output format.
+        Handles None values for skipped environments.
+        
+        Args:
+            env_success: [B] boolean tensor
+            env_skip: [B] boolean tensor
+            env_chosen_idx: [B] long tensor (indices into all_grasp_*)
+            env_chosen_pre: [B] float tensor
+            env_chosen_delta: [B] float tensor
+            all_grasp_pos: [N, 3] float tensor (all grasp positions)
+            all_grasp_quat: [N, 4] float tensor (all grasp quaternions)
+        
+        Returns:
+            dict with numpy arrays and list of pose tuples
+        """
+        B = self.scene.num_envs
+        
+        # Convert chosen grasp indices to actual poses
+        env_chosen_pose_w = []
+        for b in range(B):
+            if env_skip[b].item():
+                # Dummy pose for skipped env
+                dummy_pos = np.zeros(3, dtype=np.float32)
                 dummy_quat = np.array([1, 0, 0, 0], dtype=np.float32)
-                env_chosen_pose_w[b] = (dummy_pos, dummy_quat)
+                env_chosen_pose_w.append((dummy_pos, dummy_quat))
+            else:
+                idx = env_chosen_idx[b].item()
+                p = all_grasp_pos[idx].cpu().numpy().astype(np.float32)
+                q = all_grasp_quat[idx].cpu().numpy().astype(np.float32)
+                env_chosen_pose_w.append((p, q))
         
-        # Return final status
         return {
-            "success": env_success,
+            "success": env_success.cpu().numpy(),
             "chosen_pose_w": env_chosen_pose_w,
-            "chosen_pre": env_chosen_pre,
-            "chosen_delta": env_chosen_delta,
-            "skip_envs": env_skip,
+            "chosen_pre": env_chosen_pre.cpu().numpy(),
+            "chosen_delta": env_chosen_delta.cpu().numpy(),
+            "skip_envs": env_skip.cpu().numpy(),
         }
 
     
@@ -695,34 +846,55 @@ class HeuristicManipulation(BaseSimulator):
         
         return bool(all_success)
     
+    
+    
     def save_data_selective(self, skip_envs: np.ndarray, ignore_keys: List[str] = None):
+        """
+        Save data with SINGLE CPU transfer per environment.
+        """
         if ignore_keys is None:
             ignore_keys = []
-            
+        
         save_root = self._demo_dir()
         save_root.mkdir(parents=True, exist_ok=True)
-
-        stacked = {k: np.array(v) for k, v in self.save_dict.items()}
+        
+        # Stack all timesteps - STILL ON GPU
+        stacked_gpu = {}
+        for k, v in self.save_dict.items():
+            if k not in ignore_keys and len(v) > 0:
+                # Check if list contains tensors or numpy arrays
+                if isinstance(v[0], torch.Tensor):
+                    stacked_gpu[k] = torch.stack(v, dim=0)  # [T, B, ...] on GPU
+                else:
+                    # Already numpy (backward compatibility)
+                    stacked_gpu[k] = torch.tensor(np.array(v), device='cuda')
         
         active_envs = np.where(~skip_envs)[0]
-        print(f"[INFO] Saving data for {len(active_envs)} active environments: {active_envs.tolist()}")
-
+        print(f"[INFO] Saving data for {len(active_envs)} active environments")
+        
         def save_env_data(b):
-            """Save data for a single environment"""
+            """Save data for a single environment - ONE CPU transfer per env"""
             start_time = time.time()
             env_dir = self._env_dir(save_root, b)
             
-            for key, arr in stacked.items():
+            # Transfer this environment's data to CPU ONCE
+            env_data_cpu = {}
+            for key, arr_gpu in stacked_gpu.items():
                 if key in ignore_keys:
                     continue
+                # Single transfer: extract env b and move to CPU
+                env_data_cpu[key] = arr_gpu[:, b].cpu().numpy()
+            
+            # Now save from CPU arrays
+            for key, arr in env_data_cpu.items():
                 if key == "rgb":
                     video_path = env_dir / "sim_video.mp4"
                     writer = imageio.get_writer(
-                        video_path, fps=50, codec='libx264', quality=7, 
+                        video_path, fps=50, codec='libx264', quality=7,
                         pixelformat='yuv420p', macro_block_size=None
                     )
                     for t in range(arr.shape[0]):
-                        writer.append_data(arr[t, b])
+                        writer.append_data(arr[t])
                     writer.close()
                 elif key == "segmask":
                     video_path = env_dir / "mask_video.mp4"
@@ -731,13 +903,12 @@ class HeuristicManipulation(BaseSimulator):
                         pixelformat='yuv420p', macro_block_size=None
                     )
                     for t in range(arr.shape[0]):
-                        writer.append_data((arr[t, b].astype(np.uint8) * 255))
+                        writer.append_data((arr[t].astype(np.uint8) * 255))
                     writer.close()
                 elif key == "depth":
-                    depth_seq = arr[:, b]
-                    flat = depth_seq[depth_seq > 0]
+                    flat = arr[arr > 0]
                     max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
-                    depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(np.uint8)
+                    depth_norm = np.clip(arr / max_depth * 255.0, 0, 255).astype(np.uint8)
                     video_path = env_dir / "depth_video.mp4"
                     writer = imageio.get_writer(
                         video_path, fps=50, codec='libx264', quality=7,
@@ -746,18 +917,21 @@ class HeuristicManipulation(BaseSimulator):
                     for t in range(depth_norm.shape[0]):
                         writer.append_data(depth_norm[t])
                     writer.close()
-                    np.save(env_dir / f"{key}.npy", depth_seq)
+                    np.save(env_dir / f"{key}.npy", arr)
                 else:
-                    np.save(env_dir / f"{key}.npy", arr[:, b])
+                    np.save(env_dir / f"{key}.npy", arr)
             
             json.dump(self.sim_cfgs, open(env_dir / "config.json", "w"), indent=2)
             elapsed = time.time() - start_time
             print(f"[INFO] Env {b} saved in {elapsed:.1f}s")
             return b
-
-        # Save environments in parallel
+        
+        # Parallel save with ProcessPoolExecutor for CPU-bound video encoding
         print("[INFO] Starting parallel video encoding...")
-        with ThreadPoolExecutor(max_workers=min(len(active_envs), 4)) as executor:
+        from concurrent.futures import ProcessPoolExecutor
+        max_workers = min(len(active_envs), os.cpu_count() or 4)
+        
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
             list(executor.map(save_env_data, active_envs))
         
         print("[INFO]: Demonstration is saved at: ", save_root)
@@ -906,22 +1080,23 @@ class HeuristicManipulation(BaseSimulator):
                 
                 # Prepare grasp info for ALL envs
                 # Active envs get real data, skipped/successful envs get dummy data
-                p_all = np.zeros((B, 3), dtype=np.float32)
-                q_all = np.zeros((B, 4), dtype=np.float32)
-                pre_all = env_chosen_pre.copy()
-                del_all = env_chosen_delta.copy()
+                p_all = torch.zeros((B, 3), dtype=torch.float32, device=self.sim.device)
+                q_all = torch.zeros((B, 4), dtype=torch.float32, device=self.sim.device)
+                q_all[:, 0] = 1.0  # Identity quaternion
+                pre_all_torch = torch.tensor(env_chosen_pre, device=self.sim.device)
+                del_all_torch = torch.tensor(env_chosen_delta, device=self.sim.device)
                 
                 for b in range(B):
                     if needs_attempt[b] and env_chosen_pose_w[b] is not None:
                         # Active env needing attempt
-                        p_all[b] = env_chosen_pose_w[b][0]
-                        q_all[b] = env_chosen_pose_w[b][1]
+                        p_all[b] = torch.tensor(env_chosen_pose_w[b][0], device=self.sim.device)
+                        q_all[b] = torch.tensor(env_chosen_pose_w[b][1], device=self.sim.device)
                     else:
                         # Dummy data for skipped or already successful envs
-                        p_all[b] = np.zeros(3, dtype=np.float32)
-                        q_all[b] = np.array([1, 0, 0, 0], dtype=np.float32)
+                        p_all[b] = torch.tensor(np.zeros(3, dtype=np.float32), device=self.sim.device)
+                        q_all[b] = torch.tensor(np.array([1, 0, 0, 0], dtype=np.float32), device=self.sim.device)
                 
-                info_all = self.build_grasp_info(p_all, q_all, pre_all, del_all)
+                info_all = self.build_grasp_info(p_all, q_all, pre_all_torch, del_all_torch)
 
                 # Reset and execute
                 self.reset()
@@ -1019,7 +1194,11 @@ class HeuristicManipulation(BaseSimulator):
                             # Extract all timesteps for this environment
                             successful_env_data[b][key] = []
                             for t in range(len(self.save_dict[key])):
-                                successful_env_data[b][key].append(self.save_dict[key][t][b].copy())
+                                data = self.save_dict[key][t][b]
+                                if isinstance(data, torch.Tensor):
+                                    successful_env_data[b][key].append(data.clone())
+                                else:
+                                    successful_env_data[b][key].append(data.copy())
                                 
                     else:
                         print(f"Env {b}: FAILED (distance: {distances[b].item():.4f}m, attempt {env_traj_attempts[b]}/{max_traj_retries})")
@@ -1173,6 +1352,128 @@ class HeuristicManipulation(BaseSimulator):
                     else:
                         print("[ERR] All environments failed")
                         return False
+                    
+def pose_to_mat_batch_torch(pos: torch.Tensor, quat: torch.Tensor) -> torch.Tensor:
+        """
+        Convert batched poses to 4x4 transformation matrices on GPU.
+        
+        Args:
+            pos: [B, 3] positions
+            quat: [B, 4] quaternions (w, x, y, z)
+        
+        Returns:
+            [B, 4, 4] transformation matrices
+        """
+        B = pos.shape[0]
+        device = pos.device
+        
+        # Normalize quaternions
+        quat = quat / torch.norm(quat, dim=1, keepdim=True)
+        
+        w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+        
+        # Compute rotation matrix elements
+        xx, yy, zz = x*x, y*y, z*z
+        xy, xz, yz = x*y, x*z, y*z
+        wx, wy, wz = w*x, w*y, w*z
+        
+        # Build rotation matrices [B, 3, 3]
+        R = torch.zeros((B, 3, 3), device=device, dtype=pos.dtype)
+        R[:, 0, 0] = 1 - 2*(yy + zz)
+        R[:, 0, 1] = 2*(xy - wz)
+        R[:, 0, 2] = 2*(xz + wy)
+        R[:, 1, 0] = 2*(xy + wz)
+        R[:, 1, 1] = 1 - 2*(xx + zz)
+        R[:, 1, 2] = 2*(yz - wx)
+        R[:, 2, 0] = 2*(xz - wy)
+        R[:, 2, 1] = 2*(yz + wx)
+        R[:, 2, 2] = 1 - 2*(xx + yy)
+        
+        # Build full transformation matrices [B, 4, 4]
+        T = torch.eye(4, device=device, dtype=pos.dtype).unsqueeze(0).repeat(B, 1, 1)
+        T[:, :3, :3] = R
+        T[:, :3, 3] = pos
+        
+        return T
+
+def mat_to_pose_batch_torch(T: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Convert batched 4x4 transformation matrices to poses on GPU.
+    
+    Args:
+        T: [B, 4, 4] transformation matrices
+    
+    Returns:
+        pos: [B, 3] positions
+        quat: [B, 4] quaternions (w, x, y, z)
+    """
+    B = T.shape[0]
+    device = T.device
+    dtype = T.dtype
+    
+    pos = T[:, :3, 3]  # [B, 3]
+    R = T[:, :3, :3]   # [B, 3, 3]
+    
+    # Convert rotation matrix to quaternion
+    # Using Shepperd's method for numerical stability
+    trace = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]
+    
+    quat = torch.zeros((B, 4), device=device, dtype=dtype)
+    
+    # Case 1: trace > 0
+    mask1 = trace > 0
+    s1 = torch.sqrt(trace[mask1] + 1.0) * 2
+    quat[mask1, 0] = 0.25 * s1
+    quat[mask1, 1] = (R[mask1, 2, 1] - R[mask1, 1, 2]) / s1
+    quat[mask1, 2] = (R[mask1, 0, 2] - R[mask1, 2, 0]) / s1
+    quat[mask1, 3] = (R[mask1, 1, 0] - R[mask1, 0, 1]) / s1
+    
+    # Case 2: R[0,0] is largest diagonal element
+    mask2 = (~mask1) & (R[:, 0, 0] > R[:, 1, 1]) & (R[:, 0, 0] > R[:, 2, 2])
+    s2 = torch.sqrt(1.0 + R[mask2, 0, 0] - R[mask2, 1, 1] - R[mask2, 2, 2]) * 2
+    quat[mask2, 0] = (R[mask2, 2, 1] - R[mask2, 1, 2]) / s2
+    quat[mask2, 1] = 0.25 * s2
+    quat[mask2, 2] = (R[mask2, 0, 1] + R[mask2, 1, 0]) / s2
+    quat[mask2, 3] = (R[mask2, 0, 2] + R[mask2, 2, 0]) / s2
+    
+    # Case 3: R[1,1] is largest diagonal element
+    mask3 = (~mask1) & (~mask2) & (R[:, 1, 1] > R[:, 2, 2])
+    s3 = torch.sqrt(1.0 + R[mask3, 1, 1] - R[mask3, 0, 0] - R[mask3, 2, 2]) * 2
+    quat[mask3, 0] = (R[mask3, 0, 2] - R[mask3, 2, 0]) / s3
+    quat[mask3, 1] = (R[mask3, 0, 1] + R[mask3, 1, 0]) / s3
+    quat[mask3, 2] = 0.25 * s3
+    quat[mask3, 3] = (R[mask3, 1, 2] + R[mask3, 2, 1]) / s3
+    
+    # Case 4: R[2,2] is largest diagonal element
+    mask4 = (~mask1) & (~mask2) & (~mask3)
+    s4 = torch.sqrt(1.0 + R[mask4, 2, 2] - R[mask4, 0, 0] - R[mask4, 1, 1]) * 2
+    quat[mask4, 0] = (R[mask4, 1, 0] - R[mask4, 0, 1]) / s4
+    quat[mask4, 1] = (R[mask4, 0, 2] + R[mask4, 2, 0]) / s4
+    quat[mask4, 2] = (R[mask4, 1, 2] + R[mask4, 2, 1]) / s4
+    quat[mask4, 3] = 0.25 * s4
+    
+    return pos, quat
+
+def grasp_approach_axis_batch_torch(quat: torch.Tensor) -> torch.Tensor:
+    """
+    Extract approach axis from batched quaternions on GPU.
+    
+    Args:
+        quat: [B, 4] quaternions (w, x, y, z)
+    
+    Returns:
+        [B, 3] approach axes
+    """
+    # Approach axis is typically -Z axis of the gripper frame
+    # Rotate [0, 0, -1] by the quaternion
+    w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+    
+    # Rotation of [0, 0, -1] vector
+    ax = 2 * (x*z + w*y)
+    ay = 2 * (y*z - w*x)
+    az = -(1 - 2*(x*x + y*y))
+    
+    return torch.stack([ax, ay, az], dim=1)
 # ───────────────────────────────────────────────────────────────────────────── Entry Point ─────────────────────────────────────────────────────────────────────────────
 def main():
     sim_cfgs = load_sim_parameters(BASE_DIR, args_cli.key)

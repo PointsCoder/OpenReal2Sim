@@ -41,6 +41,10 @@ from isaaclab.utils.math import (
 from PIL import Image 
 import cv2  
 
+
+from typing import Tuple
+
+
 os.environ['CUROBO_TORCH_CUDA_GRAPH_RESET'] = '1'
 
 
@@ -929,13 +933,17 @@ class BaseSimulator:
 
     # ---------- Data Recording & Saving & Clearing ----------
     def record_data(self, obs: Dict[str, torch.Tensor]):
-        self.save_dict["rgb"].append(obs["rgb"].cpu().numpy())  # [B,H,W,3]
-        self.save_dict["depth"].append(obs["depth"].cpu().numpy())  # [B,H,W]
-        self.save_dict["segmask"].append(obs["fg_mask"].cpu().numpy())  # [B,H,W]
-        self.save_dict["joint_pos"].append(obs["joint_pos"].cpu().numpy())  # [B,nJ]
-        self.save_dict["gripper_pos"].append(obs["gripper_pos"].cpu().numpy())  # [B,3]
-        self.save_dict["gripper_cmd"].append(obs["gripper_cmd"].cpu().numpy())  # [B,1]
-        self.save_dict["joint_vel"].append(obs["joint_vel"].cpu().numpy())
+        """
+        Record data WITHOUT CPU transfer - keep everything on GPU.
+        """
+        # Just append GPU tensors directly
+        self.save_dict["rgb"].append(obs["rgb"])           # Keep on GPU
+        self.save_dict["depth"].append(obs["depth"])       # Keep on GPU
+        self.save_dict["segmask"].append(obs["fg_mask"])   # Keep on GPU
+        self.save_dict["joint_pos"].append(obs["joint_pos"])
+        self.save_dict["gripper_pos"].append(obs["gripper_pos"])
+        self.save_dict["gripper_cmd"].append(obs["gripper_cmd"])
+        self.save_dict["joint_vel"].append(obs["joint_vel"])
 
     def clear_data(self):
         for key in self.save_dict.keys():
@@ -1031,3 +1039,125 @@ class BaseSimulator:
         for key in self.save_dict.keys():
             self.save_dict[key] = []
         print("[INFO]: Clear up the folder: ", save_path)
+
+    def pose_to_mat_batch_torch(pos: torch.Tensor, quat: torch.Tensor) -> torch.Tensor:
+        """
+        Convert batched poses to 4x4 transformation matrices on GPU.
+        
+        Args:
+            pos: [B, 3] positions
+            quat: [B, 4] quaternions (w, x, y, z)
+        
+        Returns:
+            [B, 4, 4] transformation matrices
+        """
+        B = pos.shape[0]
+        device = pos.device
+        
+        # Normalize quaternions
+        quat = quat / torch.norm(quat, dim=1, keepdim=True)
+        
+        w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+        
+        # Compute rotation matrix elements
+        xx, yy, zz = x*x, y*y, z*z
+        xy, xz, yz = x*y, x*z, y*z
+        wx, wy, wz = w*x, w*y, w*z
+        
+        # Build rotation matrices [B, 3, 3]
+        R = torch.zeros((B, 3, 3), device=device, dtype=pos.dtype)
+        R[:, 0, 0] = 1 - 2*(yy + zz)
+        R[:, 0, 1] = 2*(xy - wz)
+        R[:, 0, 2] = 2*(xz + wy)
+        R[:, 1, 0] = 2*(xy + wz)
+        R[:, 1, 1] = 1 - 2*(xx + zz)
+        R[:, 1, 2] = 2*(yz - wx)
+        R[:, 2, 0] = 2*(xz - wy)
+        R[:, 2, 1] = 2*(yz + wx)
+        R[:, 2, 2] = 1 - 2*(xx + yy)
+        
+        # Build full transformation matrices [B, 4, 4]
+        T = torch.eye(4, device=device, dtype=pos.dtype).unsqueeze(0).repeat(B, 1, 1)
+        T[:, :3, :3] = R
+        T[:, :3, 3] = pos
+        
+        return T
+
+    def mat_to_pose_batch_torch(T: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Convert batched 4x4 transformation matrices to poses on GPU.
+        
+        Args:
+            T: [B, 4, 4] transformation matrices
+        
+        Returns:
+            pos: [B, 3] positions
+            quat: [B, 4] quaternions (w, x, y, z)
+        """
+        B = T.shape[0]
+        device = T.device
+        dtype = T.dtype
+        
+        pos = T[:, :3, 3]  # [B, 3]
+        R = T[:, :3, :3]   # [B, 3, 3]
+        
+        # Convert rotation matrix to quaternion
+        # Using Shepperd's method for numerical stability
+        trace = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]
+        
+        quat = torch.zeros((B, 4), device=device, dtype=dtype)
+        
+        # Case 1: trace > 0
+        mask1 = trace > 0
+        s1 = torch.sqrt(trace[mask1] + 1.0) * 2
+        quat[mask1, 0] = 0.25 * s1
+        quat[mask1, 1] = (R[mask1, 2, 1] - R[mask1, 1, 2]) / s1
+        quat[mask1, 2] = (R[mask1, 0, 2] - R[mask1, 2, 0]) / s1
+        quat[mask1, 3] = (R[mask1, 1, 0] - R[mask1, 0, 1]) / s1
+        
+        # Case 2: R[0,0] is largest diagonal element
+        mask2 = (~mask1) & (R[:, 0, 0] > R[:, 1, 1]) & (R[:, 0, 0] > R[:, 2, 2])
+        s2 = torch.sqrt(1.0 + R[mask2, 0, 0] - R[mask2, 1, 1] - R[mask2, 2, 2]) * 2
+        quat[mask2, 0] = (R[mask2, 2, 1] - R[mask2, 1, 2]) / s2
+        quat[mask2, 1] = 0.25 * s2
+        quat[mask2, 2] = (R[mask2, 0, 1] + R[mask2, 1, 0]) / s2
+        quat[mask2, 3] = (R[mask2, 0, 2] + R[mask2, 2, 0]) / s2
+        
+        # Case 3: R[1,1] is largest diagonal element
+        mask3 = (~mask1) & (~mask2) & (R[:, 1, 1] > R[:, 2, 2])
+        s3 = torch.sqrt(1.0 + R[mask3, 1, 1] - R[mask3, 0, 0] - R[mask3, 2, 2]) * 2
+        quat[mask3, 0] = (R[mask3, 0, 2] - R[mask3, 2, 0]) / s3
+        quat[mask3, 1] = (R[mask3, 0, 1] + R[mask3, 1, 0]) / s3
+        quat[mask3, 2] = 0.25 * s3
+        quat[mask3, 3] = (R[mask3, 1, 2] + R[mask3, 2, 1]) / s3
+        
+        # Case 4: R[2,2] is largest diagonal element
+        mask4 = (~mask1) & (~mask2) & (~mask3)
+        s4 = torch.sqrt(1.0 + R[mask4, 2, 2] - R[mask4, 0, 0] - R[mask4, 1, 1]) * 2
+        quat[mask4, 0] = (R[mask4, 1, 0] - R[mask4, 0, 1]) / s4
+        quat[mask4, 1] = (R[mask4, 0, 2] + R[mask4, 2, 0]) / s4
+        quat[mask4, 2] = (R[mask4, 1, 2] + R[mask4, 2, 1]) / s4
+        quat[mask4, 3] = 0.25 * s4
+        
+        return pos, quat
+
+    def grasp_approach_axis_batch_torch(quat: torch.Tensor) -> torch.Tensor:
+        """
+        Extract approach axis from batched quaternions on GPU.
+        
+        Args:
+            quat: [B, 4] quaternions (w, x, y, z)
+        
+        Returns:
+            [B, 3] approach axes
+        """
+        # Approach axis is typically -Z axis of the gripper frame
+        # Rotate [0, 0, -1] by the quaternion
+        w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+        
+        # Rotation of [0, 0, -1] vector
+        ax = 2 * (x*z + w*y)
+        ay = 2 * (y*z - w*x)
+        az = -(1 - 2*(x*x + y*y))
+        
+        return torch.stack([ax, ay, az], dim=1)
