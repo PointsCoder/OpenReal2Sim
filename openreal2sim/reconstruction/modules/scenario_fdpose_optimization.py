@@ -32,6 +32,7 @@ import numpy as np
 import cv2, imageio
 import trimesh
 import yaml
+from scipy.spatial import cKDTree
 
 BASE_DIR = Path.cwd()
 OUTPUT_DIR = BASE_DIR / "outputs"
@@ -44,8 +45,7 @@ import nvdiffrast.torch as dr
 
 
 
-# pq: I haven't tested this yet.
-def determine_object_symmetry(obj_mesh_path, eps=0.01, sample_num=1000, test_angles=None):
+def determine_object_symmetry(obj_mesh_path, eps=0.005, sample_num=1000, test_angles=None):
     """
     Check whether the object has continuous rotational symmetry around x, y, or z axis.
     This means the object looks the same when rotated by any angle around the axis.
@@ -81,7 +81,11 @@ def determine_object_symmetry(obj_mesh_path, eps=0.01, sample_num=1000, test_ang
     
     # Default test angles (in radians)
     if test_angles is None:
-        test_angles = np.deg2rad([30, 60, 90, 120, 150, 180])
+        test_angles = np.deg2rad([30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330])
+
+    from scipy.spatial.transform import Rotation as R
+    # Build KDTree once for efficiency
+    kdtree = cKDTree(pts_centered)
     
     # Check each axis for continuous rotational symmetry
     for axis_idx, axis_name in enumerate(['x', 'y', 'z']):
@@ -102,7 +106,6 @@ def determine_object_symmetry(obj_mesh_path, eps=0.01, sample_num=1000, test_ang
             
             # Check if rotated points match original points
             # Use KDTree for efficient nearest neighbor search
-            kdtree = cKDTree(pts_centered)
             dist, _ = kdtree.query(pts_rotated)
             
             # If average distance is too large, not symmetric
@@ -159,8 +162,30 @@ def calculate_pos_change(
     rot_change = np.degrees(np.arccos(np.clip((np.trace(pose_curr[:3, :3] @ pose_prev[:3, :3].T) - 1) / 2, -1.0, 1.0)))
     return trans_change, rot_change
 
+def align_gravity(pose: np.ndarray) -> np.ndarray:
+    aligned_pose = pose.copy()  
+    R_aligned = aligned_pose[:3, :3].copy()
+    z_src = R_aligned[:, 2]
+    z_target = np.array([0., 0., 1.])
 
-
+    dot = np.dot(z_src, z_target)
+    proj = dot * z_target      
+    if np.linalg.norm(proj) < 1e-6:
+        new_z = z_target.copy()
+    else:
+        new_z = proj / np.linalg.norm(proj)
+        if new_z[2] < 0:
+            new_z = -new_z
+    x_src = R_aligned[:, 0]
+    x_proj = x_src - np.dot(x_src, new_z) * new_z
+    if np.linalg.norm(x_proj) < 1e-6:
+        x_src = R_aligned[:, 1]
+        x_proj = x_src - np.dot(x_src, new_z) * new_z
+    new_x = x_proj / np.linalg.norm(x_proj)
+    new_y = np.cross(new_z, new_x)
+    R_new = np.stack([new_x, new_y, new_z], axis=1)
+    aligned_pose[:3, :3] = R_new
+    return aligned_pose
 # ------------------------- utils -------------------------
 def set_logging():
     logging.basicConfig(format='[%(asctime)s] %(levelname)s: %(message)s', level=logging.INFO)
@@ -262,8 +287,9 @@ def convert_glb_to_obj_temp(glb_path: str) -> Tuple[str, Optional[str]]:
                     arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
                 tex_img = Image.fromarray(arr)
     if tex_img is None:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        raise RuntimeError(f"[convert_glb_to_obj_temp] GLB lack texture: {glb_path}")
+        tex_img = Image.new('RGB', (256, 256), (128, 128, 128))
+        #shutil.rmtree(tmpdir, ignore_errors=True)
+        #raise RuntimeError(f"[convert_glb_to_obj_temp] GLB lack texture: {glb_path}")
     tex_img.save(str(tex_path))
     m.visual.material = SimpleMaterial(image=str(tex_path))
     m.export(str(obj_path))
@@ -436,13 +462,13 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
 
             all_poses: List[np.ndarray] = []
             pose_prev: Optional[np.ndarray] = None
-
+            print(f"[Info] Estimating fdpose for object {oid} {oname}...")
             for i in range(len(reader)):
                 K_i   = reader.Ks[i].astype(np.float64, copy=False)
                 color = reader.get_color(i)
                 depth = reader.get_depth(i)
 
-                 if pose_tracking_mode == "perframe":
+                if pose_tracking_mode == "perframe":
                     ob_mask_i = reader.get_mask(i).astype(bool)
                     pose = est.register(K=K_i, rgb=color, depth=depth, ob_mask=ob_mask_i,
                                             iteration=max(1, est_refine_iter))
@@ -470,7 +496,6 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                             trans_change, rot_change = calculate_pos_change(current_guess, pose)
                             trans_bias = np.linalg.norm(pose[:3, 3] - centers_cam[i])
                             if trans_change > 0.10 or rot_change > 30.0 or trans_bias > 0.05:
-                                # Fallback: same transformation as current_guess (cam_{i-1} -> cam_i)
                                 pose = np.linalg.inv(extrinsics[i]) @ extrinsics[i-1] @ pose_prev
                                 pose[:3, 3] = centers_cam[i]
                 all_poses.append(np.linalg.inv(pose.reshape(4,4)))
@@ -498,6 +523,7 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             all_poses_np = np.stack(all_poses, axis=0)
             T_c2w = np.array(scene_dict["info"]["camera"]["camera_opencv_to_world"]).astype(np.float64).reshape(4,4) 
             T_obj_w_abs = np.einsum('ij,njk->nik', T_c2w, all_poses_np)   # [N,4,4]
+            T_obj_w_abs[0] = align_gravity(T_obj_w_abs[0])
             T0_w_inv    = np.linalg.inv(T_obj_w_abs[0])
             rel_w       = T_obj_w_abs @ T0_w_inv                           # [N,4,4]
 
@@ -508,7 +534,7 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             logging.info(f"[object {oid}] relative trajs(rel_world) -> {pose_save_path}")
 
             # transform the object mesh with the fdpose estimated pose at frame 0
-            T_obj_w_0 = (T_c2w @ all_poses_np[0]).astype(np.float64)
+            T_obj_w_0 = T_obj_w_abs[0]
             m_base = trimesh.load(mesh_in_path, force='mesh')
             m_fd = m_base.copy(); m_fd.apply_transform(T_obj_w_0)
             fdpose_path = base_dir / f"outputs/{key}/reconstruction/objects" / f"{oid}_{oname}_fdpose.glb"

@@ -345,9 +345,21 @@ def object_mesh_generation(keys, key_scene_dicts, key_cfgs):
                 crop_img = new_img.images[0]
                 sam_predictor.set_image(np.asarray(crop_img))
                 ## may sample from orig mask.
+                orig_mask_np = np.array(orig_mask).astype(bool)
+                yx_locs = np.argwhere(orig_mask_np)
+                num_points = min(8, len(yx_locs))
+                if num_points > 0:
+                    selected_indices = np.random.choice(len(yx_locs), num_points, replace=False)
+                    sampled_points = yx_locs[selected_indices]
+                    point_coords = np.fliplr(sampled_points).copy()
+                    point_labels = np.ones(num_points, dtype=int)
+                else:
+                    point_coords = None
+                    point_labels = None
+
                 new_mask, scores, logits = sam_predictor.predict(
-                    point_coords=None,
-                    point_labels=None,
+                    point_coords=point_coords,
+                    point_labels=point_labels,
                     box=None,
                     multimask_output=False
                 )

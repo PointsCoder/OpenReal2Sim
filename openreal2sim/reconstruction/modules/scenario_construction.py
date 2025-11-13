@@ -71,7 +71,8 @@ import transforms3d
 
 def coarse_align_by_centroid_and_bbox(source_pts: np.ndarray,
                                       target_pts: np.ndarray,
-                                      do_uniform_scale: bool = True):
+                                      do_uniform_scale: bool = True,
+                                      normal: np.ndarray = None):
     """
     coarse align source_pts to target_pts by centroid and bounding box
     return T: only translation and scaling
@@ -93,8 +94,17 @@ def coarse_align_by_centroid_and_bbox(source_pts: np.ndarray,
         min_t, max_t = target_pts.min(axis=0), target_pts.max(axis=0)
         diag_s = np.linalg.norm(max_s - min_s)
         diag_t = np.linalg.norm(max_t - min_t)
-        if diag_s > 1e-9:
+        points_dot_normal = np.dot(source_pts, normal)
+        min_proj = points_dot_normal.min()
+        max_proj = points_dot_normal.max()
+        distz_t = max_t[2] - min_t[2]
+        distz_s = max_proj - min_proj
+        if distz_s > 0.3 * distz_t:
+            print(f"[Info] Using z axis to compute scale: {distz_t / distz_s}")
+            scale_factor = distz_t / distz_s
+        elif diag_s > 1e-9:
             scale_factor = diag_t / diag_s
+       
         s_shifted *= scale_factor
 
     s_shifted += center_t
@@ -199,9 +209,10 @@ def slow_registration(target_pcd_o3d, obj_info, object_dir, normal):
     if distance_points_z > 0.3 * distance_mesh_z:
         scale_factor_z = distance_points_z / max(distance_mesh_z, 1e-12)
         fg_mesh_register = center_and_scale_mesh(fg_mesh_register, scale_factor_z)
+        print(f"[Info] Using z axis to compute scale: {scale_factor_z}")
     else:
         fg_mesh_register = center_and_scale_mesh(fg_mesh_register, scale_factor)
-
+      
     # using trimesh registration to place the object mesh in correct position
     print(f"[Info] Running trimesh registration ...")
     T, _ = trimesh.registration.mesh_other(
@@ -220,7 +231,7 @@ def slow_registration(target_pcd_o3d, obj_info, object_dir, normal):
     return fg_mesh
 
 
-def fast_registration(target_pcd_o3d, obj_info, object_dir):
+def fast_registration(target_pcd_o3d, obj_info, object_dir, normal):
     fg_mesh = trimesh.load(obj_info["glb"])
     T_flip = get_flip(fg_mesh)
 
@@ -236,7 +247,7 @@ def fast_registration(target_pcd_o3d, obj_info, object_dir):
     tgt_pts = np.asarray(target_pcd_o3d.points)
 
     print("[Info] [Coarse Alignment] Using centroid + bounding box scaling...")
-    T_coarse, src_pts_coarse = coarse_align_by_centroid_and_bbox(src_pts, tgt_pts, do_uniform_scale=True)
+    T_coarse, src_pts_coarse = coarse_align_by_centroid_and_bbox(src_pts, tgt_pts, do_uniform_scale=True, normal=normal)
 
     T_coarse = T_coarse @ T_flip
 
@@ -289,10 +300,11 @@ def register_object_mesh(
     print(f"[Info] target object points saved to: {target_points_path}")
 
     # register the object mesh to the target points
+    normal = scene_dict["recon"]["normal"]
     if fast_alignment:
-        fg_mesh = fast_registration(target_pcd_o3d, obj_info, object_dir)
+        fg_mesh = fast_registration(target_pcd_o3d, obj_info, object_dir, normal)
     else:
-        fg_mesh = slow_registration(target_pcd_o3d, obj_info, object_dir)
+        fg_mesh = slow_registration(target_pcd_o3d, obj_info, object_dir, normal)
     print(f"[Info] Object {obj_info['oid']} registered.")
 
     return fg_mesh, obj_info
