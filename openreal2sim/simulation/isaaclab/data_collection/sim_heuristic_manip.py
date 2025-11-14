@@ -20,12 +20,12 @@ parser.add_argument("--num_envs", type=int, default=4)
 parser.add_argument("--num_trials", type=int, default=1)
 parser.add_argument("--teleop_device", type=str, default="keyboard")
 parser.add_argument("--sensitivity", type=float, default=1.0)
-parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-parser.add_argument("--target_successes", type=int, default=None, help="Minimum number of successful demonstrations to collect (will rerun until target is met)")
+parser.add_argument("--debug", action="store_true", default=True, help="Enable debug logging")
+parser.add_argument("--target_successes", type=int, default=40, help="Minimum number of successful demonstrations to collect (will rerun until target is met)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
-args_cli.headless = False  # headless mode for batch execution
+args_cli.headless = True  # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
@@ -115,38 +115,6 @@ class HeuristicManipulation(BaseSimulator):
         obj_state_np = obj_state.detach().cpu().numpy().astype(np.float32)
         offset_np = np.asarray(self.goal_offset, dtype=np.float32).reshape(3)
         obj_state_np[:, :3] += offset_np  # raise a bit to avoid collision
-
-        # Add small random variations to avoid background dynamics issues
-        rng = np.random.default_rng()
-        
-        # Position variations: ±1-2cm in x,y,z
-        pos_variations = rng.uniform(-0.015, 0.015, size=(B, 3)).astype(np.float32)  # ±1.5cm
-        obj_state_np[:, :3] += pos_variations
-        
-        # Orientation variations: small rotations around each axis (±5-10 degrees)
-        for b in range(B):
-            # Convert quaternion to axis-angle for easier manipulation
-            quat = obj_state_np[b, 3:7]
-            
-            # Generate small random rotations (±5-10 degrees = ±0.087-0.174 radians)
-            rot_x = rng.uniform(-0.087, 0.087)  # ±5 degrees
-            rot_y = rng.uniform(-0.087, 0.087)  # ±5 degrees  
-            rot_z = rng.uniform(-0.087, 0.087)  # ±5 degrees
-            
-            # Apply rotations sequentially
-            if abs(rot_x) > 1e-6:
-                quat_x = transforms3d.quaternions.axangle2quat([1, 0, 0], rot_x)
-                quat = transforms3d.quaternions.qmult(quat, quat_x)
-            if abs(rot_y) > 1e-6:
-                quat_y = transforms3d.quaternions.axangle2quat([0, 1, 0], rot_y)
-                quat = transforms3d.quaternions.qmult(quat, quat_y)
-            if abs(rot_z) > 1e-6:
-                quat_z = transforms3d.quaternions.axangle2quat([0, 0, 1], rot_z)
-                quat = transforms3d.quaternions.qmult(quat, quat_z)
-            
-            # Normalize quaternion to ensure validity
-            quat = quat / np.linalg.norm(quat)
-            obj_state_np[b, 3:7] = quat.astype(np.float32)
 
         # Note: here the relative traj Δ_w is defined in world frame with origin (0,0,0),
         # Hence, we need to normalize it to each env's origin frame.
@@ -296,18 +264,12 @@ class HeuristicManipulation(BaseSimulator):
 
         # pre-grasp
         jp, success = self.move_to(info["pre_p_b"], info["pre_q_b"], gripper_open=True)
-        if jp is None or success is None:
-            print("[CRITICAL] Motion planning failed during pre-grasp in grasp trial")
-            return None, None
         if torch.any(success==False): 
             return np.zeros(B, bool), np.zeros(B, np.float32)
         jp = self.wait(gripper_open=True, steps=3)
 
         # grasp
         jp, success = self.move_to(info["p_b"], info["q_b"], gripper_open=True)
-        if jp is None or success is None:
-            print("[CRITICAL] Motion planning failed during grasp approach in grasp trial")
-            return None, None
         if torch.any(success==False): 
             return np.zeros(B, bool), np.zeros(B, np.float32)
         jp = self.wait(gripper_open=True, steps=2)
@@ -335,11 +297,6 @@ class HeuristicManipulation(BaseSimulator):
             target_p, ee_q
         )
         jp, success = self.move_to(p_lift_b, q_lift_b, gripper_open=False)
-        
-        # Check for motion planning failure
-        if jp is None or success is None:
-            print("[CRITICAL] Motion planning failed during lift in grasp trial")
-            return None, None
         
         if torch.any(success==False): 
             return np.zeros(B, bool), np.zeros(B, np.float32)
@@ -543,11 +500,6 @@ class HeuristicManipulation(BaseSimulator):
 
                     # Execute grasp trial for ALL envs
                     ok_batch, score_batch = self.execute_and_lift_once_batch(info)
-                    
-                    # Check if motion planning returned valid results
-                    if ok_batch is None or score_batch is None:
-                        print(f"[CRITICAL] Motion planning failed during grasp trial at block[{start}:{start+B}]")
-                        raise RuntimeError("GraspTrialMotionPlanningFailure")
                     
                     # Update success status ONLY for envs that were still searching
                     for b in range(B):
@@ -753,7 +705,7 @@ class HeuristicManipulation(BaseSimulator):
         return bool(all_success)
     
     def save_data_selective(self, skip_envs: np.ndarray, ignore_keys: List[str] = None, 
-                           demo_id: int = None, env_offset: int = 0):
+                           demo_id: int = None, env_offset: int = 0, successful_env_data: dict = None):
         """
         Save data for successful environments.
         
@@ -762,82 +714,159 @@ class HeuristicManipulation(BaseSimulator):
             ignore_keys: Keys to not save
             demo_id: Optional demo ID to use (if None, generates new ID)
             env_offset: Offset to add to environment IDs when saving (for multi-run collection)
+            successful_env_data: Dict mapping env_id to {key: np.array} with actual trajectory data (NO padding!)
         """
+        print("\n" + "="*60)
+        print("[DEBUG] save_data_selective() called")
+        print(f"[DEBUG] skip_envs shape: {skip_envs.shape}, sum: {skip_envs.sum()}")
+        print(f"[DEBUG] demo_id: {demo_id}, env_offset: {env_offset}")
+        print("="*60 + "\n")
+        
         if ignore_keys is None:
             ignore_keys = []
             
+        print("[DEBUG] Creating save directory...")
         save_root = self._demo_dir()
         if demo_id is not None:
             # Use provided demo_id instead of auto-generated one
             save_root = self.out_dir / img_folder / "demos" / f"demo_{demo_id}"
         save_root.mkdir(parents=True, exist_ok=True)
+        print(f"[DEBUG] Save root: {save_root}")
+        
+        # Use successful_env_data if provided (NO PADDING!), otherwise fall back to save_dict
+        use_direct_data = (successful_env_data is not None and len(successful_env_data) > 0)
+        
+        if use_direct_data:
+            print(f"[DEBUG] Using successful_env_data directly (NO padding, each env keeps actual trajectory length)")
+            for env_id, env_data in successful_env_data.items():
+                first_key = list(env_data.keys())[0]
+                traj_len = env_data[first_key].shape[0]
+                print(f"[DEBUG]   Env {env_id}: {traj_len} frames")
+        else:
+            print(f"[DEBUG] Falling back to save_dict (legacy mode)")
 
-        # Stack data with proper shape handling
+        # Stack data with proper shape handling (ONLY if not using direct data)
         stacked = {}
-        for k, v in self.save_dict.items():
-            try:
-                arr = np.array(v)
-                # Check if we got an object array (inconsistent shapes)
-                if arr.dtype == object:
-                    # Try to stack with explicit dtype
-                    if len(v) > 0 and hasattr(v[0], 'shape'):
-                        arr = np.stack(v, axis=0)
-                stacked[k] = arr
-            except Exception as e:
-                if self.verbose:
+        if not use_direct_data:
+            print("[DEBUG] Starting data stacking phase...")
+            print(f"[DEBUG] save_dict has {len(self.save_dict)} keys: {list(self.save_dict.keys())}")
+            
+            for k, v in self.save_dict.items():
+                print(f"[DEBUG] Processing key '{k}': type={type(v)}, len={len(v) if hasattr(v, '__len__') else 'N/A'}")
+                try:
+                    arr = np.array(v)
+                    print(f"[DEBUG]   Initial array shape: {arr.shape}, dtype: {arr.dtype}")
+                    # Check if we got an object array (inconsistent shapes)
+                    if arr.dtype == object:
+                        # Try to stack with explicit dtype
+                        if len(v) > 0 and hasattr(v[0], 'shape'):
+                            print(f"[DEBUG]   Attempting explicit stack for object array...")
+                            arr = np.stack(v, axis=0)
+                            print(f"[DEBUG]   Stack successful: shape={arr.shape}")
+                    stacked[k] = arr
+                    print(f"[DEBUG]   Final stacked shape for '{k}': {arr.shape}")
+                except Exception as e:
                     print(f"[WARN] Failed to stack {k}: {e}. Saving as list.")
-                stacked[k] = v
+                    stacked[k] = v
+            
+            print(f"[DEBUG] Data stacking complete. Stacked {len(stacked)} keys")
         
         active_envs = np.where(~skip_envs)[0]
         print(f"[INFO] Saving data for {len(active_envs)} active environments: {active_envs.tolist()}")
 
         def save_env_data(b):
             """Save data for a single environment"""
+            print(f"\n[DEBUG] save_env_data() called for env {b}")
             start_time = time.time()
             # Add env_offset to the saved environment ID
             save_env_id = b + env_offset
+            print(f"[DEBUG] Env {b}: save_env_id={save_env_id}, creating directory...")
             env_dir = self._env_dir(save_root, save_env_id)
+            print(f"[DEBUG] Env {b}: directory created at {env_dir}")
             
-            for key, arr in stacked.items():
-                if key in ignore_keys:
+            # Get data source: either direct successful_env_data or legacy stacked
+            if use_direct_data:
+                if b not in successful_env_data:
+                    print(f"[WARN] Env {b} not in successful_env_data, skipping")
+                    return
+                data_dict = successful_env_data[b]
+                traj_len = len(next(iter(data_dict.values())))
+                print(f"[DEBUG] Env {b}: Using direct data, trajectory length = {traj_len} frames")
+            else:
+                data_dict = stacked
+                print(f"[DEBUG] Env {b}: Using legacy stacked data, processing {len(stacked)} keys...")
+            
+            for key_idx, (key, data_source) in enumerate(data_dict.items()):
+                # Skip ignored keys
+                if key in (ignore_keys or []):
+                    print(f"[DEBUG] Env {b}: Skipping '{key}' (in ignore list)")
                     continue
+                
+                # Extract env data based on mode
+                if use_direct_data:
+                    # Direct mode: data is already per-env, no slicing needed!
+                    env_data = data_source
+                    print(f"[DEBUG] Env {b}: Processing key '{key}' (shape: {env_data.shape}, dtype: {env_data.dtype})")
+                else:
+                    # Legacy mode: slice from stacked array
+                    print(f"[DEBUG] Env {b}: Processing key {key_idx+1}/{len(stacked)}: '{key}' (shape: {data_source.shape}, dtype: {data_source.dtype})")
                     
-                # Handle different array types/shapes
-                if isinstance(arr, list):
-                    # If stacking failed, handle as list
-                    if self.verbose:
-                        print(f"[WARN] Skipping {key} for env {b} (failed to stack)")
+                    if isinstance(data_source, list):
+                        print(f"[DEBUG] Env {b}: Skipping '{key}' (list type)")
+                        continue
+                    
+                    if data_source.ndim < 2:
+                        print(f"[DEBUG] Env {b}: Skipping '{key}' (insufficient dimensions, ndim={data_source.ndim})")
+                        continue
+                    
+                    # Extract this env's data slice
+                    try:
+                        print(f"[DEBUG] Env {b}: Attempting to extract slice [:, {b}] from shape {data_source.shape}...")
+                        env_data = data_source[:, b].copy()
+                        print(f"[DEBUG] Env {b}: Extracted '{key}' slice successfully, shape={env_data.shape}")
+                    except Exception as e:
+                        print(f"[ERROR] Env {b}: Failed to extract slice for '{key}': {type(e).__name__}: {e}")
+                        print(f"[ERROR] Env {b}: Array shape was {data_source.shape}, tried to access [:, {b}]")
+                        continue
+                
+                # Now process env_data (same for both modes)
+                if key in (ignore_keys or []):
+                    print(f"[DEBUG] Env {b}: Skipping '{key}' (in ignore list, double-check)")
                     continue
-                    
-                # Check array dimensions
-                if arr.ndim < 2:
-                    if self.verbose:
-                        print(f"[WARN] Skipping {key} for env {b} (array is {arr.ndim}D, expected at least 2D)")
+                    print(f"[DEBUG] Env {b}: Skipping '{key}' (in ignore list)")
                     continue
                 
                 if key == "rgb":
+                    print(f"[DEBUG] Env {b}: Encoding RGB video ({env_data.shape[0]} frames)...")
                     video_path = env_dir / "sim_video.mp4"
                     writer = imageio.get_writer(
-                        video_path, fps=50, codec='libx264', quality=7, 
+                        video_path, fps=50, codec='libx264', quality=7,
                         pixelformat='yuv420p', macro_block_size=None
                     )
-                    for t in range(arr.shape[0]):
-                        writer.append_data(arr[t, b])
+                    for t in range(env_data.shape[0]):
+                        writer.append_data(env_data[t])
                     writer.close()
+                    del env_data  # Free memory immediately
+                    print(f"[DEBUG] Env {b}: RGB video encoding complete, memory freed")
                 elif key == "segmask":
+                    print(f"[DEBUG] Env {b}: Encoding segmask video ({env_data.shape[0]} frames)...")
                     video_path = env_dir / "mask_video.mp4"
                     writer = imageio.get_writer(
                         video_path, fps=50, codec='libx264', quality=7,
                         pixelformat='yuv420p', macro_block_size=None
                     )
-                    for t in range(arr.shape[0]):
-                        writer.append_data((arr[t, b].astype(np.uint8) * 255))
+                    for t in range(env_data.shape[0]):
+                        writer.append_data((env_data[t].astype(np.uint8) * 255))
                     writer.close()
+                    del env_data  # Free memory immediately
+                    print(f"[DEBUG] Env {b}: Segmask video encoding complete, memory freed")
                 elif key == "depth":
-                    depth_seq = arr[:, b]
-                    flat = depth_seq[depth_seq > 0]
+                    print(f"[DEBUG] Env {b}: Processing depth data...")
+                    flat = env_data[env_data > 0]
                     max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
-                    depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(np.uint8)
+                    print(f"[DEBUG] Env {b}: Normalizing depth (max={max_depth:.3f})...")
+                    depth_norm = np.clip(env_data / max_depth * 255.0, 0, 255).astype(np.uint8)
+                    print(f"[DEBUG] Env {b}: Encoding depth video ({depth_norm.shape[0]} frames)...")
                     video_path = env_dir / "depth_video.mp4"
                     writer = imageio.get_writer(
                         video_path, fps=50, codec='libx264', quality=7,
@@ -846,60 +875,126 @@ class HeuristicManipulation(BaseSimulator):
                     for t in range(depth_norm.shape[0]):
                         writer.append_data(depth_norm[t])
                     writer.close()
-                    np.save(env_dir / f"{key}.npy", depth_seq)
+                    del depth_norm  # Free normalized data
+                    print(f"[DEBUG] Env {b}: Depth video encoding complete, saving .npy...")
+                    np.save(env_dir / f"{key}.npy", env_data)
+                    del env_data  # Free memory
+                    print(f"[DEBUG] Env {b}: Depth .npy saved, memory freed")
                 else:
-                    np.save(env_dir / f"{key}.npy", arr[:, b])
+                    print(f"[DEBUG] Env {b}: Saving '{key}' as .npy (shape: {env_data.shape})...")
+                    np.save(env_dir / f"{key}.npy", env_data)
+                    del env_data  # Free memory
+                    print(f"[DEBUG] Env {b}: '{key}' .npy saved, memory freed")
             
+            print(f"[DEBUG] Env {b}: Saving config.json...")
             json.dump(self.sim_cfgs, open(env_dir / "config.json", "w"), indent=2)
             elapsed = time.time() - start_time
-            if self.verbose:
-                print(f"[INFO] Env {save_env_id} saved in {elapsed:.1f}s")
+            print(f"[INFO] Env {save_env_id} saved in {elapsed:.1f}s")
             return b
 
-        # Save environments in parallel
-        if self.verbose:
-            print("[INFO] Starting parallel video encoding...")
-        with ThreadPoolExecutor(max_workers=min(len(active_envs), 4)) as executor:
-            list(executor.map(save_env_data, active_envs))
+        # Save environments with parallel encoding and extensive debug logging
+        print(f"[DEBUG] Starting save process for {len(active_envs)} environments")
+        print(f"[DEBUG] Active environment IDs: {active_envs.tolist()}")
+        print(f"[DEBUG] Total memory keys in stacked dict: {list(stacked.keys())}")
         
+        # Log memory usage if psutil available
+        try:
+            import psutil
+            import gc
+            process = psutil.Process()
+            mem_info = process.memory_info()
+            print(f"[DEBUG] Memory before encoding: RSS={mem_info.rss / 1024**3:.2f} GB, VMS={mem_info.vms / 1024**3:.2f} GB")
+            print(f"[WARN] Memory usage is very high! Running garbage collection...")
+            gc.collect()
+            mem_info = process.memory_info()
+            print(f"[DEBUG] Memory after GC: RSS={mem_info.rss / 1024**3:.2f} GB, VMS={mem_info.vms / 1024**3:.2f} GB")
+        except:
+            print("[DEBUG] psutil not available, skipping memory logging")
+        
+        print("[DEBUG] Starting parallel video encoding with ThreadPoolExecutor...")
+        print("[DEBUG] NOTE: Processing only active environment data to reduce memory")
+        with ThreadPoolExecutor(max_workers=min(len(active_envs), 4)) as executor:
+            print(f"[DEBUG] ThreadPoolExecutor created with max_workers={min(len(active_envs), 4)}")
+            print("[DEBUG] Submitting save tasks to executor...")
+            futures = {executor.submit(save_env_data, env_id): env_id for env_id in active_envs}
+            print(f"[DEBUG] Submitted {len(futures)} tasks to executor")
+            
+            print("[DEBUG] Waiting for encoding tasks to complete...")
+            completed = 0
+            for future in futures:
+                env_id = futures[future]
+                print(f"[DEBUG] Waiting for env {env_id} to complete (task {completed+1}/{len(futures)})...")
+                try:
+                    result = future.result()
+                    completed += 1
+                    print(f"[DEBUG] Env {env_id} completed successfully ({completed}/{len(futures)})")
+                    
+                    # Log memory after each completion
+                    try:
+                        process = psutil.Process()
+                        mem_info = process.memory_info()
+                        print(f"[DEBUG] Memory after env {env_id}: RSS={mem_info.rss / 1024**3:.2f} GB")
+                    except:
+                        pass
+                except Exception as e:
+                    print(f"[ERROR] Env {env_id} failed: {type(e).__name__}: {e}")
+                    raise
+        
+        print("[DEBUG] All video encoding tasks completed successfully")
         print("[INFO]: Demonstration is saved at: ", save_root)
         
-        # Compose real videos (can also be parallelized)
-        if self.verbose:
-            print("\n[INFO] Composing real videos with background...")
+        # Compose real videos with parallel processing and debug logging
+        print("\n[DEBUG] Starting real video composition phase...")
+        print(f"[DEBUG] Will compose videos for {len(active_envs)} environments")
         
         def compose_video(b):
-            # Use the offset environment ID where data was actually saved
             save_env_id = b + env_offset
+            print(f"[DEBUG] Starting composition for env {save_env_id} (offset env {b})...")
             success = self.compose_real_video(env_id=save_env_id, demo_path=save_root)
-            return save_env_id, success
+            print(f"[DEBUG] Composition for env {save_env_id} {'succeeded' if success else 'failed'}")
+            return (save_env_id, success)
         
         with ThreadPoolExecutor(max_workers=min(len(active_envs), 4)) as executor:
+            print(f"[DEBUG] ThreadPoolExecutor created for composition with max_workers={min(len(active_envs), 4)}")
+            print("[DEBUG] Submitting composition tasks...")
             results = list(executor.map(compose_video, active_envs))
+            print(f"[DEBUG] All {len(results)} composition tasks completed")
         
-        if self.verbose:
-            for save_env_id, success in results:
-                if success:
-                    print(f"[INFO] Real video composed successfully for env {save_env_id}")
-                else:
-                    print(f"[WARN] Failed to compose real video for env {save_env_id}")
+        print("\n[DEBUG] Real video composition results:")
+        for save_env_id, success in results:
+            if success:
+                print(f"[INFO] Real video composed successfully for env {save_env_id}")
+            else:
+                print(f"[WARN] Failed to compose real video for env {save_env_id}")
 
+        print("\n[DEBUG] Creating all_demos directory structure...")
         demo_root = self.out_dir / "all_demos"
         demo_root.mkdir(parents=True, exist_ok=True)
+        print(f"[DEBUG] Getting next demo ID from {demo_root}...")
         total_demo_id = get_next_demo_id(demo_root)
+        print(f"[DEBUG] Next demo ID: {total_demo_id}")
         demo_save_path = demo_root / f"demo_{total_demo_id}"
+        print(f"[DEBUG] Creating demo directory: {demo_save_path}")
         demo_save_path.mkdir(parents=True, exist_ok=True)
+        
+        print("[DEBUG] Creating meta_info.json...")
         meta_info = {
             "path": str(save_root),
             "fps": 50,
             "active_envs": active_envs.tolist(),
             "skipped_envs": np.where(skip_envs)[0].tolist(),
         }
+        print(f"[DEBUG] Meta info: {meta_info}")
         with open(demo_save_path / "meta_info.json", "w") as f:
             json.dump(meta_info, f)
+        print("[DEBUG] meta_info.json saved")
+        
+        print(f"[DEBUG] Copying files from {save_root} to {demo_save_path}...")
         os.system(f"cp -r {save_root}/* {demo_save_path}")
+        print("[DEBUG] File copy complete")
         print("[INFO]: Demonstration is saved at: ", demo_save_path)
         
+        print(f"[DEBUG] save_data_selective() complete. Returning {len(active_envs)}")
         # Return number of successful environments saved
         return len(active_envs)
 
@@ -923,6 +1018,18 @@ class HeuristicManipulation(BaseSimulator):
         Returns:
             Number of successful environments saved
         """
+        # Memory logging helper
+        def log_memory(label):
+            try:
+                import psutil
+                process = psutil.Process()
+                mem_info = process.memory_info()
+                print(f"[MEMORY] {label}: RSS={mem_info.rss / 1024**3:.2f} GB, VMS={mem_info.vms / 1024**3:.2f} GB")
+            except:
+                pass
+        
+        log_memory("INFERENCE START")
+        
         B = self.scene.num_envs
         
         # Read grasp proposals (only once)
@@ -932,6 +1039,8 @@ class HeuristicManipulation(BaseSimulator):
             return False
         gg = GraspGroup().from_npy(npy_file_path=npy_path)
         gg = get_best_grasp_with_hints(gg, point=None, direction=[0, 0, -1])
+        
+        log_memory("After loading grasps")
 
         # Track per-environment state
         env_skip = np.zeros(B, dtype=bool)  # Environments to skip (failed grasp or trajectory)
@@ -942,6 +1051,8 @@ class HeuristicManipulation(BaseSimulator):
         print("\n" + "#"*60)
         print("PHASE 1: GRASP SELECTION")
         print("#"*60 + "\n")
+        
+        log_memory("Before grasp selection")
         
         if self.grasp_idx >= 0:
             # Fixed grasp index mode - all envs use same grasp
@@ -979,16 +1090,24 @@ class HeuristicManipulation(BaseSimulator):
         if env_skip.sum() > 0 and self.verbose:
             print(f"  Skipped envs (failed grasp): {np.where(env_skip)[0].tolist()}")
         
+        log_memory("After grasp selection")
+        
         # ========== PHASE 2: TRAJECTORY EXECUTION (WITH PER-ENV RETRY) ==========
         print("\n" + "#"*60)
         print("PHASE 2: TRAJECTORY EXECUTION")
         print("#"*60 + "\n")
 
-        # Store successful environment data before any retries
-        successful_env_data = {}  # {env_id: {key: data}} to preserve successful runs
+        # Track successful env data: each env saves data from the attempt where it succeeded
+        successful_env_data = {}  # {env_id: {key: np.array}} - NO PADDING!
+        
+        log_memory("Before trajectory loop")
 
         for traj_attempt in range(max_traj_retries):
             try:
+                log_memory(f"Trajectory attempt {traj_attempt+1} START")
+                print(f"[MEMORY] save_dict keys: {list(self.save_dict.keys())}")
+                print(f"[MEMORY] save_dict lengths: {[(k, len(v) if hasattr(v, '__len__') else 'N/A') for k, v in self.save_dict.items()]}")
+                
                 # Get envs that still need to succeed (not skipped AND not yet successful)
                 needs_attempt = (~env_skip) & (~env_traj_success)
                 active_envs = np.where(needs_attempt)[0]
@@ -1002,17 +1121,15 @@ class HeuristicManipulation(BaseSimulator):
                     if env_skip.sum() > 0 and self.verbose:
                         print(f"  Skipped envs: {np.where(env_skip)[0].tolist()}")
                     
-                    # Restore successful environment data
-                    if successful_env_data and self.verbose:
-                        print(f"[INFO] Restoring data for {len(successful_env_data)} previously successful environments")
-                        for env_id, saved_data in successful_env_data.items():
-                            for key, data in saved_data.items():
-                                # Replace the env_id column with saved successful data
-                                for t in range(len(self.save_dict[key])):
-                                    if t < len(saved_data[key]):
-                                        self.save_dict[key][t][env_id] = saved_data[key][t]
+                    log_memory("Before save_data_selective")
+                    num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset, 
+                                                        successful_env_data=successful_env_data)
+                    log_memory("After save_data_selective")
                     
-                    num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset)
+                    # Free successful_env_data after saving
+                    successful_env_data.clear()
+                    log_memory("After clearing successful_env_data")
+                    
                     return num_saved
                 
                 print(f"\n{'='*60}")
@@ -1046,7 +1163,9 @@ class HeuristicManipulation(BaseSimulator):
                 info_all = self.build_grasp_info(p_all, q_all, pre_all, del_all)
 
                 # Reset and execute
+                log_memory("Before reset()")
                 self.reset()
+                log_memory("After reset()")
 
                 # Save grasp poses relative to camera
                 cam_p = self.camera.data.pos_w
@@ -1061,6 +1180,8 @@ class HeuristicManipulation(BaseSimulator):
 
                 jp = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
                 self.wait(gripper_open=True, steps=4)
+                
+                log_memory("After initial wait")
 
                 # Pre-grasp
                 if self.verbose:
@@ -1069,6 +1190,8 @@ class HeuristicManipulation(BaseSimulator):
                 if jp is None or success is None:
                     print("[WARN] Pre-grasp motion planning failed")
                     raise RuntimeError("PreGraspMotionFailure")
+                
+                log_memory("After pre-grasp")
                 
                 # Mark which envs to skip in action recording (skipped + already successful)
                 envs_to_skip_recording = env_skip | env_traj_success
@@ -1101,6 +1224,8 @@ class HeuristicManipulation(BaseSimulator):
                     print("[INFO] Closing grippers...")
                 jp = self.wait(gripper_open=False, steps=50)
                 
+                log_memory("After gripper close")
+                
                 p_close_data = info_all["p_b"].cpu().numpy()
                 q_close_data = info_all["q_b"].cpu().numpy()
                 for b in np.where(envs_to_skip_recording)[0]:
@@ -1112,7 +1237,10 @@ class HeuristicManipulation(BaseSimulator):
                 if self.verbose:
                     print("[INFO] Following object trajectories...")
                 skip_for_traj = env_skip | env_traj_success
+                
+                log_memory("Before follow_object_goals")
                 jp = self.follow_object_goals(jp, sample_step=5, visualize=True, skip_envs=skip_for_traj)
+                log_memory("After follow_object_goals")
                 
                 # Trajectory execution completed - verify which envs succeeded
                 if self.verbose:
@@ -1132,25 +1260,35 @@ class HeuristicManipulation(BaseSimulator):
                     print("PER-ENVIRONMENT TRAJECTORY RESULTS")
                     print("="*50)
                 
-                newly_successful_envs = []
+                # Check success for each env
                 for b in active_envs:  # Only check envs that attempted
                     env_traj_attempts[b] += 1
                     if per_env_success[b]:
                         env_traj_success[b] = True
-                        newly_successful_envs.append(b)
                         if self.verbose:
                             print(f"Env {b}: SUCCESS (distance: {distances[b].item():.4f}m)")
                         
-                        # Save this environment's data NOW before any reset
-                        if self.verbose:
-                            print(f"[INFO] Saving successful data for Env {b}")
-                        successful_env_data[b] = {}
-                        for key in self.save_dict.keys():
-                            # Extract all timesteps for this environment
-                            successful_env_data[b][key] = []
-                            for t in range(len(self.save_dict[key])):
-                                successful_env_data[b][key].append(self.save_dict[key][t][b].copy())
-                                
+                        # Save THIS env's data from THIS successful attempt ONLY if not already saved
+                        if b not in successful_env_data:
+                            if self.verbose:
+                                print(f"[INFO] Capturing successful trajectory data for Env {b}")
+                            log_memory(f"Before capturing env {b} data")
+                            successful_env_data[b] = {}
+                            for key in self.save_dict.keys():
+                                if isinstance(self.save_dict[key], list) and len(self.save_dict[key]) > 0:
+                                    # Stack timesteps and extract this env's slice only
+                                    arr = np.array(self.save_dict[key])  # Shape: (T, B, ...)
+                                    if arr.ndim >= 2:
+                                        successful_env_data[b][key] = arr[:, b].copy()  # Shape: (T, ...)
+                                elif isinstance(self.save_dict[key], np.ndarray):
+                                    # Already numpy (like grasp_pose_cam)
+                                    arr = self.save_dict[key]
+                                    if arr.ndim >= 2:
+                                        successful_env_data[b][key] = arr[:, b].copy()
+                            log_memory(f"After capturing env {b} data")
+                        else:
+                            if self.verbose:
+                                print(f"[INFO] Env {b} already has successful data from previous attempt - not re-capturing")
                     else:
                         if self.verbose:
                             print(f"Env {b}: FAILED (distance: {distances[b].item():.4f}m, attempt {env_traj_attempts[b]}/{max_traj_retries})")
@@ -1177,18 +1315,14 @@ class HeuristicManipulation(BaseSimulator):
                     if env_skip.sum() > 0 and self.verbose:
                         print(f"  Skipped envs: {np.where(env_skip)[0].tolist()}")
                     
-                    # Restore successful environment data before saving
-                    if successful_env_data and self.verbose:
-                        print(f"[INFO] Restoring data for {len(successful_env_data)} successful environments")
-                    if successful_env_data:
-                        for env_id, saved_data in successful_env_data.items():
-                            for key, data in saved_data.items():
-                                for t in range(len(self.save_dict[key])):
-                                    if t < len(saved_data[key]):
-                                        self.save_dict[key][t][env_id] = saved_data[key][t]
-                    
                     # Save data for successful environments only
-                    num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset)
+                    num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset,
+                                                        successful_env_data=successful_env_data)
+                    
+                    # Free successful_env_data after saving
+                    successful_env_data.clear()
+                    log_memory("After clearing successful_env_data")
+                    
                     return num_saved
                 else:
                     # Some envs still need retry
@@ -1199,7 +1333,9 @@ class HeuristicManipulation(BaseSimulator):
                     if traj_attempt < max_traj_retries - 1:
                         if self.verbose:
                             print(f"[INFO] Retrying trajectory execution (attempt {traj_attempt + 2}/{max_traj_retries})...")
+                        log_memory("Before clear_data()")
                         self.clear_data()  # This will wipe save_dict, but we have successful data saved
+                        log_memory("After clear_data()")
                         continue
                     else:
                         # Last attempt - mark remaining failures as skipped
@@ -1214,17 +1350,13 @@ class HeuristicManipulation(BaseSimulator):
                             if self.verbose:
                                 print(f"\n[PARTIAL SUCCESS] Saving data for {len(final_successful)} successful environments: {final_successful.tolist()}")
                             
-                            # Restore successful environment data
-                            if successful_env_data and self.verbose:
-                                print(f"[INFO] Restoring data for {len(successful_env_data)} successful environments")
-                            if successful_env_data:
-                                for env_id, saved_data in successful_env_data.items():
-                                    for key, data in saved_data.items():
-                                        for t in range(len(self.save_dict[key])):
-                                            if t < len(saved_data[key]):
-                                                self.save_dict[key][t][env_id] = saved_data[key][t]
+                            log_memory("Before save_data_selective (partial success)")
+                            num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset,
+                                                                successful_env_data=successful_env_data)
+                            log_memory("After save_data_selective (partial success)")
                             
-                            num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset)
+                            successful_env_data.clear()
+                            
                             return num_saved
                         else:
                             print("[ERR] All environments failed")
@@ -1244,7 +1376,10 @@ class HeuristicManipulation(BaseSimulator):
                         if self.verbose:
                             print(f"[INFO] Marking Env {b} as SKIPPED (exhausted attempts after error)")
                 
+                log_memory("After marking skipped envs in error handler")
                 self.clear_data()
+                
+                log_memory("After error clear_data()")
                 
                 # Check if any active envs remain
                 remaining_active = np.where(~env_skip)[0]
@@ -1260,17 +1395,9 @@ class HeuristicManipulation(BaseSimulator):
                     if self.verbose:
                         print(f"[PARTIAL SUCCESS] Saving {len(remaining_active)} environments that didn't encounter errors")
                     
-                    # Restore successful environment data before saving
-                    if successful_env_data and self.verbose:
-                        print(f"[INFO] Restoring data for {len(successful_env_data)} successful environments")
-                    if successful_env_data:
-                        for env_id, saved_data in successful_env_data.items():
-                            for key, data in saved_data.items():
-                                for t in range(len(self.save_dict[key])):
-                                    if t < len(saved_data[key]):
-                                        self.save_dict[key][t][env_id] = saved_data[key][t]
-                    
-                    num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset)
+                    num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset,
+                                                        successful_env_data=successful_env_data)
+                    successful_env_data.clear()
                     return num_saved
                     
             except Exception as e:
@@ -1303,16 +1430,9 @@ class HeuristicManipulation(BaseSimulator):
                     if len(final_successful) > 0:
                         print(f"[PARTIAL SUCCESS] Saving {len(final_successful)} environments")
                         
-                        # Restore successful environment data before saving
-                        if successful_env_data:
-                            print(f"[INFO] Restoring data for {len(successful_env_data)} successful environments")
-                            for env_id, saved_data in successful_env_data.items():
-                                for key, data in saved_data.items():
-                                    for t in range(len(self.save_dict[key])):
-                                        if t < len(saved_data[key]):
-                                            self.save_dict[key][t][env_id] = saved_data[key][t]
-                        
-                        num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset)
+                        num_saved = self.save_data_selective(env_skip, demo_id=demo_id, env_offset=env_offset,
+                                                            successful_env_data=successful_env_data)
+                        successful_env_data.clear()
                         return num_saved
                     else:
                         print("[ERR] All environments failed")
@@ -1356,11 +1476,40 @@ def main():
             my_sim.set_robot_pose(robot_pose)
             my_sim.reset()
             
+            # CRITICAL: Clear save_dict before each run to prevent memory accumulation
+            # NOTE: This only clears save_dict (trajectory data), NOT state variables like demo_id, env_offset, etc.
+            if run_count > 1:  # Don't clear before first run (variables not initialized yet)
+                print(f"[MEMORY] Clearing save_dict before run {run_count}...")
+                my_sim.clear_data()
+            
+            # Log memory state
+            try:
+                import psutil
+                import gc
+                gc.collect()  # Force garbage collection
+                process = psutil.Process()
+                mem_info = process.memory_info()
+                print(f"[MEMORY] Before run {run_count}: RSS={mem_info.rss / 1024**3:.2f} GB, VMS={mem_info.vms / 1024**3:.2f} GB")
+            except:
+                pass
+            
             # Run inference with shared demo_id and cumulative env_offset
             num_saved = my_sim.inference(demo_id=demo_id, env_offset=env_offset)
             
             total_successes += num_saved
             env_offset += num_saved
+            
+            # CRITICAL: Clear data after each inference run
+            print(f"[MEMORY] Clearing save_dict after run {run_count}...")
+            my_sim.clear_data()
+            
+            # Force garbage collection
+            try:
+                import gc
+                gc.collect()
+                print(f"[MEMORY] Garbage collection complete")
+            except:
+                pass
             
             print(f"\n[RUN {run_count} COMPLETE] Saved {num_saved} successful environments")
             print(f"[PROGRESS] Total successes so far: {total_successes}/{target}\n")

@@ -361,8 +361,27 @@ class BaseSimulator:
                 
                 result = self.motion_gen.plan_batch(start_state, goal_pose, plan_cfg)
                 
+                # Check if result is valid
+                if result is None:
+                    print(f"[ERROR] Motion planning returned None result on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                    break
+                
                 # Process results
                 paths = result.get_paths()
+                
+                # Check if paths is valid
+                if paths is None:
+                    print(f"[ERROR] Motion planning returned None paths on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                    break
+                
                 T_max = 1
                 
                 for i, p in enumerate(paths):
@@ -408,17 +427,40 @@ class BaseSimulator:
                     print("[ERROR] Max retries reached, motion planning failed critically")
                     
             except Exception as e:
-                print(f"[ERROR] Unexpected error in motion planning: {type(e).__name__}: {e}")
+                # Safe error message extraction
+                try:
+                    error_msg = str(e)
+                    error_type = type(e).__name__
+                except:
+                    error_msg = "Unknown error"
+                    error_type = "Exception"
                 
-                if retry < max_retries - 1 and ("cuda graph" in str(e).lower() or "NoneType" in str(e)):
+                print(f"[ERROR] Unexpected error in motion planning: {error_type}: {error_msg}")
+                
+                # Check for recoverable errors
+                is_recoverable = False
+                try:
+                    is_recoverable = ("cuda graph" in error_msg.lower() or 
+                                    "NoneType" in error_msg or 
+                                    "has no len()" in error_msg)
+                except:
+                    pass
+                
+                if retry < max_retries - 1 and is_recoverable:
                     if self.reinitialize_motion_gen():
-                        print(f"[INFO] Retrying after CUDA error (attempt {retry+2}/{max_retries})...")
+                        print(f"[INFO] Retrying after error (attempt {retry+2}/{max_retries})...")
                         continue
                 break
         
-        # If we get here, all retries failed - return None to signal complete failure
-        print("[ERROR] Motion planning failed critically - returning None to trigger restart")
-        return None, None
+        # If we get here, all retries failed - return dummy trajectory with all False success
+        print("[ERROR] Motion planning failed critically - returning dummy trajectory")
+        B = self.scene.num_envs
+        joint_pos = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids].contiguous()
+        dof = joint_pos.shape[-1]
+        # Return current position as 1-step trajectory with all failures
+        dummy_traj = joint_pos.unsqueeze(1)  # (B, 1, dof)
+        dummy_success = torch.zeros(B, dtype=torch.bool, device=self.sim.device)
+        return dummy_traj, dummy_success
 
 
     def motion_planning_single(
@@ -445,7 +487,26 @@ class BaseSimulator:
                 )
                 
                 result = self.motion_gen.plan_single(start_state, goal_pose, plan_cfg)
+                
+                # Check if result is valid
+                if result is None:
+                    print(f"[ERROR] Motion planning returned None result on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                    break
+                
                 traj = result.get_interpolated_plan()
+                
+                # Check if trajectory is valid
+                if traj is None:
+                    print(f"[ERROR] Motion planning returned None trajectory on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                    break
                 
                 if result.success[0] == True:
                     BT7 = (
@@ -470,16 +531,37 @@ class BaseSimulator:
                     print("[ERROR] Max retries reached")
                     
             except Exception as e:
-                print(f"[ERROR] Unexpected error: {type(e).__name__}: {e}")
+                # Safe error message extraction
+                try:
+                    error_msg = str(e)
+                    error_type = type(e).__name__
+                except:
+                    error_msg = "Unknown error"
+                    error_type = "Exception"
                 
-                if retry < max_retries - 1 and ("cuda graph" in str(e).lower() or "NoneType" in str(e)):
+                print(f"[ERROR] Unexpected error: {error_type}: {error_msg}")
+                
+                # Check for recoverable errors
+                is_recoverable = False
+                try:
+                    is_recoverable = ("cuda graph" in error_msg.lower() or 
+                                    "NoneType" in error_msg or 
+                                    "has no len()" in error_msg)
+                except:
+                    pass
+                
+                if retry < max_retries - 1 and is_recoverable:
                     if self.reinitialize_motion_gen():
                         continue
                 break
         
-        # Complete failure - return None to signal restart
-        print("[ERROR] Motion planning failed critically - returning None to trigger restart")
-        return None, None
+        # Complete failure - return dummy trajectory with False success
+        print("[ERROR] Motion planning failed critically - returning dummy trajectory")
+        joint_pos0 = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids][0:1].contiguous()
+        # Return current position as 1-step trajectory with failure
+        dummy_traj = joint_pos0.unsqueeze(1)  # (1, 1, dof)
+        dummy_success = torch.zeros(1, dtype=torch.bool, device=self.sim.device)
+        return dummy_traj, dummy_success
 
     def motion_planning(self, position, quaternion, max_attempts=1):
         if self.scene.num_envs == 1:
@@ -504,11 +586,7 @@ class BaseSimulator:
         """
         traj, success = self.motion_planning(position, quaternion)
         
-        # Check if motion planning failed critically
-        if traj is None or success is None:
-            print("[ERROR] Motion planning returned None - critical failure")
-            return None, None
-        
+        # Motion planning now always returns valid tensors, check success flag instead
         BT7 = traj
         T = BT7.shape[1]
         last = None
