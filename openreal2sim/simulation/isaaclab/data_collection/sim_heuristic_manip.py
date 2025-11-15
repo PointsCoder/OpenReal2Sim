@@ -10,7 +10,12 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
+import sys
 from isaaclab.app import AppLauncher
+
+# Add current directory first (for local sim_base), then parent directory
+sys.path.insert(0, str(Path(__file__).parent))  # data_collection directory (for sim_base)
+sys.path.insert(1, str(Path(__file__).parent.parent))  # isaaclab directory (for other modules)
 
 # ───────────────────────────────────────────────────────────────────────────── CLI ─────────────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser("sim_policy")
@@ -41,8 +46,9 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 
 # ───────────────────────────────────────────────────────────────────────────── Simulation environments ─────────────────────────────────────────────────────────────────────────────
-from sim_base import BaseSimulator, get_next_demo_id
-from sim_env_factory import make_env
+# Import AFTER AppLauncher has initialized Isaac Sim runtime
+from sim_base import BaseSimulator, get_next_demo_id  # From local data_collection directory
+from sim_env_factory import make_env  # Rest from parent isaaclab folder
 from sim_preprocess.grasp_utils import get_best_grasp_with_hints
 from sim_utils.transform_utils import pose_to_mat, mat_to_pose, grasp_to_world, grasp_approach_axis_batch
 from sim_utils.sim_utils import load_sim_parameters
