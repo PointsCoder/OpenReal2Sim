@@ -264,14 +264,20 @@ class HeuristicManipulation(BaseSimulator):
 
         # pre-grasp
         jp, success = self.move_to(info["pre_p_b"], info["pre_q_b"], gripper_open=True)
-        if torch.any(success==False): 
-            return np.zeros(B, bool), np.zeros(B, np.float32)
+        failed_envs = ~success.cpu().numpy()  # Track which envs failed
+        if torch.any(success==False):
+            if self.verbose:
+                failed_ids = np.where(failed_envs)[0]
+                print(f"[WARN] Pre-grasp motion planning failed for envs: {failed_ids.tolist()}")
         jp = self.wait(gripper_open=True, steps=3)
 
         # grasp
         jp, success = self.move_to(info["p_b"], info["q_b"], gripper_open=True)
-        if torch.any(success==False): 
-            return np.zeros(B, bool), np.zeros(B, np.float32)
+        failed_envs |= ~success.cpu().numpy()  # Accumulate failures
+        if torch.any(success==False):
+            if self.verbose:
+                newly_failed = np.where(~success.cpu().numpy())[0]
+                print(f"[WARN] Grasp approach motion planning failed for envs: {newly_failed.tolist()}")
         jp = self.wait(gripper_open=True, steps=2)
 
         # close
@@ -297,9 +303,11 @@ class HeuristicManipulation(BaseSimulator):
             target_p, ee_q
         )
         jp, success = self.move_to(p_lift_b, q_lift_b, gripper_open=False)
-        
-        if torch.any(success==False): 
-            return np.zeros(B, bool), np.zeros(B, np.float32)
+        failed_envs |= ~success.cpu().numpy()  # Accumulate failures
+        if torch.any(success==False):
+            if self.verbose:
+                newly_failed = np.where(~success.cpu().numpy())[0]
+                print(f"[WARN] Lift motion planning failed for envs: {newly_failed.tolist()}")
         jp = self.wait(gripper_open=False, steps=8)
 
         # final heights and success checking (USING COM)
@@ -327,6 +335,11 @@ class HeuristicManipulation(BaseSimulator):
 
         # Combined check
         lifted = lift_check & proximity_check
+        
+        # Mark motion planning failures as not lifted
+        lifted_np = lifted.cpu().numpy()
+        lifted_np[failed_envs] = False
+        lifted = torch.tensor(lifted_np, device=lifted.device)
 
         # Score calculation
         score = torch.zeros_like(ee_diff)
@@ -970,33 +983,49 @@ class HeuristicManipulation(BaseSimulator):
         print("\n[DEBUG] Creating all_demos directory structure...")
         demo_root = self.out_dir / "all_demos"
         demo_root.mkdir(parents=True, exist_ok=True)
+        
+        # Get starting demo ID ONCE before loop
         print(f"[DEBUG] Getting next demo ID from {demo_root}...")
-        total_demo_id = get_next_demo_id(demo_root)
-        print(f"[DEBUG] Next demo ID: {total_demo_id}")
-        demo_save_path = demo_root / f"demo_{total_demo_id}"
-        print(f"[DEBUG] Creating demo directory: {demo_save_path}")
-        demo_save_path.mkdir(parents=True, exist_ok=True)
+        starting_demo_id = get_next_demo_id(demo_root)
+        print(f"[DEBUG] Starting demo ID: {starting_demo_id}")
         
-        print("[DEBUG] Creating meta_info.json...")
-        meta_info = {
-            "path": str(save_root),
-            "fps": 50,
-            "active_envs": active_envs.tolist(),
-            "skipped_envs": np.where(skip_envs)[0].tolist(),
-        }
-        print(f"[DEBUG] Meta info: {meta_info}")
-        with open(demo_save_path / "meta_info.json", "w") as f:
-            json.dump(meta_info, f)
-        print("[DEBUG] meta_info.json saved")
+        # Create separate demo folder for EACH successful environment
+        demos_created = 0
+        for idx, b in enumerate(active_envs):
+            save_env_id = b + env_offset
+            
+            # Use sequential IDs: starting_demo_id + idx
+            total_demo_id = starting_demo_id + idx
+            print(f"[DEBUG] Creating demo {total_demo_id} for env {save_env_id}...")
+            demo_save_path = demo_root / f"demo_{total_demo_id}"
+            print(f"[DEBUG] Creating demo directory: {demo_save_path}")
+            demo_save_path.mkdir(parents=True, exist_ok=True)
+            
+            print(f"[DEBUG] Creating meta_info.json for env {save_env_id}...")
+            meta_info = {
+                "path": str(save_root),
+                "fps": 50,
+                "env_id": int(save_env_id),  # Convert numpy int64 to Python int
+                "source_demo_id": int(demo_id) if demo_id is not None else "N/A",
+            }
+            with open(demo_save_path / "meta_info.json", "w") as f:
+                json.dump(meta_info, f)
+            print("[DEBUG] meta_info.json saved")
+            
+            # Copy this specific env's data (env directories use 3-digit format: env_000)
+            env_source = save_root / f"env_{save_env_id:03d}"
+            print(f"[DEBUG] Copying files from {env_source} to {demo_save_path}...")
+            if env_source.exists():
+                os.system(f"cp -r {env_source}/* {demo_save_path}")
+                print(f"[DEBUG] File copy complete for env {save_env_id}")
+                print(f"[INFO]: Demo {total_demo_id} saved at: {demo_save_path}")
+                demos_created += 1
+            else:
+                print(f"[ERROR] Source directory {env_source} does not exist!")
         
-        print(f"[DEBUG] Copying files from {save_root} to {demo_save_path}...")
-        os.system(f"cp -r {save_root}/* {demo_save_path}")
-        print("[DEBUG] File copy complete")
-        print("[INFO]: Demonstration is saved at: ", demo_save_path)
-        
-        print(f"[DEBUG] save_data_selective() complete. Returning {len(active_envs)}")
-        # Return number of successful environments saved
-        return len(active_envs)
+        print(f"\n[DEBUG] save_data_selective() complete. Created {demos_created} demo folders")
+        # Return number of demo folders actually created
+        return demos_created
 
 
     def inference(self, std: float = 0.0, max_grasp_retries: int = 1, 
@@ -1439,6 +1468,10 @@ class HeuristicManipulation(BaseSimulator):
                         return 0
 # ───────────────────────────────────────────────────────────────────────────── Entry Point ─────────────────────────────────────────────────────────────────────────────
 def main():
+
+    #add timer
+    global start_time, end_time
+    start_time = time.time()
     sim_cfgs = load_sim_parameters(BASE_DIR, args_cli.key)
     env, _ = make_env(
         cfgs=sim_cfgs, num_envs=args_cli.num_envs,
@@ -1497,7 +1530,9 @@ def main():
             num_saved = my_sim.inference(demo_id=demo_id, env_offset=env_offset)
             
             total_successes += num_saved
-            env_offset += num_saved
+            # CRITICAL: Increment env_offset by num_envs (not num_saved) to avoid ID collisions
+            # If we have 4 envs and save 3, next run should start at env_4, not env_3
+            env_offset += args_cli.num_envs
             
             # CRITICAL: Clear data after each inference run
             print(f"[MEMORY] Clearing save_dict after run {run_count}...")
@@ -1524,6 +1559,12 @@ def main():
             if num_saved == 0:
                 print(f"[WARN] No successful environments in run {run_count}")
                 # Continue trying - don't give up
+        
+        # Timer for multi-run collection
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"\n[INFO] Total elapsed time: {elapsed_time / 60:.2f} minutes")
+        
     else:
         # Original behavior: single trial per num_trials
         for _ in range(args_cli.num_trials):
@@ -1534,11 +1575,18 @@ def main():
             my_sim.reset()
             print(f"[INFO] start simulation demo_{my_sim.demo_id}")
             my_sim.inference()
-
+        
+        # Timer for single-run mode
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"\n[INFO] Total elapsed time: {elapsed_time / 60:.2f} minutes")
+    
     env.close()
     simulation_app.close()
 
 if __name__ == "__main__":
     main()
+    elapsed_time = end_time - start_time
+    print(f"[INFO] Total elapsed time: {elapsed_time / 60:.2f} minutes")
     os.system("quit()")
     simulation_app.close()
