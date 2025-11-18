@@ -1,7 +1,7 @@
 # OpenReal2Sim
 OpenReal2Sim is a toolbox for real-to-sim reconstruction and robotic simulation. 
 
-It supports our multiple research projects, including [PhysWorld](https://pointscoder.github.io/PhysWorld_Web/) and [RoLA](https://sihengz02.github.io/RoLA/).
+It supports our multiple research projects, including [RoLA](https://sihengz02.github.io/RoLA/).
 
 ![image](./assets/real_1x4.jpg)
 ![image](./assets/sim_1x4.jpg)
