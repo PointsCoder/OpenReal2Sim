@@ -30,7 +30,7 @@ parser.add_argument("--target_successes", type=int, default=40, help="Minimum nu
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
-args_cli.headless = True  # headless mode for batch execution
+args_cli.headless = False  # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
@@ -44,6 +44,7 @@ from typing import List
 import imageio
 from concurrent.futures import ThreadPoolExecutor
 import time
+import psutil
 
 # ───────────────────────────────────────────────────────────────────────────── Simulation environments ─────────────────────────────────────────────────────────────────────────────
 # Import AFTER AppLauncher has initialized Isaac Sim runtime
@@ -89,55 +90,149 @@ class HeuristicManipulation(BaseSimulator):
         self.grasp_pre = sim_cfgs["demo_cfg"]["grasp_pre"]
         self.grasp_delta = sim_cfgs["demo_cfg"]["grasp_delta"]
         self.verbose = args_cli.debug
+        
+        # Store random initial poses per environment (consistent throughout a single pipeline run)
+        # Will be regenerated at the start of each new inference() call
+        self.random_obj_poses = None  # Will store (B, 7) tensor: [x, y, z, qw, qx, qy, qz]
+        self._generate_random_initial_poses()
+        
         self.load_obj_goal_traj()
     
     def vprint(self, *args, **kwargs):
         """Print only if verbose flag is enabled"""
         if self.verbose:
             print(*args, **kwargs)
+    
+    def _generate_random_initial_poses(self, x_range=(-0.03, 0.03), y_range=(-0.03, 0.03), yaw_range=(-0.1, 0.1)):
+        """
+        Generate random initial poses for each environment.
+        Random offsets are applied to x, y, and yaw (rotation around z-axis).
+        These poses remain consistent during env resets within a single pipeline run.
+        
+        Args:
+            x_range: (min, max) random offset range for x position in meters
+            y_range: (min, max) random offset range for y position in meters  
+            yaw_range: (min, max) random offset range for yaw rotation in radians
+        """
+        B = self.scene.num_envs
+        device = self.sim.device
+        
+        # Generate random offsets
+        rng = np.random.default_rng()
+        x_offsets = rng.uniform(x_range[0], x_range[1], size=B).astype(np.float32)
+        y_offsets = rng.uniform(y_range[0], y_range[1], size=B).astype(np.float32)
+        yaw_offsets = rng.uniform(yaw_range[0], yaw_range[1], size=B).astype(np.float32)
+        
+        # Convert yaw to quaternion (rotation around z-axis)
+        # For z-axis rotation: q = [cos(yaw/2), 0, 0, sin(yaw/2)] in wxyz format
+        qw = np.cos(yaw_offsets / 2.0)
+        qx = np.zeros(B, dtype=np.float32)
+        qy = np.zeros(B, dtype=np.float32)
+        qz = np.sin(yaw_offsets / 2.0)
+        
+        # Store as (B, 7) tensor: [x, y, z, qw, qx, qy, qz]
+        # z offset is 0 (we don't randomize height)
+        self.random_obj_poses = torch.zeros((B, 7), dtype=torch.float32, device=device)
+        self.random_obj_poses[:, 0] = torch.from_numpy(x_offsets).to(device)
+        self.random_obj_poses[:, 1] = torch.from_numpy(y_offsets).to(device)
+        self.random_obj_poses[:, 2] = 0.0  # No z offset
+        self.random_obj_poses[:, 3] = torch.from_numpy(qw).to(device)
+        self.random_obj_poses[:, 4] = torch.from_numpy(qx).to(device)
+        self.random_obj_poses[:, 5] = torch.from_numpy(qy).to(device)
+        self.random_obj_poses[:, 6] = torch.from_numpy(qz).to(device)
+        
+        if self.verbose:
+            print(f"[INFO] Generated random initial poses for {B} environments:")
+            for b in range(min(B, 5)):  # Show first 5 envs
+                print(f"  Env {b}: x_offset={x_offsets[b]:.4f}m, y_offset={y_offsets[b]:.4f}m, yaw_offset={yaw_offsets[b]:.4f}rad")
+    
+    def transform_grasp_to_randomized_pose(self, grasp_pos, grasp_quat, env_id):
+        """
+        Transform a grasp from the original object frame to the randomized object frame.
+        Grasps are defined relative to the object at its original pose (0,0,0 with no rotation).
+        We need to apply the random offset transform to move the grasp to the randomized pose.
+        
+        Args:
+            grasp_pos: (3,) grasp position in original object frame
+            grasp_quat: (4,) grasp quaternion (wxyz) in original object frame
+            env_id: environment index
+            
+        Returns:
+            transformed_pos: (3,) grasp position in randomized frame
+            transformed_quat: (4,) grasp quaternion in randomized frame
+        """
+        # Get random offset for this env
+        random_offset = self.random_obj_poses[env_id].cpu().numpy()  # (7,) [x, y, z, qw, qx, qy, qz]
+        
+        # Build transformation matrices
+        T_original = pose_to_mat(grasp_pos, grasp_quat)  # Grasp in original frame
+        T_offset = pose_to_mat(random_offset[:3], random_offset[3:7])  # Random offset transform
+        
+        # Apply transform: T_randomized = T_offset @ T_original
+        T_randomized = T_offset @ T_original
+        
+        # Extract transformed pose
+        transformed_pos, transformed_quat = mat_to_pose(T_randomized)
+        
+        return transformed_pos.astype(np.float32), transformed_quat.astype(np.float32)
 
     def load_obj_goal_traj(self):
         """
         Load the relative trajectory Δ_w (T,4,4) and precompute the absolute
-        object goal trajectory for each env using the *actual current* object pose
-        in the scene as T_obj_init (not env_origin).
-        T_obj_goal[t] = Δ_w[t] @ T_obj_init
+        object goal trajectory for each env.
+        
+        IMPORTANT: We want randomized INITIAL poses but FIXED FINAL goal.
+        Strategy:
+        1. Compute trajectory using ORIGINAL pose (0,0,0) to get fixed final goal
+        2. Initial pose in simulation will use random offsets (applied in reset())
+        3. Planner will move from randomized initial pose to fixed final goal
 
         Sets:
         self.obj_rel_traj   : np.ndarray or None, shape (T,4,4)
         self.obj_goal_traj_w: np.ndarray or None, shape (B,T,4,4)
         """
-        # ── 1) Load Δ_w ──
+        # ── 1) Load Δ_w (relative trajectory) ──
         rel = np.load(self.traj_path).astype(np.float32)
         self.obj_rel_traj = rel  # (T,4,4)
 
+        # ── 2) Reset with random initial poses ──
+        # This applies the random offsets stored in self.random_obj_poses to the object
         self.reset()
 
-        # ── 2) Read current object initial pose per env as T_obj_init (USING COM) ──
         B = self.scene.num_envs
-        obj_state = self.object_prim.data.root_com_state_w[:, :7]  # ← CHANGED: Use COM
-        self.show_goal(obj_state[:, :3], obj_state[:, 3:7])
+        origins_gpu = self.scene.env_origins.detach()  # (B,3)
+        origins = origins_gpu.cpu().numpy().astype(np.float32)  # (B,3)
 
-        obj_state_np = obj_state.detach().cpu().numpy().astype(np.float32)
+        # ── 3) Compute trajectory goals using ORIGINAL (non-randomized) initial pose ──
+        # This ensures all envs have the same final goal, regardless of random initial offsets
+        # Original initial pose is at env_origin with identity quaternion
+        original_init_pose = np.zeros(7, dtype=np.float32)
+        original_init_pose[3] = 1.0  # wxyz = [1, 0, 0, 0]
+        
+        # Add goal offset (lift slightly to avoid collision at goal)
         offset_np = np.asarray(self.goal_offset, dtype=np.float32).reshape(3)
-        obj_state_np[:, :3] += offset_np  # raise a bit to avoid collision
+        original_init_pose[:3] += offset_np
 
-        # Note: here the relative traj Δ_w is defined in world frame with origin (0,0,0),
-        # Hence, we need to normalize it to each env's origin frame.
-        origins = self.scene.env_origins.detach().cpu().numpy().astype(np.float32)  # (B,3)
-        obj_state_np[:, :3] -= origins # normalize to env origin frame
-
-        # ── 3) Precompute absolute object goals for all envs ──
         T = rel.shape[0]
         obj_goal = np.zeros((B, T, 4, 4), dtype=np.float32)
+        
+        # Compute trajectory for original pose (same for all envs)
+        T_init_original = pose_to_mat(original_init_pose[:3], original_init_pose[3:7])  # (4,4)
+        
         for b in range(B):
-            T_init = pose_to_mat(obj_state_np[b, :3], obj_state_np[b, 3:7])  # (4,4)
             for t in range(T):
-                goal = rel[t] @ T_init
-                goal[:3, 3] += origins[b]  # back to world frame
+                # Apply relative trajectory to ORIGINAL initial pose
+                goal = rel[t] @ T_init_original
+                # Convert to world frame for this env
+                goal[:3, 3] += origins[b]
                 obj_goal[b, t] = goal
 
-        self.obj_goal_traj_w = obj_goal  # [B, T, 4, 4]
+        self.obj_goal_traj_w = obj_goal  # [B, T, 4, 4] - same final goal for all envs
+        
+        if self.verbose:
+            # Show the common final goal position
+            final_goal_pos = obj_goal[0, -1, :3, 3]  # Last timestep, translation
+            print(f"[INFO] Fixed final goal position (env-local): [{final_goal_pos[0]:.3f}, {final_goal_pos[1]:.3f}, {final_goal_pos[2]:.3f}]")
 
     def follow_object_goals(self, start_joint_pos, sample_step=1, visualize=True, skip_envs=None):
         """
@@ -173,20 +268,24 @@ class HeuristicManipulation(BaseSimulator):
             goal_pos_list, goal_quat_list = [], []
             if self.verbose:
                 print(f"[INFO] follow object goal step {t}/{T}")
+            # Preallocate arrays instead of building lists
+            goal_pos_arr = np.zeros((B, 3), dtype=np.float32)
+            goal_quat_arr = np.zeros((B, 4), dtype=np.float32)
+            goal_quat_arr[:, 0] = 1.0  # Default identity quaternion
+            
             for b in range(B):
                 if skip_envs[b]:
-                    # Dummy goal for skipped env
-                    goal_pos_list.append(np.zeros(3, dtype=np.float32))
-                    goal_quat_list.append(np.array([1, 0, 0, 0], dtype=np.float32))
+                    # Already initialized with dummy values
+                    pass
                 else:
                     T_obj_goal = obj_goal_all[b, t]
                     T_ee_goal  = T_obj_goal @ T_ee_in_obj[b]
                     pos_b, quat_b = mat_to_pose(T_ee_goal)
-                    goal_pos_list.append(pos_b.astype(np.float32))
-                    goal_quat_list.append(quat_b.astype(np.float32))
+                    goal_pos_arr[b] = pos_b.astype(np.float32)
+                    goal_quat_arr[b] = quat_b.astype(np.float32)
 
-            goal_pos  = torch.as_tensor(np.stack(goal_pos_list),  dtype=torch.float32, device=self.sim.device)
-            goal_quat = torch.as_tensor(np.stack(goal_quat_list), dtype=torch.float32, device=self.sim.device)
+            goal_pos  = torch.as_tensor(goal_pos_arr,  dtype=torch.float32, device=self.sim.device)
+            goal_quat = torch.as_tensor(goal_quat_arr, dtype=torch.float32, device=self.sim.device)
 
             if visualize:
                 self.show_goal(goal_pos, goal_quat)
@@ -208,8 +307,11 @@ class HeuristicManipulation(BaseSimulator):
                 print(f"[WARN] Some active envs failed motion planning at step {t}/{T}, but continuing...")
             
             # Build action data: real data for active envs, dummy data for skipped envs
-            ee_pos_b_data = ee_pos_b.cpu().numpy()
-            ee_quat_b_data = ee_quat_b.cpu().numpy()
+            # Batch CPU transfer to reduce synchronization
+            ee_pos_b_cpu = ee_pos_b.cpu()
+            ee_quat_b_cpu = ee_quat_b.cpu()
+            ee_pos_b_data = ee_pos_b_cpu.numpy()
+            ee_quat_b_data = ee_quat_b_cpu.numpy()
             for b in np.where(skip_envs)[0]:
                 ee_pos_b_data[b] = np.zeros(3, dtype=np.float32)
                 ee_quat_b_data[b] = np.array([1, 0, 0, 0], dtype=np.float32)
@@ -230,14 +332,16 @@ class HeuristicManipulation(BaseSimulator):
         for t in t_iter:
             if self.verbose:
                 print(f"[INFO] viz object goal step {t}/{goals.shape[1]}")
-            pos_list, quat_list = [], []
+            # Build numpy arrays directly instead of lists
+            pos_arr = np.zeros((B, 3), dtype=np.float32)
+            quat_arr = np.zeros((B, 4), dtype=np.float32)
             for b in range(B):
                 pos, quat = mat_to_pose(goals[b, t])
-                pos_list.append(pos.astype(np.float32))
-                quat_list.append(quat.astype(np.float32))
+                pos_arr[b] = pos.astype(np.float32)
+                quat_arr[b] = quat.astype(np.float32)
             pose = self.object_prim.data.root_com_state_w[:, :7]  # ← CHANGED: Use COM
-            pose[:, :3]   = torch.tensor(np.stack(pos_list),  dtype=torch.float32, device=pose.device)
-            pose[:, 3:7]  = torch.tensor(np.stack(quat_list), dtype=torch.float32, device=pose.device)
+            pose[:, :3]   = torch.as_tensor(pos_arr,  dtype=torch.float32, device=pose.device)
+            pose[:, 3:7]  = torch.as_tensor(quat_arr, dtype=torch.float32, device=pose.device)
             self.show_goal(pose[:, :3], pose[:, 3:7])
 
             for _ in range(hold_steps):
@@ -256,47 +360,54 @@ class HeuristicManipulation(BaseSimulator):
         return pb, qb  # [B,3], [B,4]
 
     # ---------- Batched execution & lift-check ----------
-    def execute_and_lift_once_batch(self, info: dict, lift_height=0.06, position_threshold=0.2) -> tuple[np.ndarray, np.ndarray]:
+    def execute_and_lift_once_batch(self, info: dict, lift_height=0.06, position_threshold=0.2, record=False) -> tuple[np.ndarray, np.ndarray]:
         """
         Reset → pre → grasp → close → lift → hold; return (success[B], score[B]).
         Now propagates motion planning failures by returning (None, None).
+        
+        Args:
+            record: If False, skip recording observations (faster for grasp search)
         """
         B = self.scene.num_envs
         self.reset()
 
         # open gripper buffer
         jp = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
-        self.wait(gripper_open=True, steps=4)
+        self.wait(gripper_open=True, steps=4, record=record)
 
         # pre-grasp
-        jp, success = self.move_to(info["pre_p_b"], info["pre_q_b"], gripper_open=True)
-        failed_envs = ~success.cpu().numpy()  # Track which envs failed
+        jp, success = self.move_to(info["pre_p_b"], info["pre_q_b"], gripper_open=True, record=record)
+        # Keep success tensor on GPU for now
         if torch.any(success==False):
             if self.verbose:
-                failed_ids = np.where(failed_envs)[0]
+                failed_ids = torch.where(success==False)[0].cpu().numpy()
                 print(f"[WARN] Pre-grasp motion planning failed for envs: {failed_ids.tolist()}")
-        jp = self.wait(gripper_open=True, steps=3)
+        jp = self.wait(gripper_open=True, steps=3, record=record)
 
         # grasp
-        jp, success = self.move_to(info["p_b"], info["q_b"], gripper_open=True)
-        failed_envs |= ~success.cpu().numpy()  # Accumulate failures
-        if torch.any(success==False):
+        jp, success_grasp = self.move_to(info["p_b"], info["q_b"], gripper_open=True, record=record)
+        success = success & success_grasp  # Combine on GPU
+        if torch.any(success_grasp==False):
             if self.verbose:
-                newly_failed = np.where(~success.cpu().numpy())[0]
+                newly_failed = torch.where(success_grasp==False)[0].cpu().numpy()
                 print(f"[WARN] Grasp approach motion planning failed for envs: {newly_failed.tolist()}")
-        jp = self.wait(gripper_open=True, steps=2)
+        jp = self.wait(gripper_open=True, steps=2, record=record)
 
         # close
-        jp = self.wait(gripper_open=False, steps=6)
+        jp = self.wait(gripper_open=False, steps=6, record=record)
 
         # initial heights (USING COM)
         obj0 = self.object_prim.data.root_com_pos_w[:, 0:3]  # ← CHANGED: Use COM
         ee_w = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
         ee_p0 = ee_w[:, :3]
+        # CRITICAL: Must clone z0 values because simulation state changes between here and z1 calculation
+        # If we use views, the z0 values will be updated when robot/object moves, breaking the diff calculation
         robot_ee_z0 = ee_p0[:, 2].clone()
         obj_z0 = obj0[:, 2].clone()
         if self.verbose:
-            print(f"[INFO] mean object z0={obj_z0.mean().item():.3f} m, mean EE z0={robot_ee_z0.mean().item():.3f} m")
+            obj_z0_mean = obj_z0.mean()
+            ee_z0_mean = robot_ee_z0.mean()
+            print(f"[INFO] mean object z0={obj_z0_mean:.3f} m, mean EE z0={ee_z0_mean:.3f} m")
 
         # lift: keep orientation, add height
         ee_q = ee_w[:, 3:7]
@@ -308,13 +419,13 @@ class HeuristicManipulation(BaseSimulator):
             root[:, 0:3], root[:, 3:7],
             target_p, ee_q
         )
-        jp, success = self.move_to(p_lift_b, q_lift_b, gripper_open=False)
-        failed_envs |= ~success.cpu().numpy()  # Accumulate failures
-        if torch.any(success==False):
+        jp, success_lift = self.move_to(p_lift_b, q_lift_b, gripper_open=False, record=record)
+        success = success & success_lift  # Combine on GPU
+        if torch.any(success_lift==False):
             if self.verbose:
-                newly_failed = np.where(~success.cpu().numpy())[0]
+                newly_failed = torch.where(success_lift==False)[0].cpu().numpy()
                 print(f"[WARN] Lift motion planning failed for envs: {newly_failed.tolist()}")
-        jp = self.wait(gripper_open=False, steps=8)
+        jp = self.wait(gripper_open=False, steps=8, record=record)
 
         # final heights and success checking (USING COM)
         obj1 = self.object_prim.data.root_com_pos_w[:, 0:3]  # ← CHANGED: Use COM
@@ -322,7 +433,9 @@ class HeuristicManipulation(BaseSimulator):
         robot_ee_z1 = ee_w1[:, 2]
         obj_z1 = obj1[:, 2]
         if self.verbose:
-            print(f"[INFO] mean object z1={obj_z1.mean().item():.3f} m, mean EE z1={robot_ee_z1.mean().item():.3f} m")
+            obj_z1_mean = obj_z1.mean()
+            ee_z1_mean = robot_ee_z1.mean()
+            print(f"[INFO] mean object z1={obj_z1_mean:.3f} m, mean EE z1={ee_z1_mean:.3f} m")
 
         # Lift check
         ee_diff  = robot_ee_z1 - robot_ee_z0
@@ -331,7 +444,7 @@ class HeuristicManipulation(BaseSimulator):
             (torch.abs(ee_diff) >= 0.5 * lift_height) & \
             (torch.abs(obj_diff) >= 0.5 * lift_height)
 
-        # Goal proximity check (USING COM)
+        # Goal proximity check (USING COM) - keep on GPU
         final_goal_matrices = self.obj_goal_traj_w[:, -1, :, :]
         goal_positions_np = final_goal_matrices[:, :3, 3]
         goal_positions = torch.tensor(goal_positions_np, dtype=torch.float32, device=self.sim.device)
@@ -339,15 +452,13 @@ class HeuristicManipulation(BaseSimulator):
         distances = torch.norm(current_obj_pos - goal_positions, dim=1)
         proximity_check = distances <= position_threshold
 
-        # Combined check
+        # Combined check - all on GPU
         lifted = lift_check & proximity_check
         
-        # Mark motion planning failures as not lifted
-        lifted_np = lifted.cpu().numpy()
-        lifted_np[failed_envs] = False
-        lifted = torch.tensor(lifted_np, device=lifted.device)
+        # Mark motion planning failures as not lifted - keep on GPU
+        lifted = lifted & success
 
-        # Score calculation
+        # Score calculation - all on GPU
         score = torch.zeros_like(ee_diff)
         if torch.any(lifted):
             base_score = 1000.0
@@ -367,7 +478,11 @@ class HeuristicManipulation(BaseSimulator):
                 print(f"[INFO] Distance to goal - mean: {distances.mean().item():.4f}m, "
                     f"min: {distances.min().item():.4f}m, max: {distances.max().item():.4f}m")
         
-        return lifted.detach().cpu().numpy().astype(bool), score.detach().cpu().numpy().astype(np.float32)
+        # Single GPU→CPU transfer at the end
+        # Batch GPU→CPU transfer for return values
+        lifted_cpu = lifted.cpu()
+        score_cpu = score.cpu()
+        return lifted_cpu.numpy().astype(bool), score_cpu.numpy().astype(np.float32)
 
     def build_grasp_info(
         self,
@@ -486,9 +601,15 @@ class HeuristicManipulation(BaseSimulator):
                     block = idx_all[start : start + B]
                     if len(block) < B:
                         block = block + [block[-1]] * (B - len(block))
+                    
+                    # Log progress for this block
+                    print(f"[SEARCH] Processing grasp block [{start}:{min(start+B, len(idx_all))}] / {len(idx_all)}, "
+                          f"Current successes: {env_success.sum()}/{B}")
 
                     # Build grasp proposals for ALL envs (even successful ones get dummy data)
-                    grasp_pos_w_batch, grasp_quat_w_batch = [], []
+                    # Pre-allocate arrays to avoid list+append overhead
+                    grasp_pos_w_batch = np.zeros((B, 3), dtype=np.float32)
+                    grasp_quat_w_batch = np.zeros((B, 4), dtype=np.float32)
                     for b in range(B):
                         if env_success[b] or env_skip[b]:
                             # Use existing successful grasp or dummy for skipped env
@@ -497,17 +618,19 @@ class HeuristicManipulation(BaseSimulator):
                             else:
                                 # Dummy grasp for skipped env
                                 p_w, q_w = grasp_to_world(gg[0])
-                            grasp_pos_w_batch.append(p_w.astype(np.float32))
-                            grasp_quat_w_batch.append(q_w.astype(np.float32))
+                                # Transform to randomized pose even for dummy
+                                p_w, q_w = self.transform_grasp_to_randomized_pose(p_w, q_w, b)
+                            grasp_pos_w_batch[b] = p_w.astype(np.float32)
+                            grasp_quat_w_batch[b] = q_w.astype(np.float32)
                         else:
                             # New grasp proposal for failed env
                             idx = block[b % len(block)]
                             p_w, q_w = grasp_to_world(gg[int(idx)])
-                            grasp_pos_w_batch.append(p_w.astype(np.float32))
-                            grasp_quat_w_batch.append(q_w.astype(np.float32))
+                            # CRITICAL: Transform grasp to account for random object pose
+                            p_w, q_w = self.transform_grasp_to_randomized_pose(p_w, q_w, b)
+                            grasp_pos_w_batch[b] = p_w.astype(np.float32)
+                            grasp_quat_w_batch[b] = q_w.astype(np.float32)
                     
-                    grasp_pos_w_batch  = np.stack(grasp_pos_w_batch,  axis=0)  # (B,3)
-                    grasp_quat_w_batch = np.stack(grasp_quat_w_batch, axis=0)  # (B,4)
                     self.show_goal(grasp_pos_w_batch, grasp_quat_w_batch)
                     
                     # Random disturbance along approach axis
@@ -517,8 +640,11 @@ class HeuristicManipulation(BaseSimulator):
                     info = self.build_grasp_info(grasp_pos_w_batch, grasp_quat_w_batch,
                                                 pre_dist_batch, delta_batch)
 
-                    # Execute grasp trial for ALL envs
-                    ok_batch, score_batch = self.execute_and_lift_once_batch(info)
+                    # Execute grasp trial for ALL envs (no recording during search for speed)
+                    ok_batch, score_batch = self.execute_and_lift_once_batch(info, record=False)
+                    
+                    # Track newly successful envs in this iteration
+                    newly_successful_count = 0
                     
                     # Update success status ONLY for envs that were still searching
                     for b in range(B):
@@ -530,20 +656,21 @@ class HeuristicManipulation(BaseSimulator):
                                 env_chosen_pre[b] = pre_dist_batch[b]
                                 env_chosen_delta[b] = delta_batch[b]
                                 env_best_score[b] = score_batch[b]
+                                newly_successful_count += 1
                                 if self.verbose:
                                     print(f"[SUCCESS] Env {b} found valid grasp (score: {score_batch[b]:.2f})")
                     
                     # Check if all active envs now succeeded
                     active_mask = ~env_skip
-                    newly_successful = np.sum(env_success[active_failed_mask])
-                    if self.verbose:
-                        print(f"[SEARCH] block[{start}:{start+B}] -> {newly_successful}/{n_failed} previously-failed envs now successful")
+                    if self.verbose and newly_successful_count > 0:
+                        print(f"[SEARCH] block[{start}:{start+B}] -> {newly_successful_count} new successes")
                     
+                    # Early termination: all active envs succeeded
                     if np.all(env_success[active_mask]):
                         successful_envs = np.where(env_success & ~env_skip)[0]
                         skipped_envs = np.where(env_skip)[0]
                         if self.verbose:
-                            print(f"[SUCCESS] All active environments found valid grasps on attempt {retry_attempt + 1}!")
+                            print(f"[SUCCESS] All active environments found valid grasps! Breaking early.")
                         if len(skipped_envs) > 0 and self.verbose:
                             print(f"[INFO] {len(skipped_envs)} environments skipped: {skipped_envs.tolist()}")
                         return {
@@ -841,7 +968,8 @@ class HeuristicManipulation(BaseSimulator):
                     # Extract this env's data slice
                     try:
                         print(f"[DEBUG] Env {b}: Attempting to extract slice [:, {b}] from shape {data_source.shape}...")
-                        env_data = data_source[:, b].copy()
+                        # Slice creates new array, no need for .copy()
+                        env_data = data_source[:, b]
                         print(f"[DEBUG] Env {b}: Extracted '{key}' slice successfully, shape={env_data.shape}")
                     except Exception as e:
                         print(f"[ERROR] Env {b}: Failed to extract slice for '{key}': {type(e).__name__}: {e}")
@@ -862,10 +990,14 @@ class HeuristicManipulation(BaseSimulator):
                         video_path, fps=50, codec='libx264', quality=7,
                         pixelformat='yuv420p', macro_block_size=None
                     )
+                    # Write frames and explicitly delete to free memory during encoding
                     for t in range(env_data.shape[0]):
                         writer.append_data(env_data[t])
                     writer.close()
+                    del writer  # Close and delete writer to flush buffers
                     del env_data  # Free memory immediately
+                    import gc
+                    gc.collect()  # Force garbage collection
                     print(f"[DEBUG] Env {b}: RGB video encoding complete, memory freed")
                 elif key == "segmask":
                     print(f"[DEBUG] Env {b}: Encoding segmask video ({env_data.shape[0]} frames)...")
@@ -877,28 +1009,49 @@ class HeuristicManipulation(BaseSimulator):
                     for t in range(env_data.shape[0]):
                         writer.append_data((env_data[t].astype(np.uint8) * 255))
                     writer.close()
+                    del writer
                     del env_data  # Free memory immediately
+                    import gc
+                    gc.collect()
                     print(f"[DEBUG] Env {b}: Segmask video encoding complete, memory freed")
                 elif key == "depth":
                     print(f"[DEBUG] Env {b}: Processing depth data...")
-                    flat = env_data[env_data > 0]
+                    # Save original depth first (float16, small)
+                    print(f"[DEBUG] Env {b}: Saving depth .npy first...")
+                    np.save(env_dir / f"{key}.npy", env_data)
+                    
+                    # Now process for video - work with minimal memory
+                    print(f"[DEBUG] Env {b}: Converting to float32 for percentile...")
+                    # Only keep positive values for percentile (much smaller array)
+                    if env_data.dtype == np.float16:
+                        flat = env_data[env_data > 0].astype(np.float32)
+                    else:
+                        flat = env_data[env_data > 0]
                     max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
-                    print(f"[DEBUG] Env {b}: Normalizing depth (max={max_depth:.3f})...")
-                    depth_norm = np.clip(env_data / max_depth * 255.0, 0, 255).astype(np.uint8)
-                    print(f"[DEBUG] Env {b}: Encoding depth video ({depth_norm.shape[0]} frames)...")
+                    del flat  # Free immediately
+                    
+                    print(f"[DEBUG] Env {b}: Encoding depth video in chunks (max={max_depth:.3f})...")
                     video_path = env_dir / "depth_video.mp4"
                     writer = imageio.get_writer(
                         video_path, fps=50, codec='libx264', quality=7,
                         pixelformat='yuv420p', macro_block_size=None
                     )
-                    for t in range(depth_norm.shape[0]):
-                        writer.append_data(depth_norm[t])
+                    # Process in chunks of 50 frames to balance speed and memory
+                    chunk_size = 50
+                    for chunk_start in range(0, env_data.shape[0], chunk_size):
+                        chunk_end = min(chunk_start + chunk_size, env_data.shape[0])
+                        chunk = env_data[chunk_start:chunk_end]
+                        chunk_f32 = chunk.astype(np.float32) if chunk.dtype == np.float16 else chunk
+                        chunk_norm = np.clip(chunk_f32 / max_depth * 255.0, 0, 255).astype(np.uint8)
+                        for t in range(chunk_norm.shape[0]):
+                            writer.append_data(chunk_norm[t])
+                        del chunk, chunk_f32, chunk_norm  # Free chunk memory
                     writer.close()
-                    del depth_norm  # Free normalized data
-                    print(f"[DEBUG] Env {b}: Depth video encoding complete, saving .npy...")
-                    np.save(env_dir / f"{key}.npy", env_data)
-                    del env_data  # Free memory
-                    print(f"[DEBUG] Env {b}: Depth .npy saved, memory freed")
+                    del writer
+                    del env_data  # Free original depth data
+                    import gc
+                    gc.collect()
+                    print(f"[DEBUG] Env {b}: Depth processing complete, memory freed")
                 else:
                     print(f"[DEBUG] Env {b}: Saving '{key}' as .npy (shape: {env_data.shape})...")
                     np.save(env_dir / f"{key}.npy", env_data)
@@ -947,6 +1100,13 @@ class HeuristicManipulation(BaseSimulator):
                     result = future.result()
                     completed += 1
                     print(f"[DEBUG] Env {env_id} completed successfully ({completed}/{len(futures)})")
+                    
+                    # CRITICAL: Free this env's data immediately after saving
+                    if use_direct_data and env_id in successful_env_data:
+                        print(f"[DEBUG] Freeing successful_env_data for env {env_id}")
+                        del successful_env_data[env_id]
+                        import gc
+                        gc.collect()
                     
                     # Log memory after each completion
                     try:
@@ -1053,6 +1213,17 @@ class HeuristicManipulation(BaseSimulator):
         Returns:
             Number of successful environments saved
         """
+        # Generate fresh random poses for this pipeline run
+        # Each inference() call (new demo collection run) gets new random poses
+        self._generate_random_initial_poses()
+        if self.verbose:
+            print("[INFO] Generated new random initial poses for this pipeline run")
+        
+        # Reload trajectory with new random initial poses
+        self.load_obj_goal_traj()
+        if self.verbose:
+            print("[INFO] Recomputed object goal trajectory with randomized initial poses")
+        
         # Memory logging helper
         def log_memory(label):
             try:
@@ -1098,8 +1269,12 @@ class HeuristicManipulation(BaseSimulator):
                 print(f"[INFO] using fixed grasp index {self.grasp_idx} for all envs.")
             p_w, q_w = grasp_to_world(gg[int(self.grasp_idx)])
             
-            # Prepare per-env format
-            env_chosen_pose_w = [(p_w.astype(np.float32), q_w.astype(np.float32))] * B
+            # CRITICAL: Transform grasp to each env's randomized pose
+            env_chosen_pose_w = []
+            for b in range(B):
+                p_b, q_b = self.transform_grasp_to_randomized_pose(p_w, q_w, b)
+                env_chosen_pose_w.append((p_b, q_b))
+            
             env_chosen_pre = np.full(B, self.grasp_pre if self.grasp_pre is not None else 0.12, dtype=np.float32)
             env_chosen_delta = np.full(B, self.grasp_delta if self.grasp_delta is not None else 0.0, dtype=np.float32)
             # No envs skipped in fixed mode
@@ -1182,8 +1357,9 @@ class HeuristicManipulation(BaseSimulator):
                 # Active envs get real data, skipped/successful envs get dummy data
                 p_all = np.zeros((B, 3), dtype=np.float32)
                 q_all = np.zeros((B, 4), dtype=np.float32)
-                pre_all = env_chosen_pre.copy()
-                del_all = env_chosen_delta.copy()
+                # Direct assignment (will be modified per-env below, so needs to be mutable)
+                pre_all = env_chosen_pre
+                del_all = env_chosen_delta
                 
                 for b in range(B):
                     if needs_attempt[b] and env_chosen_pose_w[b] is not None:
@@ -1309,17 +1485,26 @@ class HeuristicManipulation(BaseSimulator):
                                 print(f"[INFO] Capturing successful trajectory data for Env {b}")
                             log_memory(f"Before capturing env {b} data")
                             successful_env_data[b] = {}
+                            
+                            # Capture data for this env without creating full stacked array
+                            # This saves memory by only processing one timestep at a time
                             for key in self.save_dict.keys():
                                 if isinstance(self.save_dict[key], list) and len(self.save_dict[key]) > 0:
-                                    # Stack timesteps and extract this env's slice only
-                                    arr = np.array(self.save_dict[key])  # Shape: (T, B, ...)
-                                    if arr.ndim >= 2:
-                                        successful_env_data[b][key] = arr[:, b].copy()  # Shape: (T, ...)
+                                    # Extract env b's data across timesteps without full stack
+                                    # Process timestep-by-timestep to minimize memory
+                                    env_data = []
+                                    for timestep_data in self.save_dict[key]:
+                                        if timestep_data.ndim >= 2:
+                                            env_data.append(timestep_data[b])  # Extract just this env's data
+                                    if env_data:
+                                        successful_env_data[b][key] = np.array(env_data)  # Shape: (T, ...)
                                 elif isinstance(self.save_dict[key], np.ndarray):
                                     # Already numpy (like grasp_pose_cam)
                                     arr = self.save_dict[key]
                                     if arr.ndim >= 2:
-                                        successful_env_data[b][key] = arr[:, b].copy()
+                                        # Slice already creates new array, no need for .copy()
+                                        successful_env_data[b][key] = arr[:, b]
+                            
                             log_memory(f"After capturing env {b} data")
                         else:
                             if self.verbose:
@@ -1334,6 +1519,16 @@ class HeuristicManipulation(BaseSimulator):
                 
                 if self.verbose:
                     print("="*50 + "\n")
+                
+                # Clear save_dict IMMEDIATELY after capturing all successful env data
+                # This frees memory before the next iteration
+                if self.verbose:
+                    print("[DEBUG] Clearing save_dict after capturing successful envs")
+                log_memory("Before clearing save_dict (after capture)")
+                self.clear_data()
+                import gc
+                gc.collect()
+                log_memory("After clearing save_dict and GC")
                 
                 # Check if all non-skipped envs succeeded
                 remaining_active = np.where(~env_skip)[0]
@@ -1368,9 +1563,7 @@ class HeuristicManipulation(BaseSimulator):
                     if traj_attempt < max_traj_retries - 1:
                         if self.verbose:
                             print(f"[INFO] Retrying trajectory execution (attempt {traj_attempt + 2}/{max_traj_retries})...")
-                        log_memory("Before clear_data()")
-                        self.clear_data()  # This will wipe save_dict, but we have successful data saved
-                        log_memory("After clear_data()")
+                        # Note: save_dict already cleared above after capturing successful envs
                         continue
                     else:
                         # Last attempt - mark remaining failures as skipped
@@ -1473,11 +1666,18 @@ class HeuristicManipulation(BaseSimulator):
                         print("[ERR] All environments failed")
                         return 0
 # ───────────────────────────────────────────────────────────────────────────── Entry Point ─────────────────────────────────────────────────────────────────────────────
+def update_max_rss():
+    global max_rss
+    process = psutil.Process()
+    current_rss = process.memory_info().rss
+    max_rss = max(max_rss, current_rss)
+
 def main():
 
     #add timer
-    global start_time, end_time
+    global start_time, end_time, max_rss
     start_time = time.time()
+    max_rss = 0
     sim_cfgs = load_sim_parameters(BASE_DIR, args_cli.key)
     env, _ = make_env(
         cfgs=sim_cfgs, num_envs=args_cli.num_envs,
@@ -1529,6 +1729,7 @@ def main():
                 process = psutil.Process()
                 mem_info = process.memory_info()
                 print(f"[MEMORY] Before run {run_count}: RSS={mem_info.rss / 1024**3:.2f} GB, VMS={mem_info.vms / 1024**3:.2f} GB")
+                update_max_rss()
             except:
                 pass
             
@@ -1549,6 +1750,7 @@ def main():
                 import gc
                 gc.collect()
                 print(f"[MEMORY] Garbage collection complete")
+                update_max_rss()
             except:
                 pass
             
@@ -1570,6 +1772,7 @@ def main():
         end_time = time.time()
         elapsed_time = end_time - start_time
         print(f"\n[INFO] Total elapsed time: {elapsed_time / 60:.2f} minutes")
+        print(f"[INFO] Maximum RSS usage: {max_rss / 1024**3:.2f} GB")
         
     else:
         # Original behavior: single trial per num_trials
@@ -1581,11 +1784,13 @@ def main():
             my_sim.reset()
             print(f"[INFO] start simulation demo_{my_sim.demo_id}")
             my_sim.inference()
+            update_max_rss()
         
         # Timer for single-run mode
         end_time = time.time()
         elapsed_time = end_time - start_time
         print(f"\n[INFO] Total elapsed time: {elapsed_time / 60:.2f} minutes")
+        print(f"[INFO] Maximum RSS usage: {max_rss / 1024**3:.2f} GB")
     
     env.close()
     simulation_app.close()
@@ -1594,5 +1799,6 @@ if __name__ == "__main__":
     main()
     elapsed_time = end_time - start_time
     print(f"[INFO] Total elapsed time: {elapsed_time / 60:.2f} minutes")
+    print(f"[INFO] Maximum RSS usage: {max_rss / 1024**3:.2f} GB")
     os.system("quit()")
     simulation_app.close()

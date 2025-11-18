@@ -373,22 +373,45 @@ class BaseSimulator:
                 # Process results
                 paths = result.get_paths()
                 
-                # Check if paths is valid
-                if paths is None:
-                    print(f"[ERROR] Motion planning returned None paths on attempt {retry+1}/{max_retries}")
+                # Check if paths is valid - use try-except to safely check if it's iterable
+                paths_valid = False
+                try:
+                    if paths is not None:
+                        # Try to get length to verify it's iterable and not empty
+                        _ = len(paths)
+                        if len(paths) > 0:
+                            paths_valid = True
+                except:
+                    pass
+                
+                if not paths_valid:
+                    print(f"[ERROR] Motion planning returned invalid paths on attempt {retry+1}/{max_retries}")
                     if retry < max_retries - 1:
                         if self.reinitialize_motion_gen():
                             print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
                             continue
-                    break
+                        else:
+                            print("[ERROR] Failed to recover motion planner")
+                    # Skip to next retry iteration or exit loop
+                    continue
+                
+                # Double-check paths is still valid (defensive programming)
+                if paths is None:
+                    print(f"[ERROR] paths became None after validation check")
+                    continue
                 
                 T_max = 1
                 
-                for i, p in enumerate(paths):
-                    if not result.success[i]:
-                        print(f"[WARN] Motion planning failed for env {i}.")
-                    else:
-                        T_max = max(T_max, int(p.position.shape[-2]))
+                try:
+                    for i, p in enumerate(paths):
+                        if not result.success[i]:
+                            print(f"[WARN] Motion planning failed for env {i}.")
+                        else:
+                            T_max = max(T_max, int(p.position.shape[-2]))
+                except TypeError as te:
+                    print(f"[ERROR] TypeError when processing paths: {te}")
+                    print(f"[DEBUG] paths type: {type(paths)}, paths value: {paths}")
+                    continue
                 
                 dof = joint_pos.shape[-1]
                 BT7 = torch.zeros(
@@ -895,13 +918,32 @@ class BaseSimulator:
         object_pose = torch.zeros((M, 7), device=device, dtype=torch.float32)
         object_pose[:, :3] = env_origins
         object_pose[:, 3] = 1.0  # wxyz = [1,0,0,0]
+        
+        # Apply random offsets if available (set by child class like HeuristicManipulation)
+        if hasattr(self, 'random_obj_poses') and self.random_obj_poses is not None:
+            # random_obj_poses is (B, 7): [x_offset, y_offset, z_offset, qw, qx, qy, qz]
+            random_poses_for_envs = self.random_obj_poses.to(device)[env_ids_t]  # (M, 7)
+            
+            # Apply position offsets (in env-local frame)
+            object_pose[:, :3] = object_pose[:, :3] + random_poses_for_envs[:, :3]
+            
+            # Apply rotation offset by quaternion multiplication: q_final = q_random * q_identity
+            # q_identity = [1, 0, 0, 0] (wxyz), so q_final = q_random
+            object_pose[:, 3:7] = random_poses_for_envs[:, 3:7]
+        
         self.object_prim.write_root_pose_to_sim(object_pose, env_ids=env_ids_t)
         self.object_prim.write_root_velocity_to_sim(
             torch.zeros((M, 6), device=device, dtype=torch.float32), env_ids=env_ids_t
         )
         self.object_prim.write_data_to_sim()
+        
+        # CRITICAL: other_object_prims (background/scene) should NOT have random offsets!
+        # They should stay at env_origins with identity quaternion
+        background_pose = torch.zeros((M, 7), device=device, dtype=torch.float32)
+        background_pose[:, :3] = env_origins
+        background_pose[:, 3] = 1.0  # wxyz = [1,0,0,0]
         for prim in self.other_object_prims:
-            prim.write_root_pose_to_sim(object_pose, env_ids=env_ids_t)
+            prim.write_root_pose_to_sim(background_pose, env_ids=env_ids_t)
             prim.write_root_velocity_to_sim(
                 torch.zeros((M, 6), device=device, dtype=torch.float32),
                 env_ids=env_ids_t,
@@ -929,6 +971,10 @@ class BaseSimulator:
         ]  # (M,7)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids_t)
         self.robot.write_data_to_sim()
+
+        # CRITICAL: Step the simulation to apply all the pose changes
+        # Without this, the camera doesn't update and shows stale/corrupted visuals
+        self.step()
 
         # housekeeping
         self.clear_data()
@@ -1016,13 +1062,29 @@ class BaseSimulator:
 
     # ---------- Data Recording & Saving & Clearing ----------
     def record_data(self, obs: Dict[str, torch.Tensor]):
-        self.save_dict["rgb"].append(obs["rgb"].cpu().numpy())  # [B,H,W,3]
-        self.save_dict["depth"].append(obs["depth"].cpu().numpy())  # [B,H,W]
-        self.save_dict["segmask"].append(obs["fg_mask"].cpu().numpy())  # [B,H,W]
-        self.save_dict["joint_pos"].append(obs["joint_pos"].cpu().numpy())  # [B,nJ]
-        self.save_dict["gripper_pos"].append(obs["gripper_pos"].cpu().numpy())  # [B,3]
-        self.save_dict["gripper_cmd"].append(obs["gripper_cmd"].cpu().numpy())  # [B,1]
-        self.save_dict["joint_vel"].append(obs["joint_vel"].cpu().numpy())
+        # Batch all GPU→CPU transfers to reduce synchronization overhead
+        # Use reduced precision where possible to save memory:
+        # - RGB: uint8 (already optimal)
+        # - Depth: float16 (half precision, 50% memory reduction)
+        # - Segmask: uint8 (bool doesn't save memory in numpy, both are 1 byte)
+        
+        rgb = obs["rgb"].cpu().numpy().astype(np.uint8)  # [B,H,W,3]
+        depth = obs["depth"].cpu().numpy().astype(np.float16)  # [B,H,W] - half precision
+        segmask = obs["fg_mask"].cpu().numpy().astype(np.uint8)  # [B,H,W] - already 0/1
+        
+        # Robot state data (keep full precision, much smaller than images)
+        joint_pos = obs["joint_pos"].cpu().numpy()
+        joint_vel = obs["joint_vel"].cpu().numpy()
+        gripper_pos = obs["gripper_pos"].cpu().numpy()
+        gripper_cmd = obs["gripper_cmd"].cpu().numpy()
+        
+        self.save_dict["rgb"].append(rgb)
+        self.save_dict["depth"].append(depth)
+        self.save_dict["segmask"].append(segmask)
+        self.save_dict["joint_pos"].append(joint_pos)
+        self.save_dict["gripper_pos"].append(gripper_pos)
+        self.save_dict["gripper_cmd"].append(gripper_cmd)
+        self.save_dict["joint_vel"].append(joint_vel)
 
     def clear_data(self):
         for key in self.save_dict.keys():
