@@ -31,7 +31,8 @@ class ReconAgent:
             "object_mesh_generation",
             "scenario_construction",
             "scenario_fdpose_optimization",
-            "scenario_collision_optimization"
+            "scenario_collision_optimization",
+            "save_assets"
         ]
         if stage is not None:
             if stage in self.stages:
@@ -156,7 +157,8 @@ class ReconAgent:
             self.scenario_fdpose_optimization()
         if "scenario_collision_optimization" in self.stages:
             self.scenario_collision_optimization()
-        self.save_assets()
+        if "save_assets" in self.stages:
+            self.save_assets()
         print('[Info] ReconAgent run completed.')
         return self.key_scene_dicts
 
