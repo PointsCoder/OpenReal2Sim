@@ -13,3 +13,6 @@
 [submodule "third_party/ObjectClear"] # for object clearing [reconstruction]
 	path = third_party/ObjectClear
 	url = git@github.com:PointsCoder/ObjectClear.git
+[submodule "third_party/scene_evaluator"]
+	path = third_party/scene_evaluator
+	url = https://github.com/licesma/scene_evaluator.git
