@@ -131,70 +131,8 @@ def depth_to_points(depth: np.ndarray, K: np.ndarray) -> np.ndarray:
     return pts
 
 
+
 def plane_fill(depth0, K, ground, obj):
-    fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
-
-    from scipy.ndimage import distance_transform_edt
-    from scipy.interpolate import griddata
-
-    ground = ground & ~obj
-    ground_border = (ground > 0).astype(np.uint8)
-    dist = distance_transform_edt(ground_border)
-    mask_inner = dist >= 3
-    ground_filtered = np.zeros_like(ground, dtype=bool)
-    ground_filtered[ground & mask_inner] = True
-    z = depth0.reshape(-1).astype(np.float32)
-    nan_mask = (z <= 0) | np.isnan(z) | np.isinf(z)
-    nan_mask = nan_mask.reshape(depth0.shape)
-    ground_filtered = ground_filtered & (~nan_mask)
-    pts_ground = depth_to_points(depth0, K)[ground_filtered.ravel()]
-    pc = o3d.geometry.PointCloud()
-    pc.points = o3d.utility.Vector3dVector(pts_ground)
-  
-    np.random.seed(42) 
-    plane , _= pc.segment_plane(distance_threshold=0.02, ransac_n=3, num_iterations=1000)
-    a, b, c, d = plane
-
-    from scipy.ndimage import binary_dilation
-
-    obj_edge = binary_dilation(obj, iterations=7) 
-    candidate_mask = obj_edge & ground
-
-    ys, xs = np.where(candidate_mask)
-    #import pdb; pdb.set_trace()
-    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-    dx = (xs - cx) / fx
-    dy = (ys - cy) / fy
-    dz = np.ones_like(dx)
-    denom = a * dx + b * dy + c * dz
-    valid = np.abs(denom) > 1e-6
-    t = np.full_like(dx, np.nan, dtype=np.float32)
-    t[valid] = -d / denom[valid]
-    plane_z = t * dz
-    dist_to_plane = np.abs(a * (dx * t) + b * (dy * t) + c * (dz * t) + d) / np.linalg.norm([a, b, c])
-    plane_dist_th = 0.003
-    mask_valid = (t > 0) & np.isfinite(t) & (dist_to_plane < plane_dist_th)
-    z_plane = plane_z[mask_valid]
-    xs_plane = xs[mask_valid]
-    ys_plane = ys[mask_valid]
-
-    fill_mask = obj
-    fill_ys, fill_xs = np.where(fill_mask)
-
-    depth0_filled = depth0.copy()
-    if len(z_plane) > 0:
-        z_fill = griddata(
-            (ys_plane, xs_plane),
-            z_plane,
-            (fill_ys, fill_xs),
-            method="linear",
-            fill_value=np.mean(z_plane)
-        )
-        depth0_filled[fill_ys, fill_xs] = np.clip(z_fill, 0, 5 * depth0.max())
-    return depth0_filled
-
-
-def vanilla_plane_fill(depth0, K, ground, obj):
     H,W=depth0.shape; fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
 
     pts_ground = depth_to_points(depth0, K)[ground.ravel()]
@@ -250,26 +188,13 @@ def hybrid_fill(depth0: np.ndarray, fg_img: np.ndarray, bg_img: np.ndarray, K: n
         plane_mask = (plane_mask == plane_idx).astype(bool)
         plane_masks.append(plane_mask)
     for plane_mask in plane_masks:
+        print(f"[Info] plane mask: {plane_mask.sum()}, plane mask and object mask: {(plane_mask & left_obj_msk).sum()}")
         if (plane_mask & left_obj_msk).sum() > 0:
             #depth_filled = plane_fill(depth0, K, plane_mask, left_obj_msk & plane_mask)
-            depth_filled = vanilla_plane_fill(depth0, K, plane_mask & ~left_obj_msk, left_obj_msk & plane_mask)
+            depth_filled = plane_fill(depth0, K, plane_mask, left_obj_msk & plane_mask)
             depth_bg[plane_mask & left_obj_msk] = depth_filled[plane_mask & left_obj_msk]
         left_obj_msk = left_obj_msk & ~plane_mask
     depth_moge = run_moge_depth(bg_img, device)
-   
-    # # kernel = np.ones((25, 25), np.uint8)  # prevent boundaries problem.
-    # # obj_msk = cv2.dilate(obj_msk.astype(np.uint8), kernel, iterations=1).astype(bool)
-    # depth_ground = vanilla_plane_fill(depth0, K,existing_ground_mask, obj_msk)
-
-    # depth_bg = depth0.copy()
-    # obj_msk =obj_msk.astype(bool)
-    # ground_mask = ground_mask.astype(bool)
-    
-    # obj_ground = obj_msk & ground_mask
-    # obj_non_ground = obj_msk & (~ground_mask)
-
-    # if obj_ground.sum() > 0:
-    #     depth_bg[obj_ground] = depth_ground[obj_ground]
     
     if left_obj_msk.sum() > 0:
         a, b = robust_scale_shift_align(

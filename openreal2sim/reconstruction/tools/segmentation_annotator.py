@@ -147,15 +147,17 @@ def run_dino(img,txt):
     return res[0]["boxes"].cpu().numpy()
 
 def mask_from_boxes(img,boxes):
-    img_pred.set_image(img)
-    m,*_=img_pred.predict(box=boxes,multimask_output=False)
+    with torch.amp.autocast(device_type="cuda" if DEV == "cuda" else "cpu", dtype=torch.bfloat16 if DEV == "cuda" else torch.float32):
+        img_pred.set_image(img)
+        m,*_=img_pred.predict(box=boxes,multimask_output=False)
     return (m.squeeze(1) if m.ndim==4 else m)>.5
 
 def mask_from_points(img,pts):
     if not pts: return None
-    img_pred.set_image(img)
     pc=np.array([[x,y] for x,y,_ in pts]); pl=np.array([l for *_,l in pts])
-    m,*_=img_pred.predict(point_coords=pc,point_labels=pl,multimask_output=False)
+    with torch.amp.autocast(device_type="cuda" if DEV == "cuda" else "cpu", dtype=torch.bfloat16 if DEV== "cuda" else torch.float32):
+        img_pred.set_image(img)
+        m,*_=img_pred.predict(point_coords=pc,point_labels=pl,multimask_output=False)
     return (m.squeeze(1) if m.ndim==4 else m)>.5
 
 def propagate(frames,start,seeds,resized_dir:Path):
