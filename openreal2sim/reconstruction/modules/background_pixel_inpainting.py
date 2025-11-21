@@ -30,9 +30,22 @@ import yaml
 base_dir = Path.cwd()
 repo_dir = str(base_dir / 'third_party/ObjectClear')
 sys.path.append(repo_dir)
-
 from objectclear.pipelines import ObjectClearPipeline
 from objectclear.utils import resize_by_short_side
+
+# ---------------- add sam to path ----------------
+sam_dir = base_dir / "third_party/Grounded-SAM-2"
+sys.path.append(str(sam_dir))
+
+
+
+from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor    
+from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+
+def dilate_mask(mask, kernel_size=3):
+    return cv2.dilate(mask, np.ones((kernel_size, kernel_size), np.uint8), iterations=1)
+
 
 def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
     
@@ -120,6 +133,8 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
 
             # Model was trained on 512 short side
             image = resize_by_short_side(image, 512, resample=Image.BICUBIC)
+            mask = dilate_mask(np.array(mask), kernel_size=10)
+            mask = Image.fromarray(mask)
             mask = resize_by_short_side(mask, 512, resample=Image.NEAREST)
 
             w, h = image.size
@@ -143,14 +158,51 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
             # Save as background.jpg in the scene folder
             save_path = os.path.join(result_root, 'background.jpg')
             fused_img_pil.save(save_path)
-            
-        # Save in scene_dict
+
+        # ---------- run Plane Segmentation ----------
+        TEXT = "ground. plane. table top. desk top"
+        CFG  =  "configs/sam2.1/sam2.1_hiera_l.yaml"
+        CKPT = base_dir / "third_party/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt"
+        img_predictor = SAM2ImagePredictor(build_sam2(CFG, CKPT))
+        dino_proc  = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
+        dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
+                        "IDEA-Research/grounding-dino-base").to(device)
+
+        batch = dino_proc(images=[fused_img_pil], text = TEXT, return_tensors="pt")
+        batch={k:v.to(device) for k,v in batch.items()}
+        with torch.no_grad():
+            out=dino_model(pixel_values=batch["pixel_values"],
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch.get("attention_mask"))
+        boxes = dino_proc.post_process_grounded_object_detection(out,batch["input_ids"],
+                                                            .25,.3,target_sizes=[np.asarray(fused_img_pil).shape[:2]])[0]["boxes"].cpu().numpy()
+        plane_masks = []
+        for box in boxes:
+            img_predictor.set_image(fused_img_pil)
+            m,*_=img_predictor.predict(box=box,multimask_output=False)
+            m = m[0] >.5
+            if np.sum(m) > 0:
+                plane_masks.append(m)
+        if plane_masks:
+            mask_shape = plane_masks[0].shape
+            plane_mask_img = np.zeros(mask_shape, dtype=np.uint8)
+            for idx, plane_mask in enumerate(plane_masks):
+                plane_mask_img[plane_mask > 0] = idx + 1
+            max_idx = len(plane_masks)
+            plane_mask_img_vis = cv2.applyColorMap(
+                (plane_mask_img * (255 // max(1,max_idx))).astype(np.uint8), cv2.COLORMAP_JET
+            )
+            plane_mask_img_vis[plane_mask_img == 0] = [0,0,0]
+            out_path = os.path.join(result_root, "plane_mask.jpg")
+            cv2.imwrite(out_path, plane_mask_img_vis)
+        
         if "recon" not in scene_dict:
             scene_dict["recon"] = {}
         scene_dict["recon"]["background"] = np.ascontiguousarray(np.array(fused_img_pil, dtype=np.uint8))
         scene_dict["recon"]["foreground"] = np.ascontiguousarray(np.array(image_orig,   dtype=np.uint8))
         scene_dict["recon"]["ground_mask"] = ground_accum if ground_accum is not None else None # H x W, bool
         scene_dict["recon"]["object_mask"] = mask_accum if mask_accum is not None else None   # H x W, bool
+        scene_dict["recon"]["plane_mask"] = plane_mask_img
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)
