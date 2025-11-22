@@ -1,6 +1,6 @@
 services:
   # Real To Sim [Master Container]
-  openreal2sim:
+  openreal2sim-new:
     build:
       context: ..
       dockerfile: docker/real2sim/Dockerfile

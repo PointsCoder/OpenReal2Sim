@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # -------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-dev python3-pip python3-venv python-is-python3 \
-    build-essential cmake ninja-build pkg-config \
+    build-essential cmake ninja-build pkg-config libopenblas-dev \
     git curl wget ffmpeg bash libspatialindex-dev \
     && python3 -m pip install --upgrade --no-cache-dir pip wheel setuptools packaging \
     && rm -rf /var/lib/apt/lists/*
@@ -46,6 +46,9 @@ RUN pip install --no-cache-dir torch-scatter \
 COPY docker/real2sim/requirements.docker.txt         /tmp/requirements.docker.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.docker.txt
 
+# Install chumpy separately (setup.py needs pip module, ensure build deps are available)
+RUN pip install --no-build-isolation --no-cache-dir "git+https://github.com/mattloper/chumpy"
+
 
 # -------------------------------------------------------------------------
 # Third-Party compiled Python deps
@@ -82,7 +85,18 @@ RUN cd / && wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.t
     cmake .. &&\
     make install
 
+RUN cd /
+COPY third_party/graspnetAPI /app/third_party/graspnetAPI
+RUN cd /app/third_party/graspnetAPI && pip install -e .
+
+COPY third_party/graspness_unofficial /app/third_party/graspness_unofficial
+RUN cd /app/third_party/graspness_unofficial/pointnet2 && python -m pip install --no-cache-dir -v --no-build-isolation .
+RUN cd /app/third_party/graspness_unofficial/knn && python -m pip install --no-cache-dir -v --no-build-isolation .
+
+COPY third_party/MinkowskiEngine /app/third_party/MinkowskiEngine
+RUN cd /app/third_party/MinkowskiEngine && python setup.py install --blas=openblas --force_cuda
+
 # -------------------------------------------------------------------------
 # Runtime env
 # -------------------------------------------------------------------------
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app:/app/third_party:/app/third_party/graspness_unofficial/pointnet2:

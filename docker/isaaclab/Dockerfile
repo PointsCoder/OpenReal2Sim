@@ -25,55 +25,31 @@ ENV CMAKE_BUILD_PARALLEL_LEVEL=2
 ENV CUDA_HOME=/usr/local/cuda
 ENV FORCE_CUDA=1
 
-RUN useradd -ms /bin/bash isaac && chown -R isaac:isaac /app
-ENV HOME=/home/isaac
-USER isaac
-ENV PATH=$HOME/.local/bin:$PATH
-
 # RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 \
 #     torch==2.5.1+cu118 torchvision==0.20.1+cu118 torchaudio==2.5.1+cu118
 
 RUN pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 
-# graspnetapi (will install open3d & change numpy version from 1.26.4 to 1.23.4)
-RUN git clone https://github.com/PointsCoder/graspnetAPI.git "$HOME/graspnetAPI"
-RUN cd "$HOME/graspnetAPI" && pip install -e .
-
-
-ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;12.0"
-# graspness (will compile pointnet2, knn)
-RUN git clone https://github.com/PointsCoder/graspness_unofficial.git "$HOME/third_party/graspness_unofficial"
-RUN cd "$HOME/third_party/graspness_unofficial/pointnet2" && python -m pip install --user -v --no-build-isolation .
-# RUN cd "$HOME/third_party/graspness_unofficial/knn" && python -m pip install --user -v --no-build-isolation . # (knn is not necessary)
 
 USER root
 # Patch shared_ptr_base.h
 RUN sed -i 's|auto __raw = __to_address(__r.get())|auto __raw = std::__to_address(__r.get())|' \
     /usr/include/c++/11/bits/shared_ptr_base.h
 
-USER isaac
-# MinkowskiEngine
-RUN git clone https://github.com/songlin/MinkowskiEngine.git "$HOME/MinkowskiEngine"
-RUN cd "$HOME/MinkowskiEngine" && git checkout cuda-12.8-cc-12.0  && export CUDA_HOME=/usr/local/cuda; python setup.py install --user --blas=openblas --force_cuda
-
-# checkpoints
-RUN pip install gdown && \
-    mkdir -p "$HOME/third_party/graspness_unofficial/ckpt" && \
-    gdown 10o5fc8LQsbI8H0pIC2RTJMNapW9eczqF -O "$HOME/third_party/graspness_unofficial/ckpt/minkuresunet_kinect.tar" && \
-    gdown 1RfdpEM2y0x98rV28d7B2Dg8LLFKnBkfL -O "$HOME/third_party/graspness_unofficial/ckpt/minkuresunet_realsense.tar"
-
 ENV TORCH_CUDA_ARCH_LIST="8.9+PTX"
-# curobo
-RUN git clone https://github.com/NVlabs/curobo.git "$HOME/curobo" && \
-    cd "$HOME/curobo" && pip install -e . --no-build-isolation --user
+# curobo - install to /opt to avoid being overwritten by volume mount
+COPY third_party/curobo /app/third_party/curobo
+RUN cd /app/third_party/curobo && \
+     pip install -e . --no-build-isolation
 
 # Isaac Sim 4.5.0
 RUN pip install 'isaacsim[all,extscache]==4.5.0' --extra-index-url https://pypi.nvidia.com
 
 # Revert the fixed pytorch version
+# Install IsaacLab to /opt to avoid being overwritten by volume mount
 ENV TERM=xterm-256color
-RUN git clone https://github.com/PointsCoder/IsaacLab.git "$HOME/IsaacLab" && \
-    cd "$HOME/IsaacLab" && \
+COPY third_party/IsaacLab /app/third_party/IsaacLab
+RUN cd /app/third_party/IsaacLab && \
     sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab/setup.py && \
     sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab_tasks/setup.py && \
     sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab_rl/setup.py && \
@@ -81,6 +57,8 @@ RUN git clone https://github.com/PointsCoder/IsaacLab.git "$HOME/IsaacLab" && \
 
 # usd conversion 
 # curobo changes the numpy version from 1.23.4 to 2.x, need to get it back
-RUN pip install loguru rich numpy==1.23.4
+RUN pip install loguru rich numpy==1.23.4 transforms3d
 
-ENV PYTHONPATH=/app:$HOME/third_party:$HOME/third_party/graspness_unofficial/pointnet2
+# Ensure isaaclab can be imported
+# IsaacLab is installed to /opt/IsaacLab to avoid being overwritten by volume mount
+ENV PYTHONPATH=/app:/app/third_party:/app/third_party/IsaacLab/source

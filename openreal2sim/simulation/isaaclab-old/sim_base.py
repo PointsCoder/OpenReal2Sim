@@ -3,53 +3,17 @@ from __future__ import annotations
 import json
 import os
 import random
-import shutil
 from pathlib import Path
-from typing import Any, Optional, Dict, Sequence, Tuple
-from typing import List
-import copy
-import numpy as np
-import torch
+from typing import Any, Dict, List, Optional
+
+
+import curobo
 import imageio
-import cv2
-import h5py
-import sys
-file_path = Path(__file__).resolve()
-sys.path.append(str(file_path.parent))
-sys.path.append(str(file_path.parent.parent))
-from envs.task_cfg import CameraInfo, TaskCfg, TrajectoryCfg
 
 # Isaac Lab
 import isaaclab.sim as sim_utils
-from isaaclab.sensors.camera import Camera
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
-from isaaclab.utils.math import subtract_frame_transforms, transform_points, unproject_depth
-from isaaclab.devices import Se3Keyboard, Se3SpaceMouse, Se3Gamepad
-from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-
- # Curobo imports are done lazily in prepare_curobo() to avoid warp/inspect issues with isaaclab namespace package
-# Patch inspect.getfile to handle namespace packages (like isaaclab)
-# This is needed because warp's set_module_options() uses inspect.stack() which tries to get file paths
-# for all modules in the call stack, including namespace packages that don't have a __file__ attribute
-import inspect
-_original_getfile = inspect.getfile
-def _patched_getfile(object):
-    """Patched getfile that handles namespace packages."""
-    try:
-        return _original_getfile(object)
-    except TypeError as e:
-        if "is a built-in module" in str(e) or "namespace" in str(e).lower():
-            # For namespace packages, return a dummy path to avoid errors
-            # This allows warp's inspect.stack() to work even when isaaclab is in the call stack
-            if hasattr(object, '__name__'):
-                return f'<namespace:{object.__name__}>'
-            return '<namespace:unknown>'
-        raise
-inspect.getfile = _patched_getfile
-
-import curobo
+import numpy as np
+import torch
 from curobo.types.base import TensorDeviceType
 from curobo.types.math import Pose
 from curobo.types.robot import JointState, RobotConfig
@@ -123,10 +87,6 @@ class BaseSimulator:
         set_physics_props: bool = True,
         enable_motion_planning: bool = True,
         debug_level: int = 1,
-        demo_dir: Optional[Path] = None,
-        data_dir: Optional[Path] = None,
-        task_cfg: Optional[TaskCfg] = None,
-        traj_cfg_list: Optional[List[TrajectoryCfg]] = None,
     ) -> None:
         # basic simulation setup
         self.sim: sim_utils.SimulationContext = sim
@@ -142,13 +102,7 @@ class BaseSimulator:
         self.cam_dict = cam_dict
         self.out_dir: Path = out_dir
         self.img_folder: str = img_folder
-        self.defined_demo_dir: Optional[Path] = demo_dir
-        if self.defined_demo_dir is not None:
-            self.defined_demo_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.data_dir: Optional[Path] = data_dir
-        if self.data_dir is not None:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
+
         # scene entities
         self.robot = scene["robot"]
         if robot_pose.ndim == 1:
@@ -160,19 +114,13 @@ class BaseSimulator:
                 f"robot_pose must be [B,7], got {robot_pose.shape}"
             )
             self.robot_pose = robot_pose.to(self.robot.device).contiguous()
-        self.task_cfg = task_cfg
-        self.traj_cfg_list = traj_cfg_list
-        # Get object prim based on selected_object_id
-        # Default to object_00 for backward compatibility
-        # Note: selected_object_id is set in subclasses after super().__init__()
-        # So we use a helper method that can be called later
-        self._selected_object_id = None  # Will be set by subclasses
-        self.object_prim = scene["object_00"]  # Default, will be updated if needed
-        self._update_object_prim()
-        
-        # Get all other object prims (excluding the main object)
-        self.other_object_prims = [scene[key] for key in scene.keys() 
-                                   if f"object_" in key and key != "object_00"]
+
+        self.object_prim = scene["object_00"]
+        self.other_object_prims = [
+            scene[key]
+            for key in scene.keys()
+            if f"object_" in key and key != "object_00"
+        ]
         self.background_prim = scene["background"]
         self.camera: Camera = scene["camera"]
 
@@ -250,19 +198,21 @@ class BaseSimulator:
         self.count = 0
         self.demo_id = 0
         self.save_dict = {
-            "rgb": [], "depth": [], "segmask": [],
-            "joint_pos": [], "joint_vel": [], "actions": [],
-            "gripper_pos": [], "gripper_cmd": [], "ee_pose_cam": [],
-            "composed_rgb": []  # composed rgb image with background and foreground
+            "rgb": [],
+            "depth": [],
+            "segmask": [],
+            "joint_pos": [],
+            "joint_vel": [],
+            "actions": [],
+            "gripper_pos": [],
+            "gripper_cmd": [],
         }
 
         # visualization
         self.selected_object_id = 0
-        self._selected_object_id = 0
         self.debug_level = debug_level
 
         self.goal_vis_list = []
-        
         if self.debug_level > 0:
             for b in range(self.num_envs):
                 cfg = VisualizationMarkersCfg(
@@ -285,27 +235,9 @@ class BaseSimulator:
             print(f"prepare curobo motion planning: {enable_motion_planning}")
             self.prepare_curobo()
             print("curobo motion planning ready.")
-        
-    def _update_object_prim(self):
-        """Update object_prim based on selected_object_id. Called after selected_object_id is set."""
-        if self._selected_object_id is None:
-            return
-        try:
-            from sim_env_factory import get_prim_name_from_oid
-            oid_str = str(self._selected_object_id)
-            prim_name = get_prim_name_from_oid(oid_str)
-            if prim_name in self.scene:
-                self.object_prim = self.scene[prim_name]
-                # Update other_object_prims
-                self.other_object_prims = [self.scene[key] for key in self.scene.keys() 
-                                           if f"object_" in key and key != prim_name]
-        except (ImportError, ValueError, KeyError) as e:
-            # Fallback to object_00 if mapping not available
-            pass
 
     # -------- Curobo Motion Planning ----------
     def prepare_curobo(self):
-
         setup_curobo_logger("error")
         # tensor_args = TensorDeviceType()
         tensor_args = TensorDeviceType(device=self.sim.device, dtype=torch.float32)
@@ -813,7 +745,6 @@ class BaseSimulator:
         env_origins_robot = env_origins.to(self.robot.device)  # (M,3)
         robot_pose_world = rp_local.clone()
         robot_pose_world[:, :3] = env_origins_robot + robot_pose_world[:, :3]
-        #print(f"[INFO] robot_pose_world: {robot_pose_world}")
         self.robot.write_root_pose_to_sim(robot_pose_world, env_ids=env_ids_t)
         self.robot.write_root_velocity_to_sim(
             torch.zeros((M, 6), device=self.robot.device, dtype=torch.float32),
@@ -923,46 +854,27 @@ class BaseSimulator:
         self.save_dict["gripper_pos"].append(obs["gripper_pos"].cpu().numpy())  # [B,3]
         self.save_dict["gripper_cmd"].append(obs["gripper_cmd"].cpu().numpy())  # [B,1]
         self.save_dict["joint_vel"].append(obs["joint_vel"].cpu().numpy())
-        self.save_dict["ee_pose_cam"].append(obs["ee_pose_cam"].cpu().numpy())
+
     def clear_data(self):
         for key in self.save_dict.keys():
             self.save_dict[key] = []
 
-                        
-  
     def _demo_dir(self) -> Path:
-        if self.defined_demo_dir is not None:
-            return self.defined_demo_dir
-        else:
-            return self.out_dir / self.img_folder / "demos" / f"demo_{self.demo_id}"
+        return self.out_dir / self.img_folder / "demos" / f"demo_{self.demo_id}"
 
     def _env_dir(self, base: Path, b: int) -> Path:
         d = base / f"env_{b:03d}"
         d.mkdir(parents=True, exist_ok=True)
         return d
-    
-    def _get_next_demo_dir(self, base: Path) -> Path:
-        already_existing_num = len(list(base.iterdir()))
-        return base / f"demo_{already_existing_num:03d}"
 
-    def save_data(self, ignore_keys: List[str] = [], env_ids: Optional[List[int]] = None, export_hdf5: bool = False):
+    def save_data(self, ignore_keys: List[str] = []):
         save_root = self._demo_dir()
         save_root.mkdir(parents=True, exist_ok=True)
-        
-        stacked = {k: np.array(v) for k, v in self.save_dict.items()}
-        if env_ids is None:
-            env_ids = self._all_env_ids.cpu().numpy()
 
-        composed_rgb = copy.deepcopy(stacked["rgb"])
-        self.save_dict["composed_rgb"] = composed_rgb
-        hdf5_names = []
-        for b in env_ids:
-            if self.defined_demo_dir is  None:
-                env_dir = save_root / f"env_{b:03d}"
-            else:
-                env_dir = self._get_next_demo_dir(save_root)
-                hdf5_names.append(env_dir.name)
-            env_dir.mkdir(parents=True, exist_ok=True)
+        stacked = {k: np.array(v) for k, v in self.save_dict.items()}
+
+        for b in range(self.num_envs):
+            env_dir = self._env_dir(save_root, b)
             for key, arr in stacked.items():
                 if key in ignore_keys:  # skip the keys for storage
                     continue
@@ -997,29 +909,22 @@ class BaseSimulator:
                         writer.append_data(depth_norm[t])
                     writer.close()
                     np.save(env_dir / f"{key}.npy", depth_seq)
-                elif key != "composed_rgb":
-                    #import pdb; pdb.set_trace()
+                else:
                     np.save(env_dir / f"{key}.npy", arr[:, b])
-            video_path = env_dir / "real_video.mp4"
-            writer = imageio.get_writer(video_path, fps=50, macro_block_size=None)
-            rgb = np.array(self.save_dict["rgb"])
-            mask = np.array(self.save_dict["segmask"])
-            bg_rgb_path = self.task_cfg.bg_rgb_path
-            self.bg_rgb = imageio.imread(bg_rgb_path)
-            for t in range(rgb.shape[0]):
-                #import ipdb; ipdb.set_trace()
-                composed = self.convert_real(mask[t, b], self.bg_rgb, rgb[t, b])    
-                self.save_dict["composed_rgb"][t, b] = composed
-                writer.append_data(composed)
-            writer.close()
-
-        if export_hdf5:
-            self.export_batch_data_to_hdf5(hdf5_names)
-        
-        json.dump(self.sim_cfgs, open(env_dir / "config.json", "w"), indent=2)
+            json.dump(self.sim_cfgs, open(env_dir / "config.json", "w"), indent=2)
         
         print("[INFO]: Demonstration is saved at: ", save_root)
         
+        # Compose real videos for all environments
+        print("\n[INFO] Composing real videos with background...")
+        for b in range(self.num_envs):
+            print(f"[INFO] Processing environment {b}/{self.num_envs}...")
+            success = self.compose_real_video(env_id=b)
+            if success:
+                print(f"[INFO] Real video composed successfully for env {b}")
+            else:
+                print(f"[WARN] Failed to compose real video for env {b}")
+
         demo_root = self.out_dir / "all_demos"
         demo_root.mkdir(parents=True, exist_ok=True)
         total_demo_id = get_next_demo_id(demo_root)
@@ -1034,249 +939,6 @@ class BaseSimulator:
         os.system(f"cp -r {save_root}/* {demo_save_path}")
         print("[INFO]: Demonstration is saved at: ", demo_save_path)
 
-    # def collect_data_from_folder(self, folder_path: Path):
-    #     """
-    #     Load `.npy` files saved by `save_data` and repopulate `self.save_dict`.
-
-    #     The provided directory may either be:
-    #       • A demo folder containing multiple `env_XXX` subdirectories, or
-    #       • A single `env_XXX` directory.
-
-    #     Args:
-    #         folder_path: Path to the data directory.
-
-    #     Returns:
-    #         A tuple ``(stacked, env_dirs)`` where ``stacked`` maps data keys to
-    #         stacked numpy arrays of shape `[T, B, ...]` (``T`` timesteps,
-    #         ``B`` environments) and ``env_dirs`` is the ordered list of
-    #         environment directories discovered in ``folder_path``.
-    #     """
-    #     folder_path = Path(folder_path)
-    #     if not folder_path.exists():
-    #         raise FileNotFoundError(f"[collect_data_from_folder] path does not exist: {folder_path}")
-    #     if folder_path.is_file():
-    #         raise NotADirectoryError(f"[collect_data_from_folder] expected a directory, got file: {folder_path}")
-
-    #     if folder_path.name.startswith("env_"):
-    #         env_dirs = [folder_path]
-    #     else:
-    #         env_dirs = sorted(
-    #             [p for p in folder_path.iterdir() if p.is_dir() and p.name.startswith("env_")],
-    #             key=lambda p: p.name,
-    #         )
-
-    #     if len(env_dirs) == 0:
-    #         raise ValueError(f"[collect_data_from_folder] no env_XXX directories found in {folder_path}")
-
-    #     aggregated: Dict[str, List[np.ndarray]] = {}
-    #     for env_dir in env_dirs:
-    #         for npy_file in sorted(env_dir.glob("*.npy")):
-    #             key = npy_file.stem
-    #             try:
-    #                 arr = np.load(npy_file, allow_pickle=False)
-    #             except Exception as exc:
-    #                 print(f"[collect_data_from_folder] skip {npy_file}: {exc}")
-    #                 continue
-    #             aggregated.setdefault(key, []).append(arr)
-
-    #     if len(aggregated) == 0:
-    #         raise ValueError(f"[collect_data_from_folder] no npy data found in {folder_path}")
-
-    #     stacked: Dict[str, np.ndarray] = {}
-    #     for key, env_slices in aggregated.items():
-    #         reference_shape = env_slices[0].shape
-    #         for idx, slice_arr in enumerate(env_slices[1:], start=1):
-    #             if slice_arr.shape != reference_shape:
-    #                 raise ValueError(
-    #                     f"[collect_data_from_folder] inconsistent shapes for '{key}': "
-    #                     f"{reference_shape} vs {slice_arr.shape} (env idx {idx})"
-    #                 )
-    #         stacked[key] = np.stack(env_slices, axis=1)  # [T, B, ...]
-
-    #     for key in self.save_dict.keys():
-    #         if key not in stacked:
-    #             self.save_dict[key] = []
-    #             continue
-    #         data = stacked[key]  # [T, B, ...]
-    #         self.save_dict[key] = [data[t] for t in range(data.shape[0])]
-
-    #     return stacked, env_dirs
-
-    def _encode_rgb_sequence(self, frames: np.ndarray) -> tuple[list[bytes], int]:
-        """Encode a sequence of RGB frames into JPEG bytes and return padded bytes."""
-        if frames.shape[0] == 0:
-            return [], 1
-
-        encoded: List[bytes] = []
-        max_len = 1
-        for frame in frames:
-            frame_np = np.asarray(frame)
-            if frame_np.dtype != np.uint8:
-                frame_np = np.clip(frame_np, 0, 255).astype(np.uint8)
-            if frame_np.ndim == 3 and frame_np.shape[2] == 4:
-                frame_np = frame_np[..., :3]
-            if frame_np.ndim == 3 and frame_np.shape[2] == 3:
-                frame_np = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
-            success, buffer = cv2.imencode(".jpg", frame_np)
-            if not success:
-                raise RuntimeError("Failed to encode RGB frame into JPEG for RoboTwin export.")
-            data_bytes = buffer.tobytes()
-            encoded.append(data_bytes)
-            if len(data_bytes) > max_len:
-                max_len = len(data_bytes)
-
-        padded = [frame_bytes.ljust(max_len, b"\0") for frame_bytes in encoded]
-        return padded, max_len
-
-    def export_batch_data_to_hdf5(self, hdf5_names: List[str]) -> int:
-        """Export buffered trajectories to RoboTwin-style HDF5 episodes."""
-        if self.data_dir is not None:
-            target_root = self.data_dir
-        else:
-            target_root = self._demo_dir() / "hdf5"
-        data_dir = Path(target_root) 
-        data_dir.mkdir(parents=True, exist_ok=True)
-
-       
-        num_envs = len(hdf5_names)
-        stacked = {k: np.array(v) for k, v in self.save_dict.items()}
-       
-        episode_names = []
-        for idx, name in enumerate(hdf5_names):
-            name = str(name)
-            episode_names.append(name.replace("demo_", "episode_"))
-        handled_keys = {
-            "rgb",
-            "depth",
-            "segmask",
-            "joint_pos",
-            "joint_vel",
-            "gripper_pos",
-            "gripper_cmd",
-            "actions",
-            "ee_pose_cam",
-        }
-
-        camera_params = self._get_camera_parameters()
-
-        for env_idx, episode_name in enumerate(episode_names):
-            hdf5_path = data_dir / f"{episode_name}.hdf5"
-            hdf5_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with h5py.File(hdf5_path, "w") as f:
-                obs_grp = f.create_group("observation")
-                camera_group_name = "head_camera" if camera_params is not None else "camera"
-                cam_grp = obs_grp.create_group(camera_group_name)
-                if camera_params is not None:
-                    intrinsics, extrinsics, resolution = camera_params
-                    cam_grp.create_dataset("intrinsics", data=intrinsics)
-                    cam_grp.create_dataset("extrinsics", data=extrinsics)
-                    cam_grp.attrs["resolution"] = resolution
-
-                if "rgb" in stacked:
-                    rgb_frames = stacked["composed_rgb"][:, env_idx]
-                    encoded_frames, max_len = self._encode_rgb_sequence(rgb_frames)
-                    dtype = f"S{max_len}" if max_len > 0 else "S1"
-                    cam_grp.create_dataset("rgb", data=np.asarray(encoded_frames, dtype=dtype))
-                    cam_grp.attrs["encoding"] = "jpeg"
-                    cam_grp.attrs["channels"] = 3
-                    cam_grp.attrs["original_shape"] = rgb_frames.shape
-                    if camera_params is None:
-                        cam_grp.create_dataset("intrinsics", data=np.zeros((3, 3), dtype=np.float32))
-                        cam_grp.create_dataset("extrinsics", data=np.zeros((4, 4), dtype=np.float32))
-
-                if "depth" in stacked:
-                    depth_ds = cam_grp.create_dataset("depth", data=stacked["depth"][:, env_idx])
-                    depth_ds.attrs["encoding"] = "float32"
-                    depth_ds.attrs["unit"] = "meter"
-                if "segmask" in stacked:
-                    seg_ds = cam_grp.create_dataset(
-                        "segmentation",
-                        data=stacked["segmask"][:, env_idx].astype(np.uint8),
-                    )
-                    seg_ds.attrs["encoding"] = "uint8"
-                    seg_ds.attrs["color_mapping"] = "instance_id"
-
-                joint_grp = f.create_group("joint_action")
-                if "joint_pos" in stacked:
-                    joint_grp.create_dataset(
-                        "joint_pos", data=stacked["joint_pos"][:, env_idx].astype(np.float32)
-                    )
-                if "joint_vel" in stacked:
-                    joint_grp.create_dataset(
-                        "joint_vel", data=stacked["joint_vel"][:, env_idx].astype(np.float32)
-                    )
-                if "gripper_cmd" in stacked:
-                    joint_grp.create_dataset(
-                        "gripper_cmd", data=stacked["gripper_cmd"][:, env_idx].astype(np.float32)
-                    )
-                if len(joint_grp.keys()) == 0:
-                    del f["joint_action"]
-
-                if "gripper_pos" in stacked:
-                    endpose_grp = f.create_group("endpose")
-                    endpose_grp.create_dataset(
-                        "gripper_pos", data=stacked["gripper_pos"][:, env_idx].astype(np.float32)
-                    )
-                    if "gripper_cmd" in stacked:
-                        endpose_grp.create_dataset(
-                            "gripper_cmd", data=stacked["gripper_cmd"][:, env_idx].astype(np.float32)
-                        )
-
-                if "actions" in stacked:
-                    f.create_dataset(
-                        "actions", data=stacked["actions"][:, env_idx].astype(np.float32)
-                    )
-                
-                if "ee_pose_cam" in stacked:
-                    endpose_grp = f.create_group("ee_pose_cam")
-                    endpose_grp.create_dataset(
-                        "ee_pose_cam", data=stacked["ee_pose_cam"][:, env_idx].astype(np.float32)
-                    )
-                extras = {}
-                for key, value in stacked.items():
-                    if key in handled_keys:
-                        continue
-
-                extras_grp = f.create_group("extras")
-                if len(extras) > 0:
-                    for key, value in extras.items():
-                        extras_grp.create_dataset(key, data=value)
-
-                if self.task_cfg is not None:
-                   
-                    extras_grp.create_dataset("task_desc", data=self.task_cfg.task_desc)
-                
-                if self.traj_cfg_list is not None:
-                    traj_i = self.traj_cfg_list[env_idx]
-                    traj_grp = extras_grp.create_group("traj")
-                    traj_grp.create_dataset("robot_pose", data=traj_i.robot_pose)
-                    traj_grp.create_dataset("pregrasp_pose", data=traj_i.pregrasp_pose)
-                    traj_grp.create_dataset("grasp_pose", data=traj_i.grasp_pose)
-
-
-                frame_count = stacked["rgb"].shape[0]
-                meta_grp = f.create_group("meta")
-                meta_grp.attrs["env_index"] = int(env_idx)
-                meta_grp.attrs["frame_dt"] = float(self.sim_dt)
-                meta_grp.attrs["frame_count"] = int(frame_count)
-                meta_grp.attrs["source"] = "OpenReal2Sim"
-                meta_grp.attrs["episode_name"] = episode_name
-                meta_grp.create_dataset("frame_indices", data=np.arange(frame_count, dtype=np.int32))
-
-        print(f"[INFO]: Exported {num_envs} HDF5 episodes to {data_dir}")
-        return num_envs
-
-
-
-    def convert_real(self,segmask, bg_rgb, fg_rgb):
-        #import pdb; pdb.set_trace()
-        segmask_2d = segmask[..., 0]
-        composed = bg_rgb.copy()
-        composed[segmask_2d] = fg_rgb[segmask_2d]
-        return composed
-
-    
     def delete_data(self):
         save_path = self._demo_dir()
         failure_root = self.out_dir / self.img_folder / "demos_failures"
@@ -1287,48 +949,3 @@ class BaseSimulator:
         for key in self.save_dict.keys():
             self.save_dict[key] = []
         print("[INFO]: Clear up the folder: ", save_path)
-
-    def _quat_to_rot(self, quat: Sequence[float]) -> np.ndarray:
-        w, x, y, z = quat
-        rot = np.array(
-            [
-                [1 - 2 * (y ** 2 + z ** 2), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-                [2 * (x * y + z * w), 1 - 2 * (x ** 2 + z ** 2), 2 * (y * z - x * w)],
-                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x ** 2 + y ** 2)],
-            ],
-            dtype=np.float32,
-        )
-        return rot
-
-    def _get_camera_parameters(self) -> Optional[Tuple[np.ndarray, np.ndarray, Tuple[int, int]]]:
-        if self.task_cfg is None:
-            return None
-        camera_info = getattr(self.task_cfg, "camera_info", None)
-        if camera_info is None:
-            return None
-
-        intrinsics = np.array(
-            [
-                [camera_info.fx, 0.0, camera_info.cx],
-                [0.0, camera_info.fy, camera_info.cy],
-                [0.0, 0.0, 1.0],
-            ],
-            dtype=np.float32,
-        )
-
-        if getattr(camera_info, "camera_opencv_to_world", None) is not None:
-            extrinsics = np.array(camera_info.camera_opencv_to_world, dtype=np.float32)
-        else: 
-            extrinsics = np.eye(4, dtype=np.float32)
-            if getattr(camera_info, "camera_heading_wxyz", None) is not None:
-                rot = self._quat_to_rot(camera_info.camera_heading_wxyz)
-            else:
-                rot = np.eye(3, dtype=np.float32)
-            extrinsics[:3, :3] = rot
-            if getattr(camera_info, "camera_position", None) is not None:
-                extrinsics[:3, 3] = np.array(camera_info.camera_position, dtype=np.float32)
-        resolution = (
-            int(camera_info.width),
-            int(camera_info.height),
-        )
-        return intrinsics, extrinsics, resolution
