@@ -21,7 +21,13 @@
 	url = git@github.com:PointsCoder/graspnetAPI.git
 [submodule "third_party/MinkowskiEngine"] # for sparse convolution operations [motion]
 	path = third_party/MinkowskiEngine
-	url = https://github.com/NVIDIA/MinkowskiEngine.git
+	url = git@github.com:DynamoDuan/MinkowskiEngine.git
 [submodule "third_party/WiLoR"] # for hand extraction [motion]
 	path = third_party/WiLoR
 	url = git@github.com:DynamoDuan/WiLoR.git
+[submodule "third_party/curobo"]
+	path =  third_party/curobo
+	url = https://github.com/NVlabs/curobo.git
+[submodule "third_party/IsaacLab"]
+	path =  third_party/IsaacLab
+	url = git@github.com:PointsCoder/IsaacLab.git
