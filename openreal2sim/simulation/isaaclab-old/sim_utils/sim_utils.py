@@ -38,8 +38,6 @@ def load_sim_parameters(basedir, key) -> dict:
     exp_config = compose_configs(key, exp_config)
 
     # cam configs
-    manip_object_id = scene_json["manipulated_oid"]
-    object_center = scene_json["objects"][manip_object_id]["object_center"]
     cam_cfg = {
         "width":  int(scene_json["camera"]["width"]),
         "height": int(scene_json["camera"]["height"]),
@@ -52,7 +50,7 @@ def load_sim_parameters(basedir, key) -> dict:
             "move_to":      list(scene_json["camera"]["camera_position"]),
             "scene_min":    list(scene_json["aabb"]["scene_min"]),
             "scene_max":    list(scene_json["aabb"]["scene_max"]),
-            "object_center":list(object_center),
+            "object_center":list(scene_json["objects"]["1"]["object_center"]),
         },
     }
 
@@ -69,33 +67,23 @@ def load_sim_parameters(basedir, key) -> dict:
     }
 
     # demo configs
-   
     goal_offset = exp_config.get("goal_offset", 0)
     grasp_idx = exp_config.get("grasp_idx", -1)
     grasp_pre = exp_config.get("grasp_pre", None)
     grasp_delta = exp_config.get("grasp_delta", None)
-    manip_object_id = scene_json["manipulated_oid"]
-    traj_key = exp_config.get("traj_key", "fdpose_trajs")
-    if scene_json["objects"][manip_object_id].get("final_trajs", None) is not None:
-        traj_path = scene_json["objects"][manip_object_id]["final_trajs"]
-    else:
-        traj_path = scene_json["objects"][manip_object_id]["trajs"][traj_key]
-    if scene_json["objects"][manip_object_id].get("rescored_grasps", None) is not None:
-        grasp_path = scene_json["objects"][manip_object_id]["rescored_grasps"]
-    else:
-        grasp_path = scene_json["objects"][manip_object_id].get("grasps", None)
-    task_type = scene_json["task_type"]
-    final_gripper_closed = scene_json["gripper_closed"]
+    traj_key = exp_config.get("traj_key", "fdpose_trajs") # "fdpose_trajs", "simple_trajs", "hybrid_trajs"
+    manip_object_id = exp_config.get("manip_object_id", "1")
+    traj_path = scene_json["objects"][manip_object_id][traj_key]
+    grasp_path = scene_json["objects"][manip_object_id].get("grasps", None)
     demo_cfg = {
         "manip_object_id": manip_object_id,
+        "traj_key": traj_key,
         "traj_path": traj_path,
         "goal_offset": goal_offset,
         "grasp_idx": grasp_idx,
         "grasp_pre": grasp_pre,
         "grasp_delta": grasp_delta,
         "grasp_path": grasp_path,
-        "final_gripper_closed": final_gripper_closed,
-        "task_type": task_type,
     }
 
     # physics configs
