@@ -53,8 +53,6 @@ class SceneCtx:
     obj_physics: List[Dict] = None
     use_ground_plane: bool = False
     ground_z: Optional[float] = None
-    oid_to_index: Optional[Dict[str, int]] = None  # Maps oid (str) to prim index
-    index_to_oid: Optional[Dict[int, str]] = None  # Maps prim index to oid (str)
 
 
 _SCENE_CTX: Optional[SceneCtx] = None
@@ -266,23 +264,7 @@ def init_scene_from_scene_dict(
     If robot pose not provided, sample one with robot_placement_candidates_v2().
     """
     cam_dict = cfgs["cam_cfg"]
-    
-    # Sort objects by oid to ensure consistent ordering
-    # scene["objects"] keys are oid strings (e.g., "1", "2", ...)
-    sorted_objects = sorted(scene["objects"].items(), key=lambda x: int(x[0]))
-    
-    # Build oid <-> index mapping
-    oid_to_index = {}
-    index_to_oid = {}
-    obj_paths = []
-    obj_physics_list = []
-    
-    for index, (oid_str, obj_data) in enumerate(sorted_objects):
-        oid_to_index[oid_str] = index
-        index_to_oid[index] = oid_str
-        obj_paths.append(obj_data["usd"])
-        obj_physics_list.append(obj_data.get("physics", None))
-    
+    obj_paths = [o["usd"] for o in scene["objects"].values()]
     background_path = scene["background"]["usd"]
 
     # overwrite physics
@@ -290,9 +272,9 @@ def init_scene_from_scene_dict(
     obj_physics = cfgs["physics_cfg"]["obj_physics"]
     bg_physics = cfgs["physics_cfg"]["bg_physics"]
     if obj_physics is None:
-        obj_physics = obj_physics_list  # Use physics from sorted objects
+        obj_physics = [o.get("physics", None) for o in scene["objects"].values()]
     elif isinstance(obj_physics, dict):
-        obj_physics = [obj_physics for _ in range(len(obj_paths))]
+        obj_physics = [obj_physics for _ in scene["objects"].values()]
     elif isinstance(obj_physics, list):
         assert len(obj_physics) == len(scene["objects"]), (
             "obj_physics must be a list of the same length as scene['objects'] if provided."
@@ -328,8 +310,6 @@ def init_scene_from_scene_dict(
         obj_physics=list(obj_physics),
         use_ground_plane=use_ground_plane,
         ground_z=ground_z,
-        oid_to_index=oid_to_index,
-        index_to_oid=index_to_oid,
     )
 
     return {
@@ -413,51 +393,6 @@ def load_scene_json(key: str) -> dict:
     if not scene_path.exists():
         raise FileNotFoundError(scene_path)
     return json.load(open(scene_path))
-
-
-def get_prim_name_from_oid(oid: str | int) -> str:
-    """
-    Get the prim name (e.g., "object_00") from object id.
-    
-    Args:
-        oid: Object ID as string (e.g., "1") or integer (e.g., 1)
-        
-    Returns:
-        Prim name string (e.g., "object_00")
-    """
-    assert _SCENE_CTX is not None, "init_scene_from_scene_dict must be called first."
-    oid_str = str(oid)
-    if _SCENE_CTX.oid_to_index is None:
-        raise ValueError("oid_to_index mapping not available. Scene may not have been initialized from scene dict.")
-    index = _SCENE_CTX.oid_to_index.get(oid_str)
-    if index is None:
-        raise ValueError(f"OID '{oid_str}' not found in scene. Available OIDs: {list(_SCENE_CTX.oid_to_index.keys())}")
-    return f"object_{index:02d}"
-
-
-def get_oid_from_prim_name(prim_name: str) -> str:
-    """
-    Get the object id from prim name (e.g., "object_00" -> "1").
-    
-    Args:
-        prim_name: Prim name string (e.g., "object_00")
-        
-    Returns:
-        OID as string (e.g., "1")
-    """
-    assert _SCENE_CTX is not None, "init_scene_from_scene_dict must be called first."
-    if not prim_name.startswith("object_"):
-        raise ValueError(f"Invalid prim name format: {prim_name}")
-    try:
-        index = int(prim_name.split("_")[1])
-    except (IndexError, ValueError):
-        raise ValueError(f"Invalid prim name format: {prim_name}")
-    if _SCENE_CTX.index_to_oid is None:
-        raise ValueError("index_to_oid mapping not available. Scene may not have been initialized from scene dict.")
-    oid = _SCENE_CTX.index_to_oid.get(index)
-    if oid is None:
-        raise ValueError(f"Index {index} not found in scene. Available indices: {list(_SCENE_CTX.index_to_oid.keys())}")
-    return oid
 
 
 def make_env(

@@ -23,7 +23,7 @@ parser.add_argument("--sensitivity", type=float, default=1.0)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
-args_cli.headless = True  # headless mode for batch execution
+args_cli.headless = False  # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
