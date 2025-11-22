@@ -140,8 +140,7 @@ def propagate_maks(segmented_video: object, output_directory: Path):
 def mask_propagation(keys, key_scene_dicts):
     for key in keys:
         print("propagating for", key)
-        with open(OUT_ROOT/key/"scene/scene.pkl", "rb") as f:
-            scene = pickle.load(f)
+        scene = key_scene_dicts[key]
         propagate_maks(scene, OUT_ROOT/key)
         key_scene_dicts[key] = scene
     return key_scene_dicts
@@ -152,5 +151,10 @@ if __name__ == "__main__":
     cfg_path = base_dir / "config" / "config.yaml"
     cfg = yaml.safe_load(cfg_path.open("r"))
     keys = cfg["keys"]
-    mask_propagation(keys)
+    key_scene_dicts = {}
+    for key in keys:
+        with open(OUT_ROOT/key/"scene/scene.pkl", "rb") as f:
+            scene = pickle.load(f)
+        key_scene_dicts[key] = scene
+    mask_propagation(keys, key_scene_dicts)
     

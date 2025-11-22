@@ -164,10 +164,12 @@ def visualize_mesh_thickness_with_pointmap(scene_dir: Path,
     o3d.io.write_point_cloud(str(out_file), pcd)
     print(f"✓ thickness debug cloud saved: {out_file}")
 
+
 # ──────────────────── core ─────────────────────
 def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
     base_dir = Path.cwd()
     for key in keys:
+        print(f"[Info] Processing {key}...\n")
         scene_dict = key_scene_dicts[key]
         cfg = key_cfgs[key]
         recon_dir = base_dir / f'outputs/{key}/reconstruction'
@@ -190,7 +192,7 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(plane_pts)
         plane_model, _ = pcd.segment_plane(distance_threshold=0.01,
-                                           ransac_n=3, num_iterations=1000)
+                                        ransac_n=10, num_iterations=2000)
         a, b, c, d = plane_model
         normal = np.array([a, b, c], np.float64)
         normal /= (np.linalg.norm(normal) + 1e-12)
@@ -205,11 +207,12 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         p0 = plane_pts.mean(axis=0)
         signed = np.median((obj_pts - p0) @ normal)
         if signed < 0:
+            print(f"[Info] Flipping normal direction for {key} because the median signed distance is negative")
             normal = -normal
 
         save_plane_normal_path = recon_dir / "ground_normal.ply"
         visualize_plane_normal(plane_pts, normal, save_plane_normal_path,
-                               num_arrow_pts=200, normal_length=0.5)
+                            num_arrow_pts=200, normal_length=0.5)
 
         # background mesh thicken direction is opposite to ground normal (downward)
         direction = -normal
@@ -227,7 +230,7 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
             orig_F = 2 * (H - 1) * (W - 1)
             new_F  = 2 * (H2 - 1) * (W2 - 1)
             print(f"[i] simplified grid: ({H},{W}) -> ({H2},{W2}) "
-                  f"faces ~ {orig_F} -> {new_F}")
+                f"faces ~ {orig_F} -> {new_F}")
 
         # construct mesh
         verts = pmap_s[..., :3].reshape(-1, 3)
@@ -236,18 +239,28 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
             base = i * W2
             for j in range(W2 - 1):
                 faces += [[base + j, base + j + 1, base + j + W2],
-                          [base + j + 1, base + j + W2 + 1, base + j + W2]]
+                        [base + j + 1, base + j + W2 + 1, base + j + W2]]
         faces = np.asarray(faces, dtype=np.int32)
 
         uu, vv = np.meshgrid(np.linspace(0, 1, W2, dtype=np.float32),
-                             np.linspace(1, 0, H2, dtype=np.float32))
+                            np.linspace(1, 0, H2, dtype=np.float32))
         uv = np.stack([uu, vv], -1).reshape(-1, 2)
 
         mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+        
+        face_normals = mesh.face_normals
+        if len(face_normals) > 0:
+            dot_products = np.dot(face_normals, normal)
+            avg_dot = np.mean(dot_products)
+            if avg_dot < 0:
+                print("[Info] Flipping face orientation to align with ground normal")
+                mesh.faces = np.flip(mesh.faces, axis=1)
+        
         mesh.visual = trimesh.visual.TextureVisuals(uv=uv, image=img)
 
         # flipping mesh normals for correct texturing
-        mesh.faces = mesh.faces[:, ::-1]
+        if signed > 0:
+            mesh.faces = mesh.faces[:, ::-1]
 
         thickness = cfg["bg_mesh_thickness"]
         mesh_thick = add_thickness_below_mesh_preserve_texture(mesh, thickness, direction)
@@ -272,6 +285,7 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
             pickle.dump(scene_dict, f)
 
         print(f"[Info] [{key}] scene_dict updated.")
+
     
     return key_scene_dicts
 

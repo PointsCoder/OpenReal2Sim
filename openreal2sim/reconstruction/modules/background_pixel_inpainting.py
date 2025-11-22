@@ -34,6 +34,9 @@ sys.path.append(repo_dir)
 from objectclear.pipelines import ObjectClearPipeline
 from objectclear.utils import resize_by_short_side
 
+def dilate_mask(mask, kernel_size=3):
+    return cv2.dilate(mask, np.ones((kernel_size, kernel_size), np.uint8), iterations=1)
+
 def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
     
     # hyperparameters
@@ -120,6 +123,8 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
 
             # Model was trained on 512 short side
             image = resize_by_short_side(image, 512, resample=Image.BICUBIC)
+            mask = dilate_mask(np.array(mask), kernel_size=10)
+            mask = Image.fromarray(mask)
             mask = resize_by_short_side(mask, 512, resample=Image.NEAREST)
 
             w, h = image.size
