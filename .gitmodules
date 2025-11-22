@@ -27,7 +27,7 @@
 	url = git@github.com:DynamoDuan/WiLoR.git
 [submodule "third_party/curobo"]
 	path =  third_party/curobo
-	url = https://github.com/NVlabs/curobo.git
+	url = git@github.com:DynamoDuan/curobo.git
 [submodule "third_party/IsaacLab"]
 	path =  third_party/IsaacLab
 	url = git@github.com:PointsCoder/IsaacLab.git
