@@ -59,7 +59,7 @@ class HeuristicManipulation(BaseSimulator):
       • Every attempt does reset → pre → grasp → close → lift → check;
       • Early stops when any env succeeds; then re-exec for logging.
     """
-    def __init__(self, sim, scene, sim_cfgs: dict, args, out_dir: Path, img_folder: str, demo_dir: Path, data_dir: Path):
+    def __init__(self, sim, scene, sim_cfgs: dict, args, out_dir: Path, img_folder: str, data_dir: Path):
         robot_pose = torch.tensor(
             sim_cfgs["robot_cfg"]["robot_pose"],
             dtype=torch.float32,
@@ -68,7 +68,7 @@ class HeuristicManipulation(BaseSimulator):
         super().__init__(
             sim=sim, sim_cfgs=sim_cfgs, scene=scene, args=args_cli,
             robot_pose=robot_pose, cam_dict=sim_cfgs["cam_cfg"],
-            out_dir=out_dir, img_folder=img_folder, demo_dir = demo_dir, data_dir = data_dir,
+            out_dir=out_dir, img_folder=img_folder, data_dir = data_dir,
             enable_motion_planning=True,
             set_physics_props=True, debug_level=0,
         )
@@ -147,11 +147,13 @@ class HeuristicManipulation(BaseSimulator):
         # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
         obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
 
-        T_ee_in_obj = []
+        T_ee_ws = []
+        T_obj_ws = []
         for b in range(B):
             T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
             T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-            T_ee_in_obj.append((np.linalg.inv(T_obj_w) @ T_ee_w).astype(np.float32))
+            T_ee_ws.append(T_ee_w)
+            T_obj_ws.append(T_obj_w)
 
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
@@ -164,7 +166,13 @@ class HeuristicManipulation(BaseSimulator):
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
                 T_obj_goal = obj_goal_all[b, t]            # (4,4)
-                T_ee_goal  = T_obj_goal @ T_ee_in_obj[b]   # (4,4)
+                trans_offset = T_obj_goal - T_obj_ws[b]
+                T_ee_goal  = T_ee_ws[b] + trans_offset
+                original_R = T_obj_ws[b][:3, :3]
+                new_R = T_ee_goal[:3, :3]
+                original_ee_R = T_ee_ws[b][:3, :3]
+                new_ee_R = new_R @ np.linalg.inv(original_R) @ original_ee_R
+                T_ee_goal[:3, :3] = new_ee_R
                 pos_b, quat_b = mat_to_pose(T_ee_goal)
                 goal_pos_list.append(pos_b.astype(np.float32))
                 goal_quat_list.append(quat_b.astype(np.float32))
@@ -239,11 +247,13 @@ class HeuristicManipulation(BaseSimulator):
         # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
         obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
 
-        T_ee_in_obj = []
+        T_ee_ws = []
+        T_obj_ws = []
         for b in range(B):
             T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
             T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-            T_ee_in_obj.append((np.linalg.inv(T_obj_w) @ T_ee_w).astype(np.float32))
+            T_ee_ws.append(T_ee_w)
+            T_obj_ws.append(T_obj_w)
 
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
@@ -256,11 +266,14 @@ class HeuristicManipulation(BaseSimulator):
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
                 T_obj_goal = obj_goal_all[b, t]            # (4,4)
-                T_ee_goal  = T_obj_goal @ T_ee_in_obj[b]   # (4,4)
+                trans_offset = T_obj_goal - T_obj_ws[b]
+                T_ee_goal  = T_ee_ws[b] + trans_offset
                 pos_b, quat_b = mat_to_pose(T_ee_goal)
 
                 goal_pos_list.append(pos_b.astype(np.float32))
                 goal_quat_list.append(quat_b.astype(np.float32))
+
+            print()
 
             goal_pos  = torch.as_tensor(np.stack(goal_pos_list),  dtype=torch.float32, device=self.sim.device)
             goal_quat = ee_w[:, 3:7]
@@ -271,6 +284,9 @@ class HeuristicManipulation(BaseSimulator):
                 root_w[:, :3], root_w[:, 3:7], goal_pos, goal_quat
             )
             joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False)
+
+            print(obj_goal_all[:,t])
+            print(self.object_prim.data.root_state_w[:, :7])
             self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
         is_success = self.is_success()
         joint_pos = self.wait(gripper_open=not self.final_gripper_closed, steps=30)
@@ -605,6 +621,7 @@ class HeuristicManipulation(BaseSimulator):
         self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.ones((B, 1))], axis=1))
 
         # object goal following
+        print(f"[INFO] lifting up by {self.goal_offset[2]} meters")
         self.lift_up(height=self.goal_offset[2], gripper_open=False, steps=8)
         #jp = self.follow_object_goals(jp, sample_step=5, visualize=True)
         if self.task_type == "simple_pick_place" or self.task_type == "simple_pick":
@@ -794,7 +811,6 @@ def sim_heuristic_manip(keys: list[str], args_cli: argparse.Namespace, config_pa
     for key in keys:
         args_cli.key = key
         local_img_folder = key
-        demo_dir = BASE_DIR / "tasks" / key / "demos"
         data_dir = BASE_DIR / "h5py" / key 
         
         # Load config from running_cfg, allow CLI args to override
@@ -815,7 +831,7 @@ def sim_heuristic_manip(keys: list[str], args_cli: argparse.Namespace, config_pa
         my_sim = HeuristicManipulation(
             sim, scene, sim_cfgs=sim_cfgs,
             args=args_cli, out_dir=local_out_dir, img_folder=local_img_folder,
-            demo_dir = demo_dir, data_dir = data_dir )
+            data_dir = data_dir )
 
         demo_root = (local_out_dir / key / "demos").resolve()
         success = False

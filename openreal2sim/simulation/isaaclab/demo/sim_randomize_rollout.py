@@ -140,7 +140,7 @@ class RandomizeExecution(BaseSimulator):
       • Every attempt does reset → pre → grasp → close → lift → check;
       • Early stops when any env succeeds; then re-exec for logging.
     """
-    def __init__(self, sim, scene, sim_cfgs: dict, demo_dir: Path, data_dir: Path, record: bool = True, args_cli: Optional[argparse.Namespace] = None, bg_rgb: Optional[np.ndarray] = None):
+    def __init__(self, sim, scene, sim_cfgs: dict, data_dir: Path, record: bool = True, args_cli: Optional[argparse.Namespace] = None, bg_rgb: Optional[np.ndarray] = None):
         robot_pose = torch.tensor(
             sim_cfgs["robot_cfg"]["robot_pose"],
             dtype=torch.float32,
@@ -151,7 +151,6 @@ class RandomizeExecution(BaseSimulator):
             sim=sim, sim_cfgs=sim_cfgs, scene=scene, args=args_cli,
             robot_pose=robot_pose, cam_dict=sim_cfgs["cam_cfg"],
             out_dir=out_dir, img_folder=args_cli.key, data_dir=data_dir,
-            demo_dir=demo_dir,
             enable_motion_planning=True,
             set_physics_props=True, debug_level=0,
         )
@@ -274,11 +273,13 @@ class RandomizeExecution(BaseSimulator):
         # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
         obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
 
-        T_ee_in_obj = []
+        T_ee_ws = []
+        T_obj_ws = []
         for b in range(B):
             T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
             T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-            T_ee_in_obj.append((np.linalg.inv(T_obj_w) @ T_ee_w).astype(np.float32))
+            T_ee_ws.append(T_ee_w)
+            T_obj_ws.append(T_obj_w)
 
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
@@ -291,7 +292,13 @@ class RandomizeExecution(BaseSimulator):
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
                 T_obj_goal = obj_goal_all[b, t]            # (4,4)
-                T_ee_goal  = T_obj_goal @ T_ee_in_obj[b]   # (4,4)
+                trans_offset = T_obj_goal - T_obj_ws[b]
+                T_ee_goal  = T_ee_ws[b] + trans_offset
+                original_R = T_obj_ws[b][:3, :3]
+                new_R = T_ee_goal[:3, :3]
+                original_ee_R = T_ee_ws[b][:3, :3]
+                new_ee_R = new_R @ np.linalg.inv(original_R) @ original_ee_R
+                T_ee_goal[:3, :3] = new_ee_R
                 pos_b, quat_b = mat_to_pose(T_ee_goal)
                 goal_pos_list.append(pos_b.astype(np.float32))
                 goal_quat_list.append(quat_b.astype(np.float32))
@@ -326,11 +333,13 @@ class RandomizeExecution(BaseSimulator):
         # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
         obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
 
-        T_ee_in_obj = []
+        T_ee_ws = []
+        T_obj_ws = []
         for b in range(B):
             T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
             T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-            T_ee_in_obj.append((np.linalg.inv(T_obj_w) @ T_ee_w).astype(np.float32))
+            T_ee_ws.append(T_ee_w)
+            T_obj_ws.append(T_obj_w)
 
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
@@ -343,11 +352,13 @@ class RandomizeExecution(BaseSimulator):
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
                 T_obj_goal = obj_goal_all[b, t]            # (4,4)
-                T_ee_goal  = T_obj_goal @ T_ee_in_obj[b]   # (4,4)
+                trans_offset = T_obj_goal - T_obj_ws[b]
+                T_ee_goal  = T_ee_ws[b] + trans_offset
                 pos_b, quat_b = mat_to_pose(T_ee_goal)
-
                 goal_pos_list.append(pos_b.astype(np.float32))
                 goal_quat_list.append(quat_b.astype(np.float32))
+
+      
 
             goal_pos  = torch.as_tensor(np.stack(goal_pos_list),  dtype=torch.float32, device=self.sim.device)
             goal_quat = ee_w[:, 3:7]
@@ -358,6 +369,9 @@ class RandomizeExecution(BaseSimulator):
                 root_w[:, :3], root_w[:, 3:7], goal_pos, goal_quat
             )
             joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False, record = self.record)
+
+            print(obj_goal_all[:,t])
+            print(self.object_prim.data.root_state_w[:, :7])
             self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
         is_grasp_success = self.is_grasp_success()
         for b in range(B):
@@ -519,7 +533,7 @@ class RandomizeExecution(BaseSimulator):
         self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.ones((B, 1))], axis=1))
 
         # object goal following
-        # self.lift_up(height=0.05, gripper_open=False)
+        self.lift_up(height=self.goal_offset[2], gripper_open=False, steps=8)
         if self.task_type == "simple_pick_place" or self.task_type == "simple_pick":
             jp, is_success = self.follow_object_centers(jp, sample_step=1, visualize=True)
         elif self.task_type == "targetted_pick_place":
@@ -577,7 +591,6 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
         args_cli.key = key
         sim_cfgs = load_sim_parameters(BASE_DIR, key)
       
-        demo_dir = BASE_DIR / "tasks" / key / "demos"
         data_dir = BASE_DIR / "h5py" / key
         current_timestep = 0
         env, _ = make_env(
@@ -588,8 +601,8 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
         sim, scene = env.sim, env.scene
         bg_rgb_path = task_cfg.bg_rgb_path
 
-        bg_rgb = imageio.imread(bg_rgb_path)
-        my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, demo_dir=demo_dir, data_dir=data_dir, record=True, args_cli=args_cli, bg_rgb=bg_rgb)
+        brecordg_rgb = imageio.imread(bg_rgb_path)
+        my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, data_dir=data_dir, =True, args_cli=args_cli, bg_rgb=bg_rgb)
         my_sim.task_cfg = task_cfg
         while len(success_trajectory_config_list) < total_require_traj_num:
             traj_cfg_list = random_task_cfg_list[current_timestep: current_timestep + num_envs]
@@ -607,7 +620,7 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
 
         # for timestep in range(len(success_trajectory_config_list),10):
         #     traj_cfg_list = random_task_cfg_list[timestep: min(timestep + 10, len(random_task_cfg_list))]
-        #     my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, traj_cfg_list=traj_cfg_list, demo_dir=demo_dir, record=True)
+        #     my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, traj_cfg_list=traj_cfg_list, record=True)
         #     success_env_ids = my_sim.inference()
         #     del my_sim
         #     torch.cuda.empty_cache()

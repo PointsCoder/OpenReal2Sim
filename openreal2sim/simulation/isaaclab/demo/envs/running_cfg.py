@@ -10,8 +10,8 @@ class RandomizerConfig:
     """Configuration bundle for `Randomizer.generate_randomized_scene_cfg`."""
 
     grid_dist: float = 0.03
-    grid_num: int = 3
-    angle_random_range: float = math.pi / 20.0
+    grid_num: int = 10
+    angle_random_range: float = math.pi / 10.0
     angle_random_num: int = 10
     traj_randomize_num: int = 20
     scene_randomize_num: int = 20

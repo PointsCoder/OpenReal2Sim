@@ -142,9 +142,7 @@ class BaseSimulator:
         self.cam_dict = cam_dict
         self.out_dir: Path = out_dir
         self.img_folder: str = img_folder
-        self.defined_demo_dir: Optional[Path] = demo_dir
-        if self.defined_demo_dir is not None:
-            self.defined_demo_dir.mkdir(parents=True, exist_ok=True)
+       
         
         self.data_dir: Optional[Path] = data_dir
         if self.data_dir is not None:
@@ -501,98 +499,6 @@ class BaseSimulator:
             last = joint_pos_des
         return last, success
 
-    def compose_real_video(self, env_id: int = 0):
-        """
-        Composite simulated video onto real background using mask-based rendering.
-        
-        Args:
-            env_id: Environment ID to process
-        """
-    
-        def pad_to_even(frame):
-            """Pad frame to even dimensions for video encoding."""
-            H, W = frame.shape[:2]
-            pad_h = H % 2
-            pad_w = W % 2
-            if pad_h or pad_w:
-                pad = ((0, pad_h), (0, pad_w)) if frame.ndim == 2 else ((0, pad_h), (0, pad_w), (0, 0))
-                frame = np.pad(frame, pad, mode='edge')
-            return frame
-        
-        # Construct paths
-        base_path = self.out_dir / self.img_folder
-        demo_path = self._demo_dir() / f"env_{env_id:03d}"
-        
-        SIM_VIDEO_PATH = demo_path / "sim_video.mp4"
-        MASK_VIDEO_PATH = demo_path / "mask_video.mp4"
-        REAL_BACKGROUND_PATH = base_path / "simulation" / "background.jpg"
-        OUTPUT_PATH = demo_path / "real_video.mp4"
-        
-        # Check if required files exist
-        if not SIM_VIDEO_PATH.exists():
-            print(f"[WARN] Simulated video not found: {SIM_VIDEO_PATH}")
-            return False
-        if not MASK_VIDEO_PATH.exists():
-            print(f"[WARN] Mask video not found: {MASK_VIDEO_PATH}")
-            return False
-        if not REAL_BACKGROUND_PATH.exists():
-            print(f"[WARN] Real background not found: {REAL_BACKGROUND_PATH}")
-            return False
-        
-        # Load real background image
-        print(f"[INFO] Loading real background: {REAL_BACKGROUND_PATH}")
-        real_img = np.array(Image.open(REAL_BACKGROUND_PATH))
-        
-        H, W, _ = real_img.shape
-        print(f"[INFO] Background size: {W}x{H}")
-        
-        # Open videos
-        print(f"[INFO] Loading simulated video: {SIM_VIDEO_PATH}")
-        rgb_reader = imageio.get_reader(SIM_VIDEO_PATH)
-        print(f"[INFO] Loading mask video: {MASK_VIDEO_PATH}")
-        mask_reader = imageio.get_reader(MASK_VIDEO_PATH)
-        
-        # Get metadata from original video
-        N = rgb_reader.count_frames()
-        fps = rgb_reader.get_meta_data()['fps']
-        print(f"[INFO] Processing {N} frames at {fps} FPS...")
-        
-        composed_images = []
-        
-        for i in range(N):
-            # Read frames
-            sim_rgb = rgb_reader.get_data(i)
-            sim_mask = mask_reader.get_data(i)
-            
-            # Convert mask to binary (grayscale > 127 = foreground)
-            if sim_mask.ndim == 3:
-                sim_mask = cv2.cvtColor(sim_mask, cv2.COLOR_RGB2GRAY)
-            sim_mask = sim_mask > 127
-            
-            # Resize sim frames to match real background if needed
-            if sim_rgb.shape[:2] != (H, W):
-                sim_rgb = cv2.resize(sim_rgb, (W, H))
-                sim_mask = cv2.resize(sim_mask.astype(np.uint8), (W, H)) > 0
-            
-            # Compose: real background + simulated foreground (where mask is True)
-            composed = real_img.copy()
-            composed = pad_to_even(composed)
-            composed[sim_mask] = sim_rgb[sim_mask]
-            
-            composed_images.append(composed)
-            
-            if (i + 1) % 10 == 0:
-                print(f"[INFO] Processed {i + 1}/{N} frames")
-        
-        # Save composed video
-        print(f"[INFO] Saving composed video to: {OUTPUT_PATH}")
-        writer = imageio.get_writer(OUTPUT_PATH, fps=fps, macro_block_size=None)
-        for frame in composed_images:
-            writer.append_data(frame)
-        writer.close()
-        
-        print(f"[INFO] Done! Saved {len(composed_images)} frames to {OUTPUT_PATH} at {fps} FPS")
-        return True
     # ---------- Visualization ----------
     def show_goal(self, pos, quat):
         """
@@ -930,12 +836,6 @@ class BaseSimulator:
 
                         
   
-    def _demo_dir(self) -> Path:
-        if self.defined_demo_dir is not None:
-            return self.defined_demo_dir
-        else:
-            return self.out_dir / self.img_folder / "demos" / f"demo_{self.demo_id}"
-
     def _env_dir(self, base: Path, b: int) -> Path:
         d = base / f"env_{b:03d}"
         d.mkdir(parents=True, exist_ok=True)
@@ -943,95 +843,73 @@ class BaseSimulator:
     
     def _get_next_demo_dir(self, base: Path) -> Path:
         already_existing_num = len(list(base.iterdir()))
-        return base / f"demo_{already_existing_num:03d}"
+        return base / f"demo_{already_existing_num:03d}.mp4"
 
     def save_data(self, ignore_keys: List[str] = [], env_ids: Optional[List[int]] = None, export_hdf5: bool = False):
-        save_root = self._demo_dir()
-        save_root.mkdir(parents=True, exist_ok=True)
         
         stacked = {k: np.array(v) for k, v in self.save_dict.items()}
         if env_ids is None:
             env_ids = self._all_env_ids.cpu().numpy()
-
+        video_dir = self.out_dir / self.img_folder / "videos"
+        video_dir.mkdir(parents=True, exist_ok=True)
         composed_rgb = copy.deepcopy(stacked["rgb"])
         self.save_dict["composed_rgb"] = composed_rgb
         hdf5_names = []
         for b in env_ids:
-            if self.defined_demo_dir is  None:
-                env_dir = save_root / f"env_{b:03d}"
-            else:
-                env_dir = self._get_next_demo_dir(save_root)
-                hdf5_names.append(env_dir.name)
-            env_dir.mkdir(parents=True, exist_ok=True)
+            demo_path = self._get_next_demo_dir(video_dir)
+            hdf5_names.append(demo_path.name.replace(".mp4", ""))
+       
+          
             for key, arr in stacked.items():
-                if key in ignore_keys:  # skip the keys for storage
-                    continue
-                if key == "rgb":
-                    video_path = env_dir / "sim_video.mp4"
-                    writer = imageio.get_writer(
-                        video_path, fps=50, macro_block_size=None
-                    )
-                    for t in range(arr.shape[0]):
-                        writer.append_data(arr[t, b])
-                    writer.close()
-                elif key == "segmask":
-                    video_path = env_dir / "mask_video.mp4"
-                    writer = imageio.get_writer(
-                        video_path, fps=50, macro_block_size=None
-                    )
-                    for t in range(arr.shape[0]):
-                        writer.append_data((arr[t, b].astype(np.uint8) * 255))
-                    writer.close()
-                elif key == "depth":
-                    depth_seq = arr[:, b]
-                    flat = depth_seq[depth_seq > 0]
-                    max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
-                    depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(
-                        np.uint8
-                    )
-                    video_path = env_dir / "depth_video.mp4"
-                    writer = imageio.get_writer(
-                        video_path, fps=50, macro_block_size=None
-                    )
-                    for t in range(depth_norm.shape[0]):
-                        writer.append_data(depth_norm[t])
-                    writer.close()
-                    np.save(env_dir / f"{key}.npy", depth_seq)
-                elif key != "composed_rgb":
-                    #import pdb; pdb.set_trace()
-                    np.save(env_dir / f"{key}.npy", arr[:, b])
-            video_path = env_dir / "real_video.mp4"
-            writer = imageio.get_writer(video_path, fps=50, macro_block_size=None)
-            rgb = np.array(self.save_dict["rgb"])
-            mask = np.array(self.save_dict["segmask"])
-            bg_rgb_path = self.task_cfg.bg_rgb_path
-            self.bg_rgb = imageio.imread(bg_rgb_path)
-            for t in range(rgb.shape[0]):
-                #import ipdb; ipdb.set_trace()
-                composed = self.convert_real(mask[t, b], self.bg_rgb, rgb[t, b])    
-                self.save_dict["composed_rgb"][t, b] = composed
-                writer.append_data(composed)
-            writer.close()
-
+                # if key in ignore_keys:  # skip the keys for storage
+                #     continue
+                # if key == "rgb":
+                #     video_path = env_dir / "sim_video.mp4"
+                #     writer = imageio.get_writer(
+                #         video_path, fps=50, macro_block_size=None
+                #     )
+                #     for t in range(arr.shape[0]):
+                #         writer.append_data(arr[t, b])
+                #     writer.close()
+                    
+                # elif key == "segmask":
+                #     video_path = env_dir / "mask_video.mp4"
+                #     writer = imageio.get_writer(
+                #         video_path, fps=50, macro_block_size=None
+                #     )
+                #     for t in range(arr.shape[0]):
+                #         writer.append_data((arr[t, b].astype(np.uint8) * 255))
+                #     writer.close()
+                # elif key == "depth":
+                #     depth_seq = arr[:, b]
+                #     flat = depth_seq[depth_seq > 0]
+                #     max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
+                #     depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(
+                #         np.uint8
+                #     )
+                #     video_path = env_dir / "depth_video.mp4"
+                #     writer = imageio.get_writer(
+                #         video_path, fps=50, macro_block_size=None
+                #     )
+                #     for t in range(depth_norm.shape[0]):
+                #         writer.append_data(depth_norm[t])
+                #     writer.close()
+                #     np.save(env_dir / f"{key}.npy", depth_seq)
+                # elif key != "composed_rgb":
+                #     #import pdb; pdb.set_trace()
+                #     np.save(env_dir / f"{key}.npy", arr[:, b])
+                writer = imageio.get_writer(demo_path, fps=50, macro_block_size=None)
+                rgb = np.array(self.save_dict["rgb"])
+                mask = np.array(self.save_dict["segmask"])
+                bg_rgb_path = self.task_cfg.bg_rgb_path
+                self.bg_rgb = imageio.imread(bg_rgb_path)
+                for t in range(rgb.shape[0]):
+                    composed = self.convert_real(mask[t, b], self.bg_rgb, rgb[t, b])    
+                    self.save_dict["composed_rgb"][t, b] = composed
+                    writer.append_data(composed)
+                writer.close()
         if export_hdf5:
             self.export_batch_data_to_hdf5(hdf5_names)
-        
-        json.dump(self.sim_cfgs, open(env_dir / "config.json", "w"), indent=2)
-        
-        print("[INFO]: Demonstration is saved at: ", save_root)
-        
-        demo_root = self.out_dir / "all_demos"
-        demo_root.mkdir(parents=True, exist_ok=True)
-        total_demo_id = get_next_demo_id(demo_root)
-        demo_save_path = demo_root / f"demo_{total_demo_id}"
-        demo_save_path.mkdir(parents=True, exist_ok=True)
-        meta_info = {
-            "path": str(save_root),
-            "fps": 50,
-        }
-        with open(demo_save_path / "meta_info.json", "w") as f:
-            json.dump(meta_info, f)
-        os.system(f"cp -r {save_root}/* {demo_save_path}")
         print("[INFO]: Demonstration is saved at: ", demo_save_path)
 
     # def collect_data_from_folder(self, folder_path: Path):
@@ -1146,7 +1024,7 @@ class BaseSimulator:
             name = str(name)
             episode_names.append(name.replace("demo_", "episode_"))
         handled_keys = {
-            "rgb",
+            "composed_rgb",
             "depth",
             "segmask",
             "joint_pos",
@@ -1173,29 +1051,34 @@ class BaseSimulator:
                     cam_grp.create_dataset("extrinsics", data=extrinsics)
                     cam_grp.attrs["resolution"] = resolution
 
-                if "rgb" in stacked:
+                if "composed_rgb" in stacked:
                     rgb_frames = stacked["composed_rgb"][:, env_idx]
-                    encoded_frames, max_len = self._encode_rgb_sequence(rgb_frames)
-                    dtype = f"S{max_len}" if max_len > 0 else "S1"
-                    cam_grp.create_dataset("rgb", data=np.asarray(encoded_frames, dtype=dtype))
-                    cam_grp.attrs["encoding"] = "jpeg"
+
+                    if rgb_frames.dtype != np.uint8:
+                        rgb_frames = np.clip(rgb_frames, 0, 255).astype(np.uint8)
+                    cam_grp.create_dataset(
+                        "rgb", 
+                        data=rgb_frames,
+                        compression="lzf" 
+                    )
+                    cam_grp.attrs["encoding"] = "uint8"
                     cam_grp.attrs["channels"] = 3
                     cam_grp.attrs["original_shape"] = rgb_frames.shape
                     if camera_params is None:
                         cam_grp.create_dataset("intrinsics", data=np.zeros((3, 3), dtype=np.float32))
                         cam_grp.create_dataset("extrinsics", data=np.zeros((4, 4), dtype=np.float32))
 
-                if "depth" in stacked:
-                    depth_ds = cam_grp.create_dataset("depth", data=stacked["depth"][:, env_idx])
-                    depth_ds.attrs["encoding"] = "float32"
-                    depth_ds.attrs["unit"] = "meter"
-                if "segmask" in stacked:
-                    seg_ds = cam_grp.create_dataset(
-                        "segmentation",
-                        data=stacked["segmask"][:, env_idx].astype(np.uint8),
-                    )
-                    seg_ds.attrs["encoding"] = "uint8"
-                    seg_ds.attrs["color_mapping"] = "instance_id"
+                # if "depth" in stacked:
+                #     depth_ds = cam_grp.create_dataset("depth", data=stacked["depth"][:, env_idx])
+                #     depth_ds.attrs["encoding"] = "float32"
+                #     depth_ds.attrs["unit"] = "meter"
+                # if "segmask" in stacked:
+                #     seg_ds = cam_grp.create_dataset(
+                #         "segmentation",
+                #         data=stacked["segmask"][:, env_idx].astype(np.uint8),
+                #     )
+                #     seg_ds.attrs["encoding"] = "uint8"
+                #     seg_ds.attrs["color_mapping"] = "instance_id"
 
                 joint_grp = f.create_group("joint_action")
                 if "joint_pos" in stacked:
@@ -1234,17 +1117,11 @@ class BaseSimulator:
                         "ee_pose_cam", data=stacked["ee_pose_cam"][:, env_idx].astype(np.float32)
                     )
                 extras = {}
-                for key, value in stacked.items():
-                    if key in handled_keys:
-                        continue
+        
 
                 extras_grp = f.create_group("extras")
-                if len(extras) > 0:
-                    for key, value in extras.items():
-                        extras_grp.create_dataset(key, data=value)
 
                 if self.task_cfg is not None:
-                   
                     extras_grp.create_dataset("task_desc", data=self.task_cfg.task_desc)
                 
                 if self.traj_cfg_list is not None:
@@ -1270,23 +1147,10 @@ class BaseSimulator:
 
 
     def convert_real(self,segmask, bg_rgb, fg_rgb):
-        #import pdb; pdb.set_trace()
         segmask_2d = segmask[..., 0]
         composed = bg_rgb.copy()
         composed[segmask_2d] = fg_rgb[segmask_2d]
         return composed
-
-    
-    def delete_data(self):
-        save_path = self._demo_dir()
-        failure_root = self.out_dir / self.img_folder / "demos_failures"
-        failure_root.mkdir(parents=True, exist_ok=True)
-        fail_demo_id = get_next_demo_id(failure_root)
-        failure_path = failure_root / f"demo_{fail_demo_id}"
-        os.system(f"mv {save_path} {failure_path}")
-        for key in self.save_dict.keys():
-            self.save_dict[key] = []
-        print("[INFO]: Clear up the folder: ", save_path)
 
     def _quat_to_rot(self, quat: Sequence[float]) -> np.ndarray:
         w, x, y, z = quat
