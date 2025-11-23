@@ -1,9 +1,9 @@
 # User Guide
 
 Our framework contains several stages:
-- [Preprocess](openreal2sim/preprocess/): collect or estimate depths and camera information from images and videos
-- [Reconstruction](openreal2sim/reconstruction/): build physically interactable scenes from images and videos
-- [Simulation](openreal2sim/simulation/): import physical scenes into the simulator, collect robotic demonstrations
+- [Preprocess](../openreal2sim/preprocess/): collect or estimate depths and camera information from images and videos
+- [Reconstruction](../openreal2sim/reconstruction/): build physically interactable scenes from images and videos
+- [Simulation](../openreal2sim/simulation/): import physical scenes into the simulator, collect robotic demonstrations
 
 ### Before We Start
 
