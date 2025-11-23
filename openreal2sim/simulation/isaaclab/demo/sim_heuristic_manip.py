@@ -84,6 +84,7 @@ class HeuristicManipulation(BaseSimulator):
         self.robot_type = args.robot
         self.load_obj_goal_traj()
 
+    
     def load_obj_goal_traj(self):
         """
         Load the relative trajectory Δ_w (T,4,4) and precompute the absolute
@@ -109,7 +110,7 @@ class HeuristicManipulation(BaseSimulator):
 
         obj_state_np = obj_state.detach().cpu().numpy().astype(np.float32)
         offset_np = np.asarray(self.goal_offset, dtype=np.float32).reshape(3)
-        obj_state_np[:, :3] += offset_np  # raise a bit to avoid collision
+        #obj_state_np[:, :3] += offset_np  # raise a bit to avoid collision
 
         # Note: here the relative traj Δ_w is defined in world frame with origin (0,0,0),
         # Hence, we need to normalize it to each env's origin frame.
@@ -125,10 +126,11 @@ class HeuristicManipulation(BaseSimulator):
             for t in range(T):
                 goal = rel[t] @ T_init
                 goal[:3, 3] += origins[b]  # back to world frame
+                goal[:3, 3] += offset_np
                 obj_goal[b, t] = goal
 
         self.obj_goal_traj_w = obj_goal  # [B, T, 4, 4]
-    
+
     def follow_object_goals(self, start_joint_pos, sample_step=1, visualize=True):
         """
         follow precompute object absolute trajectory: self.obj_goal_traj_w:
@@ -191,7 +193,7 @@ class HeuristicManipulation(BaseSimulator):
         success_ids = self.is_success()
         joint_pos = self.wait(gripper_open=not self.final_gripper_closed, steps=30)
         return joint_pos, success_ids
-    
+
     def follow_object_relative_goals(self, start_joint_pos, sample_step=1, visualize=True):
         B = self.scene.num_envs
         obj_goal_all = self.obj_goal_traj_w  # [B, T, 4, 4]
@@ -212,7 +214,6 @@ class HeuristicManipulation(BaseSimulator):
             goal_pos_list, goal_quat_list = [], []
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
-                         # (4,4)
                 current_T_ee = pose_to_mat(current_ee_pos_w[b], current_ee_quat_w[b])
                 T_ee_goal  = self.obj_rel_traj[t] @ current_T_ee
                 pos_b, quat_b = mat_to_pose(T_ee_goal)
@@ -236,7 +237,7 @@ class HeuristicManipulation(BaseSimulator):
         success_ids = self.is_success()
         joint_pos = self.wait(gripper_open=not self.final_gripper_closed, steps=30)
         return joint_pos, success_ids
-    
+
 
     def follow_object_centers(self, start_joint_pos, sample_step=1, visualize=True):
         B = self.scene.num_envs
@@ -291,6 +292,7 @@ class HeuristicManipulation(BaseSimulator):
         is_success = self.is_success()
         joint_pos = self.wait(gripper_open=not self.final_gripper_closed, steps=30)
         return joint_pos, is_success
+
 
 
 

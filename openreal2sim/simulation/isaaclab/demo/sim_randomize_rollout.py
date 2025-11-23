@@ -227,6 +227,7 @@ class RandomizeExecution(BaseSimulator):
         self.robot_poses_list, self.object_poses_dict, self.object_trajectory_list, self.final_gripper_state_list, self.pregrasp_pose_list, self.grasp_pose_list, self.end_pose_list = compute_poses_from_traj_cfg(self.traj_cfg_list)
        
 
+
     def compute_object_goal_traj(self):
         B = self.scene.num_envs
         # obj_state = self.object_prim.data.root_com_state_w[:, :7]  # [B,7], pos(3)+quat(wxyz)(4)
@@ -234,7 +235,7 @@ class RandomizeExecution(BaseSimulator):
         self.show_goal(obj_state[:, :3], obj_state[:, 3:7])
 
         obj_state_np = obj_state.detach().cpu().numpy().astype(np.float32)
-        offset_np = np.asarray(self.goal_offset, dtype=np.float32) 
+        offset_np = np.asarray(self.goal_offset, dtype=np.float32)
         obj_state_np[:, :3] += offset_np  # raise a bit to avoid collision
 
         # Note: here the relative traj Δ_w is defined in world frame with origin (0,0,0),
@@ -246,15 +247,33 @@ class RandomizeExecution(BaseSimulator):
         T = self.object_trajectory_list[0].shape[0]
         obj_goal = np.zeros((B, T, 4, 4), dtype=np.float32)
         for b in range(B):
-            T_init = pose_to_mat(obj_state_np[b, :3], obj_state_np[b, 3:7])  # (4,4)
+
             for t in range(1, T):
-                goal = self.object_trajectory_list[b][t] #@ T_init
+                goal = self.object_trajectory_list[b][t]
                 goal[:3, 3] += origins[b]  # back to world frame
-                goal[:3, 3] += self.goal_offset
+                goal[:3, :3] = offset_np
                 obj_goal[b, t] = goal
 
         self.obj_goal_traj_w = obj_goal
-    
+
+
+    def lift_up(self, height=0.12, gripper_open=False, steps=8):
+        """
+        Lift up by a certain height (m) from current EE pose.
+        """
+        ee_w = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
+        target_p = ee_w[:, :3].clone()
+        target_p[:, 2] += height
+
+        root = self.robot.data.root_state_w[:, 0:7]
+        p_lift_b, q_lift_b = subtract_frame_transforms(
+            root[:, 0:3], root[:, 3:7],
+            target_p, ee_w[:, 3:7]
+        ) # [B,3], [B,4]
+        jp, success = self.move_to(p_lift_b, q_lift_b, gripper_open=gripper_open)
+        jp = self.wait(gripper_open=gripper_open, steps=steps)
+        return jp
+
     def follow_object_goals(self, start_joint_pos, sample_step=1, visualize=True):
         """
         follow precompute object absolute trajectory: self.obj_goal_traj_w:
@@ -318,11 +337,11 @@ class RandomizeExecution(BaseSimulator):
         for b in range(B):
             if self.final_gripper_state_list[b]:
                 self.wait(gripper_open=False, steps=10, record = self.record)
-            else:      
+            else:
                 self.wait(gripper_open=True, steps=10, record = self.record)
 
         return joint_pos, is_grasp_success
-    
+
 
     def follow_object_centers(self, start_joint_pos, sample_step=1, visualize=True):
         B = self.scene.num_envs
@@ -355,10 +374,9 @@ class RandomizeExecution(BaseSimulator):
                 trans_offset = T_obj_goal - T_obj_ws[b]
                 T_ee_goal  = T_ee_ws[b] + trans_offset
                 pos_b, quat_b = mat_to_pose(T_ee_goal)
+
                 goal_pos_list.append(pos_b.astype(np.float32))
                 goal_quat_list.append(quat_b.astype(np.float32))
-
-      
 
             goal_pos  = torch.as_tensor(np.stack(goal_pos_list),  dtype=torch.float32, device=self.sim.device)
             goal_quat = ee_w[:, 3:7]
@@ -387,18 +405,10 @@ class RandomizeExecution(BaseSimulator):
         obj_w = self.object_prim.data.root_state_w[:, :7]
         origins = self.scene.env_origins
         obj_w[:, :3] -= origins
-        trans_dist_list = []
-        angle_list = []
-        B = self.scene.num_envs
-        for b in range(B):
-            obj_pose_l = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-            goal_pose_l = pose_to_mat(np.array(self.end_pose_list[b], dtype=np.float32)[:3], np.array(self.end_pose_list[b], dtype=np.float32)[3:7])
-            trans_dist, angle = pose_distance(obj_pose_l, goal_pose_l)
-            trans_dist_list.append(trans_dist)
-            angle_list.append(angle)
-        trans_dist = torch.tensor(trans_dist_list, dtype=torch.float32, device=self.sim.device)
-        angle = torch.tensor(angle_list, dtype=torch.float32, device=self.sim.device)
-        
+        obj_pose_l = pose_to_mat(obj_w[:, :3], obj_w[:, 3:7])
+        goal_pose_l = np.array(self.end_pose_list, dtype=np.float32)
+        goal_pose_l = pose_to_mat(goal_pose_l[:, :3], goal_pose_l[:, 3:7])
+        trans_dist, angle = pose_distance(obj_pose_l, goal_pose_l)
         print(f"[INFO] trans_dist: {trans_dist}, angle: {angle}")
         if self.task_type == "simple_pick_place" or self.task_type == "simple_pick":
             is_success = trans_dist < 0.10
@@ -407,6 +417,7 @@ class RandomizeExecution(BaseSimulator):
         else:
             raise ValueError(f"[ERR] Invalid task type: {self.task_type}")
         return is_success.cpu().numpy()
+
 
     def is_grasp_success(self):
         ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
@@ -602,7 +613,7 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
         bg_rgb_path = task_cfg.bg_rgb_path
 
         brecordg_rgb = imageio.imread(bg_rgb_path)
-        my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, data_dir=data_dir, =True, args_cli=args_cli, bg_rgb=bg_rgb)
+        my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, data_dir=data_dir, record=True, args_cli=args_cli, bg_rgb=bg_rgb)
         my_sim.task_cfg = task_cfg
         while len(success_trajectory_config_list) < total_require_traj_num:
             traj_cfg_list = random_task_cfg_list[current_timestep: current_timestep + num_envs]
