@@ -21,7 +21,7 @@ sys.path.insert(1, str(Path(__file__).parent.parent))  # isaaclab directory (for
 parser = argparse.ArgumentParser("sim_policy")
 parser.add_argument("--key", type=str, default="demo_video", help="scene key (outputs/<key>)")
 parser.add_argument("--robot", type=str, default="franka")
-parser.add_argument("--num_envs", type=int, default=4)
+parser.add_argument("--num_envs", type=int, default=5)
 parser.add_argument("--num_trials", type=int, default=1)
 parser.add_argument("--teleop_device", type=str, default="keyboard")
 parser.add_argument("--sensitivity", type=float, default=1.0)
@@ -30,7 +30,7 @@ parser.add_argument("--target_successes", type=int, default=40, help="Minimum nu
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
-args_cli.headless = False  # headless mode for batch execution
+args_cli.headless = True  # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
@@ -257,12 +257,24 @@ class HeuristicManipulation(BaseSimulator):
             T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
             T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
             T_ee_in_obj.append((np.linalg.inv(T_obj_w) @ T_ee_w).astype(np.float32))
+        
+        # Store for is_success check
+        self.T_ee_in_obj = T_ee_in_obj
 
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]
 
         t_iter = list(range(0, T, sample_step))
         t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
+
+        # Calculate initial grasp distance (baseline) for continuous monitoring
+        # We use the distance between EE and Object COM at the start of the trajectory
+        ee_pos_initial = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+        obj_pos_initial = self.object_prim.data.root_com_pos_w[:, 0:3]
+        initial_grasp_dist = torch.norm(ee_pos_initial - obj_pos_initial, dim=1) # [B]
+        
+        # Store for is_success check
+        self.initial_grasp_dist = initial_grasp_dist
 
         for t in t_iter:
             goal_pos_list, goal_quat_list = [], []
@@ -275,8 +287,12 @@ class HeuristicManipulation(BaseSimulator):
             
             for b in range(B):
                 if skip_envs[b]:
-                    # Already initialized with dummy values
-                    pass
+                    # For skipped envs, use current EE pose to avoid planning to 0,0,0 (which crashes Curobo)
+                    # We don't care about the result, but we need a valid input
+                    T_ee_w = pose_to_mat(ee_w[b, :3].cpu().numpy(), ee_w[b, 3:7].cpu().numpy())
+                    pos_b, quat_b = mat_to_pose(T_ee_w)
+                    goal_pos_arr[b] = pos_b.astype(np.float32)
+                    goal_quat_arr[b] = quat_b.astype(np.float32)
                 else:
                     T_obj_goal = obj_goal_all[b, t]
                     T_ee_goal  = T_obj_goal @ T_ee_in_obj[b]
@@ -306,6 +322,26 @@ class HeuristicManipulation(BaseSimulator):
             if torch.any(success == False):
                 print(f"[WARN] Some active envs failed motion planning at step {t}/{T}, but continuing...")
             
+            # --- Continuous Grasp Maintenance Check ---
+            # Verify object hasn't slipped/dropped by checking if distance to EE has increased significantly
+            ee_pos_curr = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+            obj_pos_curr = self.object_prim.data.root_com_pos_w[:, 0:3]
+            current_grasp_dist = torch.norm(ee_pos_curr - obj_pos_curr, dim=1)
+            
+            # Check deviation: if current distance > initial distance + threshold (1cm)
+            grasp_deviation = current_grasp_dist - initial_grasp_dist
+            dropped_mask = grasp_deviation > 0.01  # 1cm threshold
+            
+            # Update skip_envs for dropped objects
+            if torch.any(dropped_mask):
+                new_drops = dropped_mask.cpu().numpy() & (~skip_envs)
+                if np.any(new_drops):
+                    drop_indices = np.where(new_drops)[0]
+                    if self.verbose:
+                        print(f"[WARN] Object dropped in envs {drop_indices.tolist()} at step {t}/{T} (dist change > 1cm)")
+                    skip_envs[new_drops] = True
+            # ------------------------------------------
+
             # Build action data: real data for active envs, dummy data for skipped envs
             # Batch CPU transfer to reduce synchronization
             ee_pos_b_cpu = ee_pos_b.cpu()
@@ -315,10 +351,13 @@ class HeuristicManipulation(BaseSimulator):
             for b in np.where(skip_envs)[0]:
                 ee_pos_b_data[b] = np.zeros(3, dtype=np.float32)
                 ee_quat_b_data[b] = np.array([1, 0, 0, 0], dtype=np.float32)
+            
             self.save_dict["actions"].append(np.concatenate([ee_pos_b_data, ee_quat_b_data, np.ones((B, 1))], axis=1))
 
+        # Open gripper at the end to release object and record final state
         joint_pos = self.wait(gripper_open=True, steps=10)
-        return joint_pos
+
+        return joint_pos, skip_envs
 
 
     def viz_object_goals(self, sample_step=1, hold_steps=20):
@@ -360,7 +399,7 @@ class HeuristicManipulation(BaseSimulator):
         return pb, qb  # [B,3], [B,4]
 
     # ---------- Batched execution & lift-check ----------
-    def execute_and_lift_once_batch(self, info: dict, lift_height=0.06, position_threshold=0.2, record=False) -> tuple[np.ndarray, np.ndarray]:
+    def execute_and_lift_once_batch(self, info: dict, lift_height=0.15, position_threshold=0.2, record=False) -> tuple[np.ndarray, np.ndarray]:
         """
         Reset → pre → grasp → close → lift → hold; return (success[B], score[B]).
         Now propagates motion planning failures by returning (None, None).
@@ -370,6 +409,9 @@ class HeuristicManipulation(BaseSimulator):
         """
         B = self.scene.num_envs
         self.reset()
+        
+        # Capture initial orientation for stability check
+        obj_quat_initial = self.object_prim.data.root_quat_w.clone()
 
         # open gripper buffer
         jp = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
@@ -397,6 +439,7 @@ class HeuristicManipulation(BaseSimulator):
         jp = self.wait(gripper_open=False, steps=6, record=record)
 
         # initial heights (USING COM)
+        # initial heights (USING COM)
         obj0 = self.object_prim.data.root_com_pos_w[:, 0:3]  # ← CHANGED: Use COM
         ee_w = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
         ee_p0 = ee_w[:, :3]
@@ -404,6 +447,10 @@ class HeuristicManipulation(BaseSimulator):
         # If we use views, the z0 values will be updated when robot/object moves, breaking the diff calculation
         robot_ee_z0 = ee_p0[:, 2].clone()
         obj_z0 = obj0[:, 2].clone()
+        
+        # Capture initial XY for vertical lift check
+        obj_xy0 = obj0[:, :2].clone()
+        
         if self.verbose:
             obj_z0_mean = obj_z0.mean()
             ee_z0_mean = robot_ee_z0.mean()
@@ -429,6 +476,8 @@ class HeuristicManipulation(BaseSimulator):
 
         # final heights and success checking (USING COM)
         obj1 = self.object_prim.data.root_com_pos_w[:, 0:3]  # ← CHANGED: Use COM
+        obj_quat_final = self.object_prim.data.root_quat_w.clone() # Capture final orientation
+        
         ee_w1 = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
         robot_ee_z1 = ee_w1[:, 2]
         obj_z1 = obj1[:, 2]
@@ -444,16 +493,21 @@ class HeuristicManipulation(BaseSimulator):
             (torch.abs(ee_diff) >= 0.5 * lift_height) & \
             (torch.abs(obj_diff) >= 0.5 * lift_height)
 
-        # Goal proximity check (USING COM) - keep on GPU
-        final_goal_matrices = self.obj_goal_traj_w[:, -1, :, :]
-        goal_positions_np = final_goal_matrices[:, :3, 3]
-        goal_positions = torch.tensor(goal_positions_np, dtype=torch.float32, device=self.sim.device)
-        current_obj_pos = self.object_prim.data.root_com_state_w[:, :3]  # ← CHANGED: Use COM
-        distances = torch.norm(current_obj_pos - goal_positions, dim=1)
-        proximity_check = distances <= position_threshold
+        # Orientation stability check (dot product of quaternions)
+        # |q1 . q2| should be close to 1.0 for similar orientations
+        quat_dot = torch.abs(torch.sum(obj_quat_initial * obj_quat_final, dim=1))
+        # Threshold 0.95 corresponds to approx 18 degrees difference
+        orientation_check = quat_dot >= 0.95
+        
+        # Vertical stability check (XY drift)
+        # Object should not move significantly in XY plane during vertical lift
+        obj_xy1 = obj1[:, :2]
+        xy_drift = torch.norm(obj_xy1 - obj_xy0, dim=1)
+        vertical_check = xy_drift <= 0.02  # 2cm tolerance for XY drift
 
         # Combined check - all on GPU
-        lifted = lift_check & proximity_check
+        # Removed proximity check as it is not relevant for vertical lift
+        lifted = lift_check & orientation_check & vertical_check
         
         # Mark motion planning failures as not lifted - keep on GPU
         lifted = lifted & success
@@ -462,21 +516,24 @@ class HeuristicManipulation(BaseSimulator):
         score = torch.zeros_like(ee_diff)
         if torch.any(lifted):
             base_score = 1000.0
-            epsilon = 0.001
-            score[lifted] = base_score / (distances[lifted] + epsilon)
+            # Use orientation stability as score component to favor stable grasps
+            score[lifted] = base_score * quat_dot[lifted]
         
         if self.verbose:
             print(f"[INFO] Lift check passed: {lift_check.sum().item()}/{B}")
-            print(f"[INFO] Proximity check passed: {proximity_check.sum().item()}/{B}")
-            print(f"[INFO] Final lifted flag (both checks): {lifted.sum().item()}/{B}")
+            print(f"[INFO] Orientation check passed: {orientation_check.sum().item()}/{B}")
+            print(f"[INFO] Vertical check passed: {vertical_check.sum().item()}/{B}")
+            print(f"[INFO] Final lifted flag (all checks): {lifted.sum().item()}/{B}")
             
             if B <= 10:  # Detailed output for small batches
                 for b in range(B):
-                    print(f"  Env {b}: lift={lift_check[b].item()}, prox={proximity_check[b].item()}, "
-                        f"dist={distances[b].item():.4f}m, score={score[b].item():.2f}")
+                    print(f"  Env {b}: lift={lift_check[b].item()}, orient={orientation_check[b].item()}, vert={vertical_check[b].item()}, "
+                        f"quat_dot={quat_dot[b].item():.4f}, xy_drift={xy_drift[b].item():.4f}m, score={score[b].item():.2f}")
             else:
-                print(f"[INFO] Distance to goal - mean: {distances.mean().item():.4f}m, "
-                    f"min: {distances.min().item():.4f}m, max: {distances.max().item():.4f}m")
+                print(f"[INFO] Orientation dot - mean: {quat_dot.mean().item():.4f}, "
+                    f"min: {quat_dot.min().item():.4f}")
+                print(f"[INFO] XY drift - mean: {xy_drift.mean().item():.4f}m, "
+                    f"max: {xy_drift.max().item():.4f}m")
         
         # Single GPU→CPU transfer at the end
         # Batch GPU→CPU transfer for return values
@@ -784,51 +841,146 @@ class HeuristicManipulation(BaseSimulator):
         }
 
     
-    def is_success(self, position_threshold: float = 0.1, skip_envs: np.ndarray = None) -> bool:
+    def is_success(self, position_threshold: float = 0.10, skip_envs: np.ndarray = None) -> torch.Tensor:
         """
-        Verify if the manipulation task succeeded by comparing final object COM position
-        with the goal position from the trajectory.
+        Verify if the manipulation task succeeded by checking:
+        1. Object is at Goal (Distance < 10cm)
+        2. Gripper is at Goal (Distance < 10cm) - Explicit check using T_ee_in_obj
+        3. Object is in Gripper (Deviation < 2cm)
         
         Args:
-            position_threshold: Distance threshold in meters (default: 0.1m = 10cm)
+            position_threshold: Distance threshold for Object-Goal check (default: 0.10m = 10cm)
             skip_envs: Boolean array [B] indicating which envs to skip from verification
         
         Returns:
-            bool: True if task succeeded for all active envs, False otherwise
+            torch.Tensor: Boolean tensor [B] indicating success for each environment
         """
         B = self.scene.num_envs
         if skip_envs is None:
             skip_envs = np.zeros(B, dtype=bool)
         
-        final_goal_matrices = self.obj_goal_traj_w[:, -1, :, :]  # [B, 4, 4] - last timestep
-        
-        # Extract goal positions (translation part of the transform matrix)
-        goal_positions_np = final_goal_matrices[:, :3, 3]  # [B, 3] - xyz positions (numpy)
-        
-        # Convert to torch tensor
+        # --- 1. Object Goal Check ---
+        final_goal_matrices = self.obj_goal_traj_w[:, -1, :, :]  # [B, 4, 4]
+        goal_positions_np = final_goal_matrices[:, :3, 3]
         goal_positions = torch.tensor(goal_positions_np, dtype=torch.float32, device=self.sim.device)
         
-        # Get current object COM positions
-        current_obj_pos = self.object_prim.data.root_com_state_w[:, :3]  # ← ALREADY CHANGED: Use COM
+        # Current Root and COM
+        current_root_state = self.object_prim.data.root_state_w
+        current_root_pos = current_root_state[:, :3]
+        current_root_quat = current_root_state[:, 3:7]
+        current_com_pos = self.object_prim.data.root_com_pos_w[:, :3]
         
-        # Calculate distances
-        distances = torch.norm(current_obj_pos - goal_positions, dim=1)  # [B]
+        # Calculate Goal COM positions
+        # The COM offset is constant in the object's local frame.
+        # We need to: (1) Get the current COM offset in local frame, (2) Apply to goal pose
+        goal_com_positions_list = []
+        for b in range(B):
+            # Current state
+            root_pos_cur = current_root_pos[b].cpu().numpy()
+            root_quat_cur = current_root_quat[b].cpu().numpy()  # wxyz format
+            com_pos_cur = current_com_pos[b].cpu().numpy()
+            
+            # COM offset in world frame
+            com_offset_world = com_pos_cur - root_pos_cur  # [3]
+            
+            # Convert COM offset to object's local frame
+            # R_cur^T @ com_offset_world gives the offset in local coords (assuming no scale)
+            R_cur = transforms3d.quaternions.quat2mat(root_quat_cur)  # Convert wxyz to rotation matrix
+            com_offset_local = R_cur.T @ com_offset_world  # Rotate to local frame
+            
+            # Goal state
+            T_goal_root = final_goal_matrices[b]  # [4, 4] numpy array
+            goal_root_pos = T_goal_root[:3, 3]
+            R_goal = T_goal_root[:3, :3]
+            
+            # Apply local offset to goal pose
+            # goal_com_pos = goal_root_pos + R_goal @ com_offset_local
+            com_offset_world_goal = R_goal @ com_offset_local
+            goal_com_pos = goal_root_pos + com_offset_world_goal
+            
+            goal_com_positions_list.append(goal_com_pos)
+            
+        goal_com_positions = torch.tensor(np.array(goal_com_positions_list), dtype=torch.float32, device=self.sim.device)
         
-        # Check if all environments succeeded
-        success_mask = distances <= position_threshold
+        # Calculate Distances
+        root_dist = torch.norm(current_root_pos - goal_positions, dim=1)
+        com_dist = torch.norm(current_com_pos - goal_com_positions, dim=1)
         
-        # Print results for each environment
+        # Success requires BOTH Root and COM to be within threshold
+        obj_success = (root_dist <= position_threshold) & (com_dist <= position_threshold)
+
+        # --- 2. Gripper Goal Check ---
+        # Calculate Target Gripper Pose: T_ee_goal = T_obj_goal @ T_ee_in_obj
+        # We use the stored T_ee_in_obj from the start of the trajectory
+        ee_pos_final = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+        
+        if hasattr(self, 'T_ee_in_obj') and self.T_ee_in_obj is not None:
+            target_ee_pos_list = []
+            for b in range(B):
+                T_obj_goal = final_goal_matrices[b]
+                T_ee_goal = T_obj_goal @ self.T_ee_in_obj[b]
+                target_ee_pos_list.append(T_ee_goal[:3, 3])
+            
+            target_ee_pos = torch.tensor(np.array(target_ee_pos_list), dtype=torch.float32, device=self.sim.device)
+            grip_goal_dist = torch.norm(ee_pos_final - target_ee_pos, dim=1)
+            gripper_success = grip_goal_dist <= 0.10
+        else:
+            # Fallback if T_ee_in_obj not available (should not happen if follow_object_goals ran)
+            print("[WARN] T_ee_in_obj not found, skipping explicit Gripper Goal Check")
+            gripper_success = torch.ones(B, dtype=torch.bool, device=self.sim.device)
+            grip_goal_dist = torch.zeros(B, dtype=torch.float32, device=self.sim.device)
+
+        # --- 3. Holding Check (Object in Gripper) ---
+        # Check if the distance between Gripper and Object COM has remained stable.
+        # We compare the final distance to the initial grasp distance.
+        obj_com_final = self.object_prim.data.root_com_pos_w[:, 0:3]
+        current_grip_com_dist = torch.norm(ee_pos_final - obj_com_final, dim=1)
+        
+        if hasattr(self, 'initial_grasp_dist') and self.initial_grasp_dist is not None:
+            # Check for deviation from initial grasp configuration
+            # If the object slipped or was dropped, this distance will change.
+            # We use a strict 2cm threshold. 
+            # - 0.00m is impossible due to physics engine noise/soft contacts.
+            # - 0.02m allows for micro-settling but catches any real slip or drag.
+            grasp_deviation = torch.abs(current_grip_com_dist - self.initial_grasp_dist)
+            holding_success = grasp_deviation <= 0.02
+            
+            holding_metric = grasp_deviation
+            holding_threshold = 0.02
+            holding_metric_name = "Grip-COM Deviation"
+        else:
+            # Fallback to absolute check if initial dist missing (shouldn't happen)
+            # Relaxed to 15cm to account for tool handles if we don't have initial baseline
+            holding_success = current_grip_com_dist <= 0.15
+            holding_metric = current_grip_com_dist
+            holding_threshold = 0.15
+            holding_metric_name = "Grip-COM Dist"
+
+        # Combined Success
+        success_mask = obj_success & gripper_success & holding_success
+        
+        # Print results
         print("\n" + "="*50)
-        print("TASK VERIFICATION RESULTS (Using Center of Mass)")
+        print("TASK VERIFICATION RESULTS (Strict Multi-Check)")
         print("="*50)
         for b in range(B):
             if skip_envs[b]:
                 print(f"Env {b}: SKIPPED (environment was skipped during grasp phase)")
             else:
                 status = "SUCCESS" if success_mask[b].item() else "FAILURE"
-                print(f"Env {b}: {status} (COM distance: {distances[b].item():.4f}m, threshold: {position_threshold}m)")
-                print(f"  Goal COM position: [{goal_positions[b, 0].item():.3f}, {goal_positions[b, 1].item():.3f}, {goal_positions[b, 2].item():.3f}]")
-                print(f"  Final COM position: [{current_obj_pos[b, 0].item():.3f}, {current_obj_pos[b, 1].item():.3f}, {current_obj_pos[b, 2].item():.3f}]")
+                fail_reason = ""
+                if not obj_success[b].item():
+                    fail_reason += f"[Obj-Goal Dist Root:{root_dist[b].item():.3f}m/COM:{com_dist[b].item():.3f}m > {position_threshold}m] "
+                if not gripper_success[b].item():
+                    fail_reason += f"[Grip-Goal Dist {grip_goal_dist[b].item():.3f}m > 0.10m] "
+                if not holding_success[b].item():
+                    fail_reason += f"[Not Held ({holding_metric_name} {holding_metric[b].item():.3f}m > {holding_threshold}m)]"
+                
+                print(f"Env {b}: {status} {fail_reason}")
+                print(f"  Obj-Goal Root Dist: {root_dist[b].item():.4f}m")
+                print(f"  Obj-Goal COM Dist:  {com_dist[b].item():.4f}m")
+                print(f"  Grip-Goal Dist:     {grip_goal_dist[b].item():.4f}m")
+                print(f"  {holding_metric_name}: {holding_metric[b].item():.4f}m (Initial: {self.initial_grasp_dist[b].item():.4f}m)" if hasattr(self, 'initial_grasp_dist') else f"  {holding_metric_name}: {holding_metric[b].item():.4f}m")
         
         # Overall result - only check active (non-skipped) environments
         skip_envs_np = skip_envs  # Already numpy
@@ -848,7 +1000,7 @@ class HeuristicManipulation(BaseSimulator):
             print(f"TASK VERIFIER: FAILURE - {active_success_count}/{active_count} active environments succeeded")
         print("="*50 + "\n")
         
-        return bool(all_success)
+        return success_mask
     
     def save_data_selective(self, skip_envs: np.ndarray, ignore_keys: List[str] = None, 
                            demo_id: int = None, env_offset: int = 0, successful_env_data: dict = None):
@@ -1195,7 +1347,7 @@ class HeuristicManipulation(BaseSimulator):
 
 
     def inference(self, std: float = 0.0, max_grasp_retries: int = 1, 
-              max_traj_retries: int = 3, position_threshold: float = 0.15,
+              max_traj_retries: int = 3, position_threshold: float = 0.1,
               demo_id: int = None, env_offset: int = 0) -> int:
         """
         Main function with decoupled grasp selection and trajectory execution.
@@ -1377,6 +1529,9 @@ class HeuristicManipulation(BaseSimulator):
                 log_memory("Before reset()")
                 self.reset()
                 log_memory("After reset()")
+                
+                # Capture object position for stability check (XY only)
+                obj_pos_start = self.object_prim.data.root_state_w[:, :2].clone()
 
                 # Save grasp poses relative to camera
                 cam_p = self.camera.data.pos_w
@@ -1435,6 +1590,22 @@ class HeuristicManipulation(BaseSimulator):
                     print("[INFO] Closing grippers...")
                 jp = self.wait(gripper_open=False, steps=50)
                 
+                # Check for jerky grasp (XY displacement > 5cm)
+                obj_pos_post_grasp = self.object_prim.data.root_state_w[:, :2]
+                grasp_displacement = torch.norm(obj_pos_post_grasp - obj_pos_start, dim=1)
+                jerky_mask = grasp_displacement > 0.05
+                
+                if torch.any(jerky_mask):
+                    new_jerky = jerky_mask.cpu().numpy() & (~env_skip)
+                    if np.any(new_jerky):
+                        jerky_indices = np.where(new_jerky)[0]
+                        if self.verbose:
+                            print(f"[WARN] Jerky grasp detected in envs {jerky_indices.tolist()} (displacement > 5cm)")
+                        env_skip[new_jerky] = True
+                        
+                        # Update recording mask to include these new failures
+                        envs_to_skip_recording = env_skip | env_traj_success
+                
                 log_memory("After gripper close")
                 
                 p_close_data = info_all["p_b"].cpu().numpy()
@@ -1450,20 +1621,26 @@ class HeuristicManipulation(BaseSimulator):
                 skip_for_traj = env_skip | env_traj_success
                 
                 log_memory("Before follow_object_goals")
-                jp = self.follow_object_goals(jp, sample_step=5, visualize=True, skip_envs=skip_for_traj)
+                jp, updated_skip_envs = self.follow_object_goals(jp, sample_step=5, visualize=True, skip_envs=skip_for_traj)
+                
+                # Update env_skip with any new failures from trajectory execution (e.g. drops)
+                # We only care about new failures in active envs
+                new_failures = updated_skip_envs & (~skip_for_traj)
+                if np.any(new_failures):
+                    if self.verbose:
+                        print(f"[INFO] Updating env_skip with {np.sum(new_failures)} new failures from trajectory execution")
+                    env_skip = env_skip | new_failures
+                
                 log_memory("After follow_object_goals")
                 
                 # Trajectory execution completed - verify which envs succeeded
                 if self.verbose:
                     print("[INFO] Trajectory execution completed, verifying goal positions...")
                 
-                # Get per-env success status
-                final_goal_matrices = self.obj_goal_traj_w[:, -1, :, :]
-                goal_positions_np = final_goal_matrices[:, :3, 3]
-                goal_positions = torch.tensor(goal_positions_np, dtype=torch.float32, device=self.sim.device)
-                current_obj_pos = self.object_prim.data.root_com_state_w[:, :3]
-                distances = torch.norm(current_obj_pos - goal_positions, dim=1)
-                per_env_success = (distances <= position_threshold).cpu().numpy()
+                # Use the robust is_success check
+                # Note: is_success returns a torch tensor of booleans
+                success_mask_tensor = self.is_success(position_threshold=position_threshold, skip_envs=env_skip)
+                per_env_success = success_mask_tensor.cpu().numpy()
                 
                 # Check results ONLY for envs that attempted this round
                 if self.verbose:
@@ -1477,7 +1654,7 @@ class HeuristicManipulation(BaseSimulator):
                     if per_env_success[b]:
                         env_traj_success[b] = True
                         if self.verbose:
-                            print(f"Env {b}: SUCCESS (distance: {distances[b].item():.4f}m)")
+                            print(f"Env {b}: SUCCESS")
                         
                         # Save THIS env's data from THIS successful attempt ONLY if not already saved
                         if b not in successful_env_data:
@@ -1511,7 +1688,7 @@ class HeuristicManipulation(BaseSimulator):
                                 print(f"[INFO] Env {b} already has successful data from previous attempt - not re-capturing")
                     else:
                         if self.verbose:
-                            print(f"Env {b}: FAILED (distance: {distances[b].item():.4f}m, attempt {env_traj_attempts[b]}/{max_traj_retries})")
+                            print(f"Env {b}: FAILED (attempt {env_traj_attempts[b]}/{max_traj_retries})")
                         if env_traj_attempts[b] >= max_traj_retries:
                             env_skip[b] = True
                             if self.verbose:

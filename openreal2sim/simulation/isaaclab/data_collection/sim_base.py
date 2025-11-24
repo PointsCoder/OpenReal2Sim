@@ -359,7 +359,11 @@ class BaseSimulator:
                     max_attempts=max_attempts, enable_graph=allow_graph
                 )
                 
-                result = self.motion_gen.plan_batch(start_state, goal_pose, plan_cfg)
+                try:
+                    result = self.motion_gen.plan_batch(start_state, goal_pose, plan_cfg)
+                except Exception as plan_err:
+                    print(f"[ERROR] curobo.plan_batch raised exception: {plan_err}")
+                    raise plan_err
                 
                 # Check if result is valid
                 if result is None:
@@ -402,6 +406,12 @@ class BaseSimulator:
                 
                 T_max = 1
                 
+                # Check if result.success is valid
+                if result.success is None:
+                     print(f"[WARN] result.success is None. Assuming failure for all envs.")
+                     # Create dummy failure tensor
+                     result.success = torch.zeros(B, dtype=torch.bool, device=self.sim.device)
+
                 try:
                     for i, p in enumerate(paths):
                         if not result.success[i]:
