@@ -21,6 +21,7 @@ from isaaclab.sim.schemas import schemas_cfg
 import isaaclab.sim as sim_utils
 from isaaclab.sensors.camera import CameraCfg
 from isaaclab_assets import FRANKA_PANDA_HIGH_PD_CFG
+from config.franka_fr3 import FRANKA_FR3_HIGH_PD_CFG
 
 # Manager-based API (terms/configs)
 from isaaclab.managers import (
@@ -49,6 +50,7 @@ class SceneCtx:
     background_path: str
     robot_pos: List[float]
     robot_rot: List[float]
+    robot_type: str = "franka_panda"
     bg_physics: Optional[Dict] = None
     obj_physics: List[Dict] = None
     use_ground_plane: bool = False
@@ -134,7 +136,13 @@ def create_robot():
     assert _SCENE_CTX is not None, (
         "init_scene_configs/init_scene_from_scene_dict must be called first."
     )
-    robot = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot_type = _SCENE_CTX.robot_type
+    if robot_type == "franka_panda":
+        robot = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    elif robot_type == "franka_fr3":
+        robot = FRANKA_FR3_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    else:
+        raise ValueError(f"Unsupported robot type: {robot_type}")
     robot.init_state.pos = tuple(_SCENE_CTX.robot_pos)
     robot.init_state.rot = tuple(_SCENE_CTX.robot_rot)
     return robot
@@ -258,6 +266,7 @@ def init_scene_from_scene_dict(
     cfgs: dict,
     *,
     use_ground_plane: bool = False,
+    robot_type: str = "franka_panda",
 ):
     """
     Initialize SceneCtx directly from a raw scene dict.
@@ -306,6 +315,7 @@ def init_scene_from_scene_dict(
         background_path=background_path,
         robot_pos=list(robot_pos),
         robot_rot=list(robot_rot),
+        robot_type=robot_type,
         bg_physics=bg_physics,
         obj_physics=list(obj_physics),
         use_ground_plane=use_ground_plane,
@@ -363,11 +373,19 @@ def _build_manip_env_cfg(scene_cfg_cls, *, num_envs: int, env_spacing: float = 2
             physx.enable_stabilization = True
             physx.enable_sleeping = True
 
+            # ---- Determine robot-specific names ----
+            if _SCENE_CTX.robot_type == "franka_panda":
+                robot_prefix = "panda"
+            elif _SCENE_CTX.robot_type == "franka_fr3":
+                robot_prefix = "fr3"
+            else:
+                raise ValueError(f"Unsupported robot type: {_SCENE_CTX.robot_type}")
+
             # ---- IK arm & binary gripper ----
             self.actions.arm_action = DifferentialInverseKinematicsActionCfg(
                 asset_name="robot",
-                joint_names=["panda_joint.*"],
-                body_name="panda_hand",
+                joint_names=[f"{robot_prefix}_joint.*"],
+                body_name=f"{robot_prefix}_hand",
                 controller=DifferentialIKControllerCfg(
                     command_type="pose", use_relative_mode=True, ik_method="dls"
                 ),
@@ -378,11 +396,11 @@ def _build_manip_env_cfg(scene_cfg_cls, *, num_envs: int, env_spacing: float = 2
             )
             self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
                 asset_name="robot",
-                joint_names=["panda_finger.*"],
-                open_command_expr={"panda_finger_.*": 0.04},
-                close_command_expr={"panda_finger_.*": 0.0},
+                joint_names=[f"{robot_prefix}_finger.*"],
+                open_command_expr={f"{robot_prefix}_finger_.*": 0.04},
+                close_command_expr={f"{robot_prefix}_finger_.*": 0.0},
             )
-            self.commands.object_pose.body_name = "panda_hand"
+            self.commands.object_pose.body_name = f"{robot_prefix}_hand"
 
     return ManipEnvCfg
 
@@ -400,6 +418,7 @@ def make_env(
     num_envs: int = 1,
     device: str = "cuda:0",
     bg_simplify: bool = False,
+    robot_type: str = "franka_panda",
 ) -> Tuple["ManagerBasedRLEnv", "ManagerBasedRLEnvCfg"]:
     """
     Public entry to construct a ManagerBasedRLEnv from outputs/<key>/simulation/scene.json.
@@ -413,6 +432,7 @@ def make_env(
         scene,
         cfgs=cfgs,
         use_ground_plane=bg_simplify,
+        robot_type=robot_type,
     )
 
     # Build scene & env cfg

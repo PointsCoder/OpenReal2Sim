@@ -15,7 +15,7 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser("sim_policy")
 parser.add_argument("--demo_dir", type=str, help="directory of robot trajectory")
 parser.add_argument("--key", type=str, default=None, help="scene key (outputs/<key>)")
-parser.add_argument("--robot", type=str, default="franka")
+parser.add_argument("--robot", type=str, default="franka_panda")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--num_trials", type=int, default=1)
 parser.add_argument("--teleop_device", type=str, default="keyboard")
@@ -98,25 +98,37 @@ class HeuristicManipulation(BaseSimulator):
         self.reset()
         self.wait(gripper_open=True, steps=10)
 
+        prev_gripper_open = True
         for t in range(n_steps):
             print(f"[INFO] replay step {t}/{n_steps}")
             act = actions[t:t+1]
             p_b = torch.as_tensor(act[:, 0:3], dtype=torch.float32, device=self.sim.device)
             q_b = torch.as_tensor(act[:, 3:7], dtype=torch.float32, device=self.sim.device)
-            g_b = act[:, 7] < 0.5
+            g_b = bool(act[0, 7] < 0.5)  # True = open, False = closed
+
             jp, success = self.move_to(p_b, q_b, gripper_open=g_b)
             if torch.any(success==False):
                 print(f"[ERR] replay step {t} failed.")
                 return False
-            jp = self.wait(gripper_open=g_b, steps=3)
+
+            # If gripper just closed (transition from open to closed), wait longer for full grasp
+            if prev_gripper_open and not g_b:
+                print(f"[INFO] Gripper closing detected at step {t}, waiting 50 steps for grasp...")
+                jp = self.wait(gripper_open=g_b, steps=50)
+            else:
+                jp = self.wait(gripper_open=g_b, steps=3)
+
+            prev_gripper_open = g_b
         return True
 
 # ──────────────────────────── Entry Point ────────────────────────────
 def main():
+    sim_cfgs["robot_type"] = args_cli.robot
     env, _ = make_env(
         cfgs=sim_cfgs, num_envs=args_cli.num_envs,
         device=args_cli.device,
         bg_simplify=False,
+        robot_type=args_cli.robot,
     )
     sim, scene = env.sim, env.scene
 

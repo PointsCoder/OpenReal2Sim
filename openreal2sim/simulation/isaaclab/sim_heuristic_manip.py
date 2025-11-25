@@ -15,7 +15,7 @@ from isaaclab.app import AppLauncher
 # ─────────── CLI ───────────
 parser = argparse.ArgumentParser("sim_policy")
 parser.add_argument("--key", type=str, default="demo_video", help="scene key (outputs/<key>)")
-parser.add_argument("--robot", type=str, default="franka")
+parser.add_argument("--robot", type=str, default="franka_panda")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--num_trials", type=int, default=1)
 parser.add_argument("--teleop_device", type=str, default="keyboard")
@@ -487,10 +487,12 @@ class HeuristicManipulation(BaseSimulator):
 # ──────────────────────────── Entry Point ────────────────────────────
 def main():
     sim_cfgs = load_sim_parameters(BASE_DIR, args_cli.key)
+    sim_cfgs["robot_type"] = args_cli.robot
     env, _ = make_env(
         cfgs=sim_cfgs, num_envs=args_cli.num_envs,
         device=args_cli.device,
         bg_simplify=False,
+        robot_type=args_cli.robot,
     )
     sim, scene = env.sim, env.scene
 

@@ -48,5 +48,5 @@ python openreal2sim/simulation/isaaclab/sim_heuristic_manip.py
 
 We can also replay the recorded robot trajectories in IsaacSim:
 ```
-python openreal2sim/simulation/isaaclab/sim_replay_trajectories.py --demo_dir <path_to_demo_directory>
+python openreal2sim/simulation/isaaclab/sim_trajectory_replay.py --demo_dir <path_to_demo_directory>
 ```

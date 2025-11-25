@@ -173,12 +173,26 @@ class BaseSimulator:
         )
 
         # robot: joints / gripper / jacobian indices
-        self.robot_entity_cfg = SceneEntityCfg(
-            "robot", joint_names=["panda_joint.*"], body_names=["panda_hand"]
-        )
-        self.robot_gripper_cfg = SceneEntityCfg(
-            "robot", joint_names=["panda_finger_joint.*"], body_names=["panda_hand"]
-        )
+        # Determine robot prefix based on robot type
+        assert "robot_type" in sim_cfgs, "robot_type must be specified in sim_cfgs"
+        robot_type = sim_cfgs["robot_type"]
+        if robot_type == "franka_panda":
+            self.robot_entity_cfg = SceneEntityCfg(
+                "robot", joint_names=[f"panda_joint.*"], body_names=[f"panda_hand"]
+            )
+            self.robot_gripper_cfg = SceneEntityCfg(
+                "robot", joint_names=[f"panda_finger_joint.*"], body_names=[f"panda_hand"]
+            )
+        elif robot_type == "franka_fr3":
+            self.robot_entity_cfg = SceneEntityCfg(
+                "robot", joint_names=[f"fr3_joint.*"], body_names=[f"fr3_hand"]
+            )
+            self.robot_gripper_cfg = SceneEntityCfg(
+                "robot", joint_names=[f"fr3_finger_joint.*"], body_names=[f"fr3_hand"]
+            )
+        else:
+            raise ValueError(f"Unsupported robot type: {robot_type}")
+
         self.robot_entity_cfg.resolve(scene)
         self.robot_gripper_cfg.resolve(scene)
         self.gripper_open_tensor = 0.04 * torch.ones(
@@ -239,10 +253,18 @@ class BaseSimulator:
     # -------- Curobo Motion Planning ----------
     def prepare_curobo(self):
         setup_curobo_logger("error")
-        # tensor_args = TensorDeviceType()
         tensor_args = TensorDeviceType(device=self.sim.device, dtype=torch.float32)
         curobo_path = curobo.__file__.split("/__init__")[0]
-        robot_file = f"{curobo_path}/content/configs/robot/franka.yml"
+
+        robot_type = self.sim_cfgs.get("robot_type", "franka_panda")
+        if robot_type == "franka_panda":
+            robot_file = f"{curobo_path}/content/configs/robot/franka.yml"
+        elif robot_type == "franka_fr3":
+            robot_file = "/app/openreal2sim/simulation/isaaclab/config/curobo_franka_fr3.yml"
+        else:
+            raise ValueError(f"Unsupported robot type for curobo: {robot_type}")
+
+        print(f"[INFO] Loading curobo config for {robot_type}: {robot_file}")
         motion_gen_config = MotionGenConfig.load_from_robot_config(
             robot_cfg=robot_file,
             world_model=None,
@@ -251,6 +273,7 @@ class BaseSimulator:
             use_cuda_graph=True if self.num_envs == 1 else False,
         )
         self.motion_gen = MotionGen(motion_gen_config)
+
         if self.num_envs == 1:
             self.motion_gen.warmup(enable_graph=True)
         _ = RobotConfig.from_dict(
