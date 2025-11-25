@@ -30,7 +30,7 @@ robot_cfg:
     }
 
     usd_flip_joint_limits: ["fr3_finger_joint2"]
-    urdf_path: "/app/openreal2sim/simulation/isaaclab/assets/franka_fr3/franka_fr3_simple.urdf"
+    urdf_path: "/app/openreal2sim/simulation/isaaclab/assets/franka_fr3/franka_fr3.urdf"
     asset_root_path: "/app/openreal2sim/simulation/isaaclab/assets/franka_fr3"
     base_link: "fr3_link0"
     ee_link: "fr3_hand"

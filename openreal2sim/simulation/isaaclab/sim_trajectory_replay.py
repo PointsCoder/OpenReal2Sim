@@ -98,17 +98,27 @@ class HeuristicManipulation(BaseSimulator):
         self.reset()
         self.wait(gripper_open=True, steps=10)
 
+        prev_gripper_open = True
         for t in range(n_steps):
             print(f"[INFO] replay step {t}/{n_steps}")
             act = actions[t:t+1]
             p_b = torch.as_tensor(act[:, 0:3], dtype=torch.float32, device=self.sim.device)
             q_b = torch.as_tensor(act[:, 3:7], dtype=torch.float32, device=self.sim.device)
-            g_b = act[:, 7] < 0.5
+            g_b = bool(act[0, 7] < 0.5)  # True = open, False = closed
+
             jp, success = self.move_to(p_b, q_b, gripper_open=g_b)
             if torch.any(success==False):
                 print(f"[ERR] replay step {t} failed.")
                 return False
-            jp = self.wait(gripper_open=g_b, steps=3)
+
+            # If gripper just closed (transition from open to closed), wait longer for full grasp
+            if prev_gripper_open and not g_b:
+                print(f"[INFO] Gripper closing detected at step {t}, waiting 50 steps for grasp...")
+                jp = self.wait(gripper_open=g_b, steps=50)
+            else:
+                jp = self.wait(gripper_open=g_b, steps=3)
+
+            prev_gripper_open = g_b
         return True
 
 # ──────────────────────────── Entry Point ────────────────────────────

@@ -274,14 +274,6 @@ class BaseSimulator:
         )
         self.motion_gen = MotionGen(motion_gen_config)
 
-        # Debug: Check if primitive_collision_constraint exists
-        print(f"[DEBUG] Robot type: {robot_type}")
-        print(f"[DEBUG] Has primitive_collision_constraint: {hasattr(self.motion_gen.rollout_fn, 'primitive_collision_constraint')}")
-        if hasattr(self.motion_gen.rollout_fn, 'primitive_collision_constraint'):
-            print(f"[DEBUG] primitive_collision_constraint: {self.motion_gen.rollout_fn.primitive_collision_constraint}")
-        else:
-            print(f"[DEBUG] Available attributes: {[attr for attr in dir(self.motion_gen.rollout_fn) if 'collision' in attr.lower()]}")
-
         if self.num_envs == 1:
             self.motion_gen.warmup(enable_graph=True)
         _ = RobotConfig.from_dict(
@@ -345,8 +337,6 @@ class BaseSimulator:
             max_attempts=max_attempts, enable_graph=use_graph
         )
 
-        print(f"[DEBUG] Calling plan_single with max_attempts={max_attempts}, enable_graph={use_graph}")
-        print(f"[DEBUG] start_state position: {joint_pos0}")
         result = self.motion_gen.plan_single(start_state, goal_pose, plan_cfg)
 
         traj = result.get_interpolated_plan()  # JointState
