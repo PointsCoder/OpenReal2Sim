@@ -2,8 +2,7 @@
 mkdir -p third_party/mega-sam/Depth-Anything/checkpoints
 wget -O third_party/mega-sam/Depth-Anything/checkpoints/depth_anything_vitl14.pth \
   https://huggingface.co/spaces/LiheYoung/Depth-Anything/resolve/main/checkpoints/depth_anything_vitl14.pth
-wget -O third_party/mega-sam/cvd_opt/raft-things.pth \
-  https://huggingface.co/datasets/licesma/raft_things/resolve/main/raft-things.pth
+gdown --id 1MqDajR89k-xLV0HIrmJ0k-n8ZpG6_suM -O third_party/mega-sam/cvd_opt/raft-things.pth
 
 # segmentation
 wget -O third_party/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt \
@@ -16,7 +15,7 @@ cd /app/third_party/Grounded-SAM-2 && \
 
 # foundation pose
 mkdir -p third_party/FoundationPose/weights
-hf download licesma/foundationpose_weights --repo-type dataset --local-dir third_party/FoundationPose/weights
+gdown --folder 1DFezOAD0oD1BblsXVxqDsl8fj0qzB82i -O third_party/FoundationPose/weights
 
 # foundation pose compile
 cd /app/third_party/FoundationPose/mycpp && \
