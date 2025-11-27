@@ -16,3 +16,15 @@
 [submodule "third_party/PromptDA"] # for prompt-based data augmentation
 	path = third_party/PromptDA
 	url = git@github.com:dynamoduan/PromptDA.git
+[submodule "third_party/graspness_unofficial"] # for grasp generation [motion]
+	path = third_party/graspness_unofficial
+	url = git@github.com:PointsCoder/graspness_unofficial.git
+[submodule "third_party/graspnetAPI"] # for grasp evaluation and utilities [motion]
+	path = third_party/graspnetAPI
+	url = git@github.com:PointsCoder/graspnetAPI.git
+[submodule "third_party/MinkowskiEngine"] # for sparse convolution operations [motion]
+	path = third_party/MinkowskiEngine
+	url = git@github.com:DynamoDuan/MinkowskiEngine.git
+[submodule "third_party/WiLoR"] # for hand extraction [motion]
+	path = third_party/WiLoR
+	url = git@github.com:DynamoDuan/WiLoR.git

@@ -78,7 +78,6 @@ pytorch-lightning
 scikit-image
 smplx==0.1.28
 yacs
-git+https://github.com/mattloper/chumpy
 xtcocotools
 pandas
 hydra-submitit-launcher
@@ -86,4 +85,4 @@ hydra-colorlog
 pyrootutils
 webdataset
 ultralytics==8.1.34
-
+# Note: chumpy installed separately in Dockerfile due to build isolation issues
