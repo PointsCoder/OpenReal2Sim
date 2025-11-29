@@ -1,4 +1,4 @@
-544## Motion & Grasp Preparation
+## Motion & Grasp Preparation
 
 This directory processes human demonstrations into robot-friendly motion goals and grasp priors.  
 It consumes `outputs/<key>/scene/scene.pkl` and `simulation/scene.json` from the reconstruction pipeline and augments them with:
