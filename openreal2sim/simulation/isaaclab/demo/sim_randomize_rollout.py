@@ -274,7 +274,7 @@ class RandomizeExecution(BaseSimulator):
         jp = self.wait(gripper_open=gripper_open, steps=steps)
         return jp
 
-    def follow_object_goals(self, start_joint_pos, sample_step=1, visualize=True):
+    def follow_object_goals(self, start_joint_pos, sample_step=1, recalibrate_interval = 3, visualize=True):
         """
         follow precompute object absolute trajectory: self.obj_goal_traj_w:
           T_obj_goal[t] = Δ_w[t] @ T_obj_init
@@ -288,17 +288,6 @@ class RandomizeExecution(BaseSimulator):
         obj_goal_all = self.obj_goal_traj_w  # [B, T, 4, 4]
         T = obj_goal_all.shape[1]
 
-        ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
-        # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
-        obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
-
-        T_ee_ws = []
-        T_obj_ws = []
-        for b in range(B):
-            T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
-            T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-            T_ee_ws.append(T_ee_w)
-            T_obj_ws.append(T_obj_w)
 
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
@@ -307,6 +296,18 @@ class RandomizeExecution(BaseSimulator):
         t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
 
         for t in t_iter:
+            if recalibrate_interval> 0 and t % recalibrate_interval == 0:
+                ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
+                # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
+                obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
+                T_ee_ws = []
+                T_obj_ws = []
+                for b in range(B):
+                    T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
+                    T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
+                    T_ee_ws.append(T_ee_w)
+                    T_obj_ws.append(T_obj_w)
+                print(f"[INFO] recalibrated at step {t}/{T}")
             goal_pos_list, goal_quat_list = [], []
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
@@ -334,6 +335,8 @@ class RandomizeExecution(BaseSimulator):
             self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
 
         is_grasp_success = self.is_grasp_success()
+        print('[INFO] last obj goal', obj_goal_all[:, -1])
+        print('[INFO] last obj pos', self.object_prim.data.root_state_w[:, :3])
         for b in range(B):
             if self.final_gripper_state_list[b]:
                 self.wait(gripper_open=False, steps=10, record = self.record)
@@ -343,22 +346,10 @@ class RandomizeExecution(BaseSimulator):
         return joint_pos, is_grasp_success
 
 
-    def follow_object_centers(self, start_joint_pos, sample_step=1, visualize=True):
+    def follow_object_centers(self, start_joint_pos, sample_step=1, recalibrate_interval = 3, visualize=True):
         B = self.scene.num_envs
         obj_goal_all = self.obj_goal_traj_w  # [B, T, 4, 4]
         T = obj_goal_all.shape[1]
-
-        ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
-        # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
-        obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
-
-        T_ee_ws = []
-        T_obj_ws = []
-        for b in range(B):
-            T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
-            T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-            T_ee_ws.append(T_ee_w)
-            T_obj_ws.append(T_obj_w)
 
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
@@ -367,6 +358,19 @@ class RandomizeExecution(BaseSimulator):
         t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
 
         for t in t_iter:
+            if recalibrate_interval> 0 and t % recalibrate_interval == 0:
+                ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
+                # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
+                obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
+                T_ee_ws = []
+                T_obj_ws = []
+                for b in range(B):
+                    T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
+                    T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
+                    T_ee_ws.append(T_ee_w)
+                    T_obj_ws.append(T_obj_w)
+                print(f"[INFO] recalibrated at step {t}/{T}")
+
             goal_pos_list, goal_quat_list = [], []
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
@@ -392,6 +396,8 @@ class RandomizeExecution(BaseSimulator):
             print(self.object_prim.data.root_state_w[:, :7])
             self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
         is_grasp_success = self.is_grasp_success()
+        print('[INFO] last obj goal', obj_goal_all[:, -1])
+        print('[INFO] last obj pos', self.object_prim.data.root_state_w[:, :3])
         for b in range(B):
             if self.final_gripper_state_list[b]:
                 self.wait(gripper_open=False, steps=10, record = self.record)

@@ -18,6 +18,7 @@ class RandomizerConfig:
     robot_pose_randomize_range: float = 0.03
     robot_pose_randomize_angle: float = math.pi / 180.0
     robot_pose_randomize_num: int = 10
+    fix_end_pose: bool = True
 
     def to_kwargs(self) -> Dict[str, float | int]:
         """Return a shallow dict representation that can be splatted into the randomizer."""
@@ -28,7 +29,7 @@ class RandomizerConfig:
 class HeuristicConfig:
     """Configuration for the heuristic manipulation stage."""
 
-    num_envs: int = 5
+    num_envs: int = 1
     num_trials: int = 10
 
 

@@ -19,6 +19,15 @@ class RobotType(Enum):
 
 
 @dataclass
+class BackgroundCfg:
+    background_rgb_path: str
+    background_mesh_path: str
+    background_usd_path: str
+    background_point: List[float]
+
+
+
+@dataclass
 class ObjectCfg:
     object_id: int
     object_name: str
@@ -66,9 +75,7 @@ class TaskCfg:
     task_id: int
     task_desc: List[str]
     task_type: TaskType
-    bg_rgb_path: str
-    background_path: str
-    background_usd_path: str
+    background_cfg: BackgroundCfg
     camera_info: CameraInfo
     manipulated_oid: int  
     start_related: List[int]

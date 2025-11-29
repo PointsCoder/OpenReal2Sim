@@ -830,12 +830,11 @@ class BaseSimulator:
         self.save_dict["gripper_cmd"].append(obs["gripper_cmd"].cpu().numpy())  # [B,1]
         self.save_dict["joint_vel"].append(obs["joint_vel"].cpu().numpy())
         self.save_dict["ee_pose_cam"].append(obs["ee_pose_cam"].cpu().numpy())
+        
     def clear_data(self):
         for key in self.save_dict.keys():
             self.save_dict[key] = []
-
-                        
-  
+ 
     def _env_dir(self, base: Path, b: int) -> Path:
         d = base / f"env_{b:03d}"
         d.mkdir(parents=True, exist_ok=True)
@@ -845,8 +844,7 @@ class BaseSimulator:
         already_existing_num = len(list(base.iterdir()))
         return base / f"demo_{already_existing_num:03d}.mp4"
 
-    def save_data(self, ignore_keys: List[str] = [], env_ids: Optional[List[int]] = None, export_hdf5: bool = False):
-        
+    def save_data(self, ignore_keys: List[str] = [], env_ids: Optional[List[int]] = None, export_hdf5: bool = False, save_other_things: bool = False):
         stacked = {k: np.array(v) for k, v in self.save_dict.items()}
         if env_ids is None:
             env_ids = self._all_env_ids.cpu().numpy()
@@ -855,158 +853,68 @@ class BaseSimulator:
         composed_rgb = copy.deepcopy(stacked["rgb"])
         self.save_dict["composed_rgb"] = composed_rgb
         hdf5_names = []
+        video_paths = []
         for b in env_ids:
             demo_path = self._get_next_demo_dir(video_dir)
             hdf5_names.append(demo_path.name.replace(".mp4", ""))
-       
-          
-            for key, arr in stacked.items():
-                # if key in ignore_keys:  # skip the keys for storage
-                #     continue
-                # if key == "rgb":
-                #     video_path = env_dir / "sim_video.mp4"
-                #     writer = imageio.get_writer(
-                #         video_path, fps=50, macro_block_size=None
-                #     )
-                #     for t in range(arr.shape[0]):
-                #         writer.append_data(arr[t, b])
-                #     writer.close()
-                    
-                # elif key == "segmask":
-                #     video_path = env_dir / "mask_video.mp4"
-                #     writer = imageio.get_writer(
-                #         video_path, fps=50, macro_block_size=None
-                #     )
-                #     for t in range(arr.shape[0]):
-                #         writer.append_data((arr[t, b].astype(np.uint8) * 255))
-                #     writer.close()
-                # elif key == "depth":
-                #     depth_seq = arr[:, b]
-                #     flat = depth_seq[depth_seq > 0]
-                #     max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
-                #     depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(
-                #         np.uint8
-                #     )
-                #     video_path = env_dir / "depth_video.mp4"
-                #     writer = imageio.get_writer(
-                #         video_path, fps=50, macro_block_size=None
-                #     )
-                #     for t in range(depth_norm.shape[0]):
-                #         writer.append_data(depth_norm[t])
-                #     writer.close()
-                #     np.save(env_dir / f"{key}.npy", depth_seq)
-                # elif key != "composed_rgb":
-                #     #import pdb; pdb.set_trace()
-                #     np.save(env_dir / f"{key}.npy", arr[:, b])
+            if save_other_things:
+                demo_dir = self.out_dir / self.img_folder/ "demos"
+                demo_dir = self._get_next_demo_dir(demo_dir).replace(".mp4", "")
+                env_dir = self._env_dir(demo_dir, b)
+                for key, arr in stacked.items():
+                    if key in ignore_keys:  # skip the keys for storage
+                        continue
+                    if key == "rgb":
+                        video_path = env_dir / "sim_video.mp4"
+                        writer = imageio.get_writer(
+                            video_path, fps=50, macro_block_size=None
+                        )
+                        for t in range(arr.shape[0]):
+                            writer.append_data(arr[t, b])
+                        writer.close()
+                        
+                    elif key == "segmask":
+                        video_path = env_dir / "mask_video.mp4"
+                        writer = imageio.get_writer(
+                            video_path, fps=50, macro_block_size=None
+                        )
+                        for t in range(arr.shape[0]):
+                            writer.append_data((arr[t, b].astype(np.uint8) * 255))
+                        writer.close()
+                    elif key == "depth":
+                        depth_seq = arr[:, b]
+                        flat = depth_seq[depth_seq > 0]
+                        max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
+                        depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(
+                            np.uint8
+                        )
+                        video_path = env_dir / "depth_video.mp4"
+                        writer = imageio.get_writer(
+                            video_path, fps=50, macro_block_size=None
+                        )
+                        for t in range(depth_norm.shape[0]):
+                            writer.append_data(depth_norm[t])
+                        writer.close()
+                        np.save(env_dir / f"{key}.npy", depth_seq)
+                    elif key != "composed_rgb":
+                        np.save(env_dir / f"{key}.npy", arr[:, b])
                 writer = imageio.get_writer(demo_path, fps=50, macro_block_size=None)
                 rgb = np.array(self.save_dict["rgb"])
                 mask = np.array(self.save_dict["segmask"])
-                bg_rgb_path = self.task_cfg.bg_rgb_path
+                bg_rgb_path = self.task_cfg.background_cfg.background_rgb_path
                 self.bg_rgb = imageio.imread(bg_rgb_path)
                 for t in range(rgb.shape[0]):
                     composed = self.convert_real(mask[t, b], self.bg_rgb, rgb[t, b])    
                     self.save_dict["composed_rgb"][t, b] = composed
                     writer.append_data(composed)
                 writer.close()
+                video_paths.append(demo_path)
         if export_hdf5:
-            self.export_batch_data_to_hdf5(hdf5_names)
+            self.export_batch_data_to_hdf5(hdf5_names, video_paths)
         print("[INFO]: Demonstration is saved at: ", demo_save_path)
 
-    # def collect_data_from_folder(self, folder_path: Path):
-    #     """
-    #     Load `.npy` files saved by `save_data` and repopulate `self.save_dict`.
 
-    #     The provided directory may either be:
-    #       • A demo folder containing multiple `env_XXX` subdirectories, or
-    #       • A single `env_XXX` directory.
-
-    #     Args:
-    #         folder_path: Path to the data directory.
-
-    #     Returns:
-    #         A tuple ``(stacked, env_dirs)`` where ``stacked`` maps data keys to
-    #         stacked numpy arrays of shape `[T, B, ...]` (``T`` timesteps,
-    #         ``B`` environments) and ``env_dirs`` is the ordered list of
-    #         environment directories discovered in ``folder_path``.
-    #     """
-    #     folder_path = Path(folder_path)
-    #     if not folder_path.exists():
-    #         raise FileNotFoundError(f"[collect_data_from_folder] path does not exist: {folder_path}")
-    #     if folder_path.is_file():
-    #         raise NotADirectoryError(f"[collect_data_from_folder] expected a directory, got file: {folder_path}")
-
-    #     if folder_path.name.startswith("env_"):
-    #         env_dirs = [folder_path]
-    #     else:
-    #         env_dirs = sorted(
-    #             [p for p in folder_path.iterdir() if p.is_dir() and p.name.startswith("env_")],
-    #             key=lambda p: p.name,
-    #         )
-
-    #     if len(env_dirs) == 0:
-    #         raise ValueError(f"[collect_data_from_folder] no env_XXX directories found in {folder_path}")
-
-    #     aggregated: Dict[str, List[np.ndarray]] = {}
-    #     for env_dir in env_dirs:
-    #         for npy_file in sorted(env_dir.glob("*.npy")):
-    #             key = npy_file.stem
-    #             try:
-    #                 arr = np.load(npy_file, allow_pickle=False)
-    #             except Exception as exc:
-    #                 print(f"[collect_data_from_folder] skip {npy_file}: {exc}")
-    #                 continue
-    #             aggregated.setdefault(key, []).append(arr)
-
-    #     if len(aggregated) == 0:
-    #         raise ValueError(f"[collect_data_from_folder] no npy data found in {folder_path}")
-
-    #     stacked: Dict[str, np.ndarray] = {}
-    #     for key, env_slices in aggregated.items():
-    #         reference_shape = env_slices[0].shape
-    #         for idx, slice_arr in enumerate(env_slices[1:], start=1):
-    #             if slice_arr.shape != reference_shape:
-    #                 raise ValueError(
-    #                     f"[collect_data_from_folder] inconsistent shapes for '{key}': "
-    #                     f"{reference_shape} vs {slice_arr.shape} (env idx {idx})"
-    #                 )
-    #         stacked[key] = np.stack(env_slices, axis=1)  # [T, B, ...]
-
-    #     for key in self.save_dict.keys():
-    #         if key not in stacked:
-    #             self.save_dict[key] = []
-    #             continue
-    #         data = stacked[key]  # [T, B, ...]
-    #         self.save_dict[key] = [data[t] for t in range(data.shape[0])]
-
-    #     return stacked, env_dirs
-
-    def _encode_rgb_sequence(self, frames: np.ndarray) -> tuple[list[bytes], int]:
-        """Encode a sequence of RGB frames into JPEG bytes and return padded bytes."""
-        if frames.shape[0] == 0:
-            return [], 1
-
-        encoded: List[bytes] = []
-        max_len = 1
-        for frame in frames:
-            frame_np = np.asarray(frame)
-            if frame_np.dtype != np.uint8:
-                frame_np = np.clip(frame_np, 0, 255).astype(np.uint8)
-            if frame_np.ndim == 3 and frame_np.shape[2] == 4:
-                frame_np = frame_np[..., :3]
-            if frame_np.ndim == 3 and frame_np.shape[2] == 3:
-                frame_np = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
-            success, buffer = cv2.imencode(".jpg", frame_np)
-            if not success:
-                raise RuntimeError("Failed to encode RGB frame into JPEG for RoboTwin export.")
-            data_bytes = buffer.tobytes()
-            encoded.append(data_bytes)
-            if len(data_bytes) > max_len:
-                max_len = len(data_bytes)
-
-        padded = [frame_bytes.ljust(max_len, b"\0") for frame_bytes in encoded]
-        return padded, max_len
-
-    def export_batch_data_to_hdf5(self, hdf5_names: List[str]) -> int:
+    def export_batch_data_to_hdf5(self, hdf5_names: List[str], video_paths: List[Path]) -> int:
         """Export buffered trajectories to RoboTwin-style HDF5 episodes."""
         if self.data_dir is not None:
             target_root = self.data_dir
@@ -1037,7 +945,7 @@ class BaseSimulator:
 
         camera_params = self._get_camera_parameters()
 
-        for env_idx, episode_name in enumerate(episode_names):
+        for env_idx, episode_name, video_path in zip(episode_names, video_paths):
             hdf5_path = data_dir / f"{episode_name}.hdf5"
             hdf5_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1051,34 +959,40 @@ class BaseSimulator:
                     cam_grp.create_dataset("extrinsics", data=extrinsics)
                     cam_grp.attrs["resolution"] = resolution
 
-                if "composed_rgb" in stacked:
-                    rgb_frames = stacked["composed_rgb"][:, env_idx]
-
-                    if rgb_frames.dtype != np.uint8:
-                        rgb_frames = np.clip(rgb_frames, 0, 255).astype(np.uint8)
-                    cam_grp.create_dataset(
-                        "rgb", 
-                        data=rgb_frames,
-                        compression="lzf" 
-                    )
-                    cam_grp.attrs["encoding"] = "uint8"
-                    cam_grp.attrs["channels"] = 3
-                    cam_grp.attrs["original_shape"] = rgb_frames.shape
-                    if camera_params is None:
-                        cam_grp.create_dataset("intrinsics", data=np.zeros((3, 3), dtype=np.float32))
-                        cam_grp.create_dataset("extrinsics", data=np.zeros((4, 4), dtype=np.float32))
-
-                # if "depth" in stacked:
-                #     depth_ds = cam_grp.create_dataset("depth", data=stacked["depth"][:, env_idx])
-                #     depth_ds.attrs["encoding"] = "float32"
-                #     depth_ds.attrs["unit"] = "meter"
-                # if "segmask" in stacked:
-                #     seg_ds = cam_grp.create_dataset(
-                #         "segmentation",
-                #         data=stacked["segmask"][:, env_idx].astype(np.uint8),
-                #     )
-                #     seg_ds.attrs["encoding"] = "uint8"
-                #     seg_ds.attrs["color_mapping"] = "instance_id"
+                # Read video frames and encode using JPEG compression (RoboTwin-style)
+                video_reader = imageio.get_reader(video_path)
+                rgb_frames = []
+                for frame in video_reader:
+                    rgb_frames.append(frame)
+                video_reader.close()
+                rgb_frames = np.array(rgb_frames)  # (T, H, W, 3)
+                
+                # Encode frames using JPEG compression (similar to RoboTwin's images_encoding)
+                encode_data = []
+                max_len = 0
+                for i in range(len(rgb_frames)):
+                    success, encoded_image = cv2.imencode(".jpg", rgb_frames[i])
+                    if not success:
+                        raise RuntimeError(f"Failed to encode frame {i}")
+                    jpeg_data = encoded_image.tobytes()
+                    encode_data.append(jpeg_data)
+                    max_len = max(max_len, len(jpeg_data))
+                
+                # Pad all encoded frames to the same length
+                padded_data = []
+                for jpeg_data in encode_data:
+                    padded_data.append(jpeg_data.ljust(max_len, b"\0"))
+                
+                # Store encoded data
+                cam_grp.create_dataset(
+                    "rgb", 
+                    data=np.array(padded_data, dtype=f"S{max_len}"),
+                    compression="lzf"
+                )
+                cam_grp.attrs["encoding"] = "jpeg"
+                cam_grp.attrs["channels"] = 3
+                cam_grp.attrs["original_shape"] = rgb_frames.shape
+              
 
                 joint_grp = f.create_group("joint_action")
                 if "joint_pos" in stacked:
@@ -1116,21 +1030,15 @@ class BaseSimulator:
                     endpose_grp.create_dataset(
                         "ee_pose_cam", data=stacked["ee_pose_cam"][:, env_idx].astype(np.float32)
                     )
-                extras = {}
-        
-
                 extras_grp = f.create_group("extras")
-
                 if self.task_cfg is not None:
                     extras_grp.create_dataset("task_desc", data=self.task_cfg.task_desc)
-                
                 if self.traj_cfg_list is not None:
                     traj_i = self.traj_cfg_list[env_idx]
                     traj_grp = extras_grp.create_group("traj")
                     traj_grp.create_dataset("robot_pose", data=traj_i.robot_pose)
                     traj_grp.create_dataset("pregrasp_pose", data=traj_i.pregrasp_pose)
                     traj_grp.create_dataset("grasp_pose", data=traj_i.grasp_pose)
-
 
                 frame_count = stacked["rgb"].shape[0]
                 meta_grp = f.create_group("meta")

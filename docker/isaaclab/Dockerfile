@@ -28,7 +28,8 @@ ENV FORCE_CUDA=1
 # RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 \
 #     torch==2.5.1+cu118 torchvision==0.20.1+cu118 torchaudio==2.5.1+cu118
 
-RUN pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+RUN pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128 
+RUN pip install transforms3d
 
 
 USER root

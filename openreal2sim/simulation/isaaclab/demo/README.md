@@ -39,9 +39,7 @@ The top-level configuration that defines a complete manipulation task:
 - **task_id** (int): Sequential task ID
 - **task_desc** (List[str]): Description of the task
 - **task_type** (TaskType): Type of task (SIMPLE_PICK, SIMPLE_PICK_PLACE, TARGETTED_PICK_PLACE)
-- **bg_rgb_path** (str): Path to background RGB image
-- **background_path** (str): Path to background mesh (GLB format)
-- **background_usd_path** (str): Path to background USD file
+- **background_cfg** (BackgroundCfg): Background configuration
 - **camera_info** (CameraInfo): Camera intrinsic and extrinsic parameters
 - **manipulated_oid** (int): Object ID of the manipulated object
 - **start_related** (List[int]): List of object IDs related to the start state
@@ -85,6 +83,15 @@ Defines an object in the scene:
 - **mesh_path** (str): Path to object mesh file (GLB format)
 - **usd_path** (str): Path to object USD file
 
+#### BackgroundCfg (Background Configuration)
+
+Defines the background of the scene:
+
+- **background_rgb_path** (str): Path to background RGB image
+- **background_mesh_path** (str): Path to background mesh file (GLB format)
+- **background_usd_path** (str): Path to background USD file
+- **background_point** (List[float]): Background point [x, y, z]
+
 #### CameraInfo (Camera Configuration)
 
 Camera intrinsic and extrinsic parameters:
@@ -120,6 +127,12 @@ Camera intrinsic and extrinsic parameters:
       "usd_path": "tasks/demo_video/object_2.usd"
     }
   ],
+  "background_cfg": {
+    "background_rgb_path": "tasks/demo_video/bg_rgb.jpg",
+    "background_mesh_path": "tasks/demo_video/background.glb",
+    "background_usd_path": "tasks/demo_video/background.usd",
+    "background_point": [0.0, 0.0, 0.0]
+  },
   "reference_trajectory": {
     "robot_pose": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
     "object_poses": {"2": [0.1, 0.2, 0.05, 1.0, 0.0, 0.0, 0.0]},

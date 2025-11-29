@@ -27,7 +27,7 @@ class Randomizer(TaskCfg):
         self.task_cfg = task_cfg
 
     
-    def generate_randomized_scene_cfg(self, grid_dist: float, grid_num: int, angle_random_range: float, angle_random_num: int, traj_randomize_num:int, scene_randomize_num: int, robot_pose_randomize_range, robot_pose_randomize_angle, robot_pose_randomize_num):
+    def generate_randomized_scene_cfg(self, grid_dist: float, grid_num: int, angle_random_range: float, angle_random_num: int, traj_randomize_num:int, scene_randomize_num: int, robot_pose_randomize_range, robot_pose_randomize_angle, robot_pose_randomize_num, fix_end_pose: bool = False):
         # Step 1: Generate candidate transforms
       
         candidate_transforms = []
@@ -48,10 +48,13 @@ class Randomizer(TaskCfg):
         traj_pose_pairs = []
         for _ in range(traj_randomize_num):
             start_pose = random.choice(candidate_transforms)
-            if self.task_cfg.task_type == TaskType.SIMPLE_PICK:
-                end_pose = start_pose.copy()  # For SIMPLE_PICK, end same as start
+            if fix_end_pose:
+                end_pose = np.eye(4)
             else:
-                end_pose = random.choice(candidate_transforms)
+                if self.task_cfg.task_type == TaskType.SIMPLE_PICK:
+                    end_pose = start_pose.copy()  # For SIMPLE_PICK, end same as start
+                else:
+                    end_pose = random.choice(candidate_transforms)
             traj_pose_pairs.append((start_pose, end_pose))
         
         # Step 3: Generate scene_randomize_num combinations for other objects

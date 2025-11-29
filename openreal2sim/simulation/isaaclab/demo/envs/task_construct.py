@@ -10,7 +10,7 @@ import sys
 from typing import List
 file_path = Path(__file__).resolve()
 sys.path.append(str(file_path.parent))
-from .task_cfg import TaskCfg, TaskType, ObjectCfg, CameraInfo, TrajectoryCfg, SuccessMetric, SuccessMetricType, RobotType
+from .task_cfg import TaskCfg, TaskType, ObjectCfg, CameraInfo, BackgroundCfg, TrajectoryCfg, SuccessMetric, SuccessMetricType, RobotType
 
 def get_next_id(folder: Path) -> int:
     if not folder.exists():
@@ -29,16 +29,17 @@ def construct_task_config(key, scene_dict: dict, base_folder: Path):
     if base_folder.exists():
         shutil.rmtree(base_folder)
     base_folder.mkdir(parents=True, exist_ok=True)  # Create directory before copying files
-    background_path = scene_dict["background"]["registered"]
+    background_mesh_path = scene_dict["background"]["registered"]
     background_usd_path = scene_dict["background"]["usd"]
-    shutil.copy(background_path, base_folder / "background.glb")
+    shutil.copy(background_mesh_path, base_folder / "background.glb")
     shutil.copy(background_usd_path, base_folder / "background.usd")
-    background_path = base_folder / "background.glb"
+    background_mesh_path = base_folder / "background.glb"
     background_usd_path = base_folder / "background.usd"
-    
-    bg_rgb_path = scene_dict["background_image"]
-    shutil.copy(bg_rgb_path, base_folder / "bg_rgb.jpg")
-    bg_rgb_path = base_folder / "bg_rgb.jpg"
+    background_rgb_path = scene_dict["background_image"]
+    shutil.copy(background_rgb_path, base_folder / "bg_rgb.jpg")
+    background_rgb_path = base_folder / "bg_rgb.jpg"
+    background_point = scene_dict["groundplane_in_sim"]["point"]
+    background_cfg = BackgroundCfg(background_rgb_path, background_mesh_path, background_usd_path, background_point)
     width = scene_dict["camera"]["width"]
     height = scene_dict["camera"]["height"]
     fx = scene_dict["camera"]["fx"]
@@ -219,15 +220,20 @@ def load_task_cfg(json_path: Path) -> TaskCfg:
             mesh_path=object_dict["mesh_path"],
             usd_path=object_dict["usd_path"]
         )
+    def parse_background_cfg(background_dict):
+        return BackgroundCfg(
+            background_rgb_path=background_dict["background_rgb_path"],
+            background_mesh_path=background_dict["background_mesh_path"],
+            background_usd_path=background_dict["background_usd_path"],
+            background_point=np.array(background_dict["background_point"], dtype=np.float32).tolist()
+        )
     # Compose TaskCfg
     task_cfg = TaskCfg(
         task_id=cfg_dict["task_id"],
         task_desc=cfg_dict["task_desc"],
         task_key=cfg_dict["task_key"],
         task_type=parse_enum(TaskType, cfg_dict["task_type"]),
-        bg_rgb_path=cfg_dict["bg_rgb_path"],
-        background_path=cfg_dict["background_path"],
-        background_usd_path=cfg_dict["background_usd_path"],
+        background_cfg=parse_background_cfg(cfg_dict["background_cfg"]),
         camera_info=parse_camera_info(cfg_dict["camera_info"]),
         manipulated_oid=cfg_dict["manipulated_oid"],
         start_related=cfg_dict["start_related"],
