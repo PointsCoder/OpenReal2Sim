@@ -11,7 +11,7 @@ from sim_utils.calibration_utils import calibration_to_robot_pose, load_extrinsi
 default_config = {
     "physics": "default",
     "extrinsics": None,
-    "goal_offset": 0,
+    "goal_offset": 0.05,
     "grasp_idx": -1,
     "grasp_pre": None,
     "grasp_delta": None,
@@ -70,7 +70,7 @@ def load_sim_parameters(basedir, key) -> dict:
 
     # demo configs
    
-    goal_offset = exp_config.get("goal_offset", 0)
+    goal_offset = exp_config.get("goal_offset", 0.05)
     grasp_idx = exp_config.get("grasp_idx", -1)
     grasp_pre = exp_config.get("grasp_pre", None)
     grasp_delta = exp_config.get("grasp_delta", None)

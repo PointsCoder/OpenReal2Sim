@@ -38,8 +38,8 @@ def construct_task_config(key, scene_dict: dict, base_folder: Path):
     background_rgb_path = scene_dict["background_image"]
     shutil.copy(background_rgb_path, base_folder / "bg_rgb.jpg")
     background_rgb_path = base_folder / "bg_rgb.jpg"
-    background_point = scene_dict["groundplane_in_sim"]["point"]
-    background_cfg = BackgroundCfg(background_rgb_path, background_mesh_path, background_usd_path, background_point)
+    background_point = scene_dict["groundplane_in_cam"]["point"]
+    background_cfg = BackgroundCfg(str(background_rgb_path), str(background_mesh_path), str(background_usd_path), background_point)
     width = scene_dict["camera"]["width"]
     height = scene_dict["camera"]["height"]
     fx = scene_dict["camera"]["fx"]
@@ -83,20 +83,11 @@ def construct_task_config(key, scene_dict: dict, base_folder: Path):
         task_type = TaskType.SIMPLE_PICK
     else:
         raise ValueError(f"Invalid task type: {scene_dict['info']['task_type']}")
-    task_config = TaskCfg(task_key, task_id, task_desc, task_type, str(bg_rgb_path), str(background_path), str(background_usd_path), camera_info, manipulated_oid, start_related, end_related, objects)
+    task_config = TaskCfg(task_key, task_id, task_desc, task_type, background_cfg, camera_info, manipulated_oid, start_related, end_related, objects)
     json_path = base_folder / "task.json"
     with open(json_path, "w") as f:
         json.dump(serialize_task_cfg(task_config), f)
     return task_config, base_folder
-
-
-def add_reference_trajectory(task_cfg: TaskCfg, reference_trajectory: TrajectoryCfg, base_folder: Path):
-    task_cfg.reference_trajectory = reference_trajectory
-    json_path = base_folder / "task.json"
-    with open(json_path, "w") as f:
-        json.dump(serialize_task_cfg(task_cfg), f)
-    return task_cfg
-
 
 
 
@@ -239,7 +230,7 @@ def load_task_cfg(json_path: Path) -> TaskCfg:
         start_related=cfg_dict["start_related"],
         end_related=cfg_dict["end_related"],
         objects=[parse_object_cfg(obj) for obj in cfg_dict["objects"]],
-        reference_trajectory=parse_traj_cfg(cfg_dict.get("reference_trajectory", None)),
+        reference_trajectory=[parse_traj_cfg(traj) for traj in cfg_dict.get("reference_trajectory", [])],
         generated_trajectories=[parse_traj_cfg(traj) for traj in cfg_dict.get("generated_trajectories", [])]
     )
 

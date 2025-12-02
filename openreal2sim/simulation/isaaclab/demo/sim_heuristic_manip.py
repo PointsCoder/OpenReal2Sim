@@ -27,17 +27,20 @@ parser.add_argument("--key", type=str, default="demo_video", help="scene key (ou
 parser.add_argument("--robot", type=str, default="franka")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments (overrides running_cfg)")
 parser.add_argument("--num_trials", type=int, default=None, help="Number of trials (overrides running_cfg)")
+parser.add_argument("--grasp_num", type=int, default=5,help="Number of grasp trials")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
-args_cli.headless = True  # headless mode for batch execution
+args_cli.headless = True # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
 # ─────────── Runtime imports ───────────
 import isaaclab.sim as sim_utils
 from isaaclab.utils.math import subtract_frame_transforms
-
+import sys
+sys.path.append(str(file_path.parent))
+sys.path.append(str(file_path.parent.parent))
 from sim_utils.grasp_group_utils import GraspGroup
 
 
@@ -83,6 +86,8 @@ class HeuristicManipulation(BaseSimulator):
         self.task_type = sim_cfgs["demo_cfg"]["task_type"]
         self.robot_type = args.robot
         self.load_obj_goal_traj()
+        self.ok_cnt_all = 0
+        self.grasp_num = grasp_num
 
     
     def load_obj_goal_traj(self):
@@ -140,42 +145,36 @@ class HeuristicManipulation(BaseSimulator):
           T_ee_goal[t] = T_obj_goal[t] @ (T_obj_grasp^{-1} @ T_ee_grasp)
         Here T_obj_grasp / T_ee_grasp is the transform at the moment of grasping.
         """
-
         B = self.scene.num_envs
         obj_goal_all = self.obj_goal_traj_w  # [B, T, 4, 4]
         T = obj_goal_all.shape[1]
 
-
+       
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
 
         t_iter = list(range(0, T, sample_step))
         t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
-
+        ee_pos_initial = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+        obj_pos_initial = self.object_prim.data.root_com_pos_w[:, 0:3]
+        initial_grasp_dist = torch.norm(ee_pos_initial - obj_pos_initial, dim=1) # [B]
+        
+        # Store for is_success check
+        self.initial_grasp_dist = initial_grasp_dist
         for t in t_iter:
-            goal_pos_list, goal_quat_list = [], []
-            print(f"[INFO] follow object goal step {t}/{T}")
             if recalibrate_interval> 0 and t % recalibrate_interval == 0:
                 ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
-                # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
                 obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
-                T_ee_ws = []
-                T_obj_ws = []
+                T_ee_in_obj = []
                 for b in range(B):
                     T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
                     T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-                    T_ee_ws.append(T_ee_w)
-                    T_obj_ws.append(T_obj_w)
-                print(f"[INFO] recalibrated at step {t}/{T}")
+                    T_ee_in_obj.append((np.linalg.inv(T_obj_w) @ T_ee_w).astype(np.float32))
+            goal_pos_list, goal_quat_list = [], []
+            print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
                 T_obj_goal = obj_goal_all[b, t]            # (4,4)
-                trans_offset = T_obj_goal - T_obj_ws[b]
-                T_ee_goal  = T_ee_ws[b] + trans_offset
-                original_R = T_obj_ws[b][:3, :3]
-                new_R = T_ee_goal[:3, :3]
-                original_ee_R = T_ee_ws[b][:3, :3]
-                new_ee_R = new_R @ np.linalg.inv(original_R) @ original_ee_R
-                T_ee_goal[:3, :3] = new_ee_R
+                T_ee_goal  = T_obj_goal @ T_ee_in_obj[b]   # (4,4)
                 pos_b, quat_b = mat_to_pose(T_ee_goal)
                 goal_pos_list.append(pos_b.astype(np.float32))
                 goal_quat_list.append(quat_b.astype(np.float32))
@@ -190,64 +189,72 @@ class HeuristicManipulation(BaseSimulator):
             )
             joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False)
             self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
+
         print('[INFO] last obj goal', obj_goal_all[:, -1])
         print('[INFO] last obj pos', self.object_prim.data.root_state_w[:, :3])
-        success_ids = self.is_success()
+        is_success = self.is_success(position_threshold = 0.10)
+        success_ids = torch.where(is_success)[0]
         joint_pos = self.wait(gripper_open=not self.final_gripper_closed, steps=30)
         return joint_pos, success_ids
 
-    def follow_object_centers(self, start_joint_pos, sample_step=1, visualize=True, recalibrate_interval=3):
-        B = self.scene.num_envs
-        obj_goal_all = self.obj_goal_traj_w  # [B, T, 4, 4]
-        T = obj_goal_all.shape[1]
+    ## FIXME: This should have some problem. But it works.
+    def follow_object_centers(self, start_joint_pos, sample_step=1, visualize=True, recalibrate_interval=1):
+            B = self.scene.num_envs
+            obj_goal_all = self.obj_goal_traj_w  # [B, T, 4, 4]
+            T = obj_goal_all.shape[1]
 
-        joint_pos = start_joint_pos
-        root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
+            joint_pos = start_joint_pos
+            root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
+            e_pos_initial = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+            obj_pos_initial = self.object_prim.data.root_com_pos_w[:, 0:3]
+            initial_grasp_dist = torch.norm(ee_pos_initial - obj_pos_initial, dim=1) # [B]
+            
+            # Store for is_success check
+            self.initial_grasp_dist = initial_grasp_dist
+            t_iter = list(range(0, T, sample_step))
+            t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
 
-        t_iter = list(range(0, T, sample_step))
-        t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
-
-        for t in t_iter:
-            if recalibrate_interval> 0 and t % recalibrate_interval == 0:
-                ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
-                obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
-                T_ee_ws = []
-                T_obj_ws = []
+            for t in t_iter:
+                if recalibrate_interval> 0 and t % recalibrate_interval == 0:
+                    ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
+                    obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
+                    T_ee_ws = []
+                    T_obj_ws = []
+                    for b in range(B):
+                        T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
+                        T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
+                        T_ee_ws.append(T_ee_w)
+                        T_obj_ws.append(T_obj_w)
+                    print(f"[INFO] recalibrated at step {t}/{T}")
+                goal_pos_list, goal_quat_list = [], []
+                print(f"[INFO] follow object goal step {t}/{T}")
                 for b in range(B):
-                    T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
-                    T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-                    T_ee_ws.append(T_ee_w)
-                    T_obj_ws.append(T_obj_w)
-                print(f"[INFO] recalibrated at step {t}/{T}")
-            goal_pos_list, goal_quat_list = [], []
-            print(f"[INFO] follow object goal step {t}/{T}")
-            for b in range(B):
-                T_obj_goal = obj_goal_all[b, t]            # (4,4)
-                trans_offset = T_obj_goal - T_obj_ws[b]
-                T_ee_goal  = T_ee_ws[b] + trans_offset
-                pos_b, quat_b = mat_to_pose(T_ee_goal)
+                    T_obj_goal = obj_goal_all[b, t]            # (4,4)
+                    trans_offset = T_obj_goal - T_obj_ws[b]
+                    T_ee_goal  = T_ee_ws[b] + trans_offset
+                    pos_b, quat_b = mat_to_pose(T_ee_goal)
 
-                goal_pos_list.append(pos_b.astype(np.float32))
-                goal_quat_list.append(quat_b.astype(np.float32))
+                    goal_pos_list.append(pos_b.astype(np.float32))
+                    goal_quat_list.append(quat_b.astype(np.float32))
 
 
-            goal_pos  = torch.as_tensor(np.stack(goal_pos_list),  dtype=torch.float32, device=self.sim.device)
-            goal_quat = ee_w[:, 3:7]
+                goal_pos  = torch.as_tensor(np.stack(goal_pos_list),  dtype=torch.float32, device=self.sim.device)
+                goal_quat = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 3:7]
 
-            if visualize:
-                self.show_goal(goal_pos, goal_quat)
-            ee_pos_b, ee_quat_b = subtract_frame_transforms(
-                root_w[:, :3], root_w[:, 3:7], goal_pos, goal_quat
-            )
-            joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False)
-
-            print('[INFO]current ee obj trans diff', self.object_prim.data.root_state_w[:, :3] - self.robot.data.root_state_w[:, :3])
-            self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
-        is_success = self.is_success()
-        print('[INFO] last obj goal', obj_goal_all[:, -1])
-        print('[INFO] last obj pos', self.object_prim.data.root_state_w[:, :3])
-        joint_pos = self.wait(gripper_open=not self.final_gripper_closed, steps=30)
-        return joint_pos, is_success
+                if visualize:
+                    self.show_goal(goal_pos, goal_quat)
+                ee_pos_b, ee_quat_b = subtract_frame_transforms(
+                    root_w[:, :3], root_w[:, 3:7], goal_pos, goal_quat
+                )
+                joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False)
+                print('[INFO] goal pose', obj_goal_all[:, t], 'current obj pose', self.object_prim.data.root_state_w[:, :3])
+                print('[INFO]current ee obj trans diff', self.object_prim.data.root_state_w[:, :3] - self.robot.data.root_state_w[:, :3])
+                self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
+            is_success = self.is_success()
+            print('[INFO] last obj goal', obj_goal_all[:, -1])
+            print('[INFO] last obj pos', self.object_prim.data.root_state_w[:, :3])
+            joint_pos = self.wait(gripper_open=not self.final_gripper_closed, steps=30)
+            return joint_pos, torch.where(is_success)[0]
 
 
 
@@ -370,11 +377,123 @@ class HeuristicManipulation(BaseSimulator):
         jp = self.wait(gripper_open=gripper_open, steps=steps)
         return jp
  
-    def is_success(self) -> torch.Tensor:
-        ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
-        obj_w = self.object_prim.data.root_com_pos_w[:, 0:3]
-        dist = torch.norm(obj_w[:, :3] - ee_w[:, :3], dim=1) # [B]
-        return (dist < 0.15).to(torch.bool)
+
+    
+    def is_success(self, position_threshold: float = 0.10, skip_envs: np.ndarray = None) -> torch.Tensor:
+        """
+        Verify if the manipulation task succeeded by checking:
+        1. Object is at Goal (Distance < 10cm)
+        2. Gripper is at Goal (Distance < 10cm) - Explicit check using T_ee_in_obj
+        3. Object is in Gripper (Deviation < 2cm)
+        
+        Args:
+            position_threshold: Distance threshold for Object-Goal check (default: 0.10m = 10cm)
+            skip_envs: Boolean array [B] indicating which envs to skip from verification
+        
+        Returns:
+            torch.Tensor: Boolean tensor [B] indicating success for each environment
+        """
+        B = self.scene.num_envs
+        # --- 1. Object Goal Check ---
+        final_goal_matrices = self.obj_goal_traj_w[:, -1, :, :]  # [B, 4, 4]
+        goal_positions_np = final_goal_matrices[:, :3, 3]
+        goal_positions = torch.tensor(goal_positions_np, dtype=torch.float32, device=self.sim.device)
+        
+        # Current Root and COM
+        current_root_state = self.object_prim.data.root_state_w
+        current_root_pos = current_root_state[:, :3]
+        current_root_quat = current_root_state[:, 3:7]
+        current_com_pos = self.object_prim.data.root_com_pos_w[:, :3]
+        
+        # Calculate Goal COM positions
+        # The COM offset is constant in the object's local frame.
+        # We need to: (1) Get the current COM offset in local frame, (2) Apply to goal pose
+        goal_com_positions_list = []
+        for b in range(B):
+            # Current state
+            root_pos_cur = current_root_pos[b].cpu().numpy()
+            root_quat_cur = current_root_quat[b].cpu().numpy()  # wxyz format
+            com_pos_cur = current_com_pos[b].cpu().numpy()
+            
+            # COM offset in world frame
+            com_offset_world = com_pos_cur - root_pos_cur  # [3]
+            
+            # Convert COM offset to object's local frame
+            # R_cur^T @ com_offset_world gives the offset in local coords (assuming no scale)
+            R_cur = transforms3d.quaternions.quat2mat(root_quat_cur)  # Convert wxyz to rotation matrix
+            com_offset_local = R_cur.T @ com_offset_world  # Rotate to local frame
+            
+            # Goal state
+            T_goal_root = final_goal_matrices[b]  # [4, 4] numpy array
+            goal_root_pos = T_goal_root[:3, 3]
+            R_goal = T_goal_root[:3, :3]
+            
+            # Apply local offset to goal pose
+            # goal_com_pos = goal_root_pos + R_goal @ com_offset_local
+            com_offset_world_goal = R_goal @ com_offset_local
+            goal_com_pos = goal_root_pos + com_offset_world_goal
+            
+            goal_com_positions_list.append(goal_com_pos)
+            
+        goal_com_positions = torch.tensor(np.array(goal_com_positions_list), dtype=torch.float32, device=self.sim.device)
+        
+        # Calculate Distances
+        root_dist = torch.norm(current_root_pos - goal_positions, dim=1)
+        com_dist = torch.norm(current_com_pos - goal_com_positions, dim=1)
+        
+        # Success requires BOTH Root and COM to be within threshold
+        obj_success = (root_dist <= position_threshold) & (com_dist <= position_threshold)
+
+        # --- 2. Gripper Goal Check ---
+        # Calculate Target Gripper Pose: T_ee_goal = T_obj_goal @ T_ee_in_obj
+        # We use the stored T_ee_in_obj from the start of the trajectory
+        ee_pos_final = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+        
+        if hasattr(self, 'T_ee_in_obj') and self.T_ee_in_obj is not None:
+            target_ee_pos_list = []
+            for b in range(B):
+                T_obj_goal = final_goal_matrices[b]
+                T_ee_goal = T_obj_goal @ self.T_ee_in_obj[b]
+                target_ee_pos_list.append(T_ee_goal[:3, 3])
+            
+            target_ee_pos = torch.tensor(np.array(target_ee_pos_list), dtype=torch.float32, device=self.sim.device)
+            grip_goal_dist = torch.norm(ee_pos_final - target_ee_pos, dim=1)
+            gripper_success = grip_goal_dist <= 0.10
+        else:
+            # Fallback if T_ee_in_obj not available (should not happen if follow_object_goals ran)
+            print("[WARN] T_ee_in_obj not found, skipping explicit Gripper Goal Check")
+            gripper_success = torch.ones(B, dtype=torch.bool, device=self.sim.device)
+            grip_goal_dist = torch.zeros(B, dtype=torch.float32, device=self.sim.device)
+
+        # --- 3. Holding Check (Object in Gripper) ---
+        # Check if the distance between Gripper and Object COM has remained stable.
+        # We compare the final distance to the initial grasp distance.
+        obj_com_final = self.object_prim.data.root_com_pos_w[:, 0:3]
+        current_grip_com_dist = torch.norm(ee_pos_final - obj_com_final, dim=1)
+        
+        if hasattr(self, 'initial_grasp_dist') and self.initial_grasp_dist is not None:
+            grasp_deviation = torch.abs(current_grip_com_dist - self.initial_grasp_dist)
+            holding_success = grasp_deviation <= 0.02
+            
+            holding_metric = grasp_deviation
+            holding_threshold = 0.02
+            holding_metric_name = "Grip-COM Deviation"
+        else:
+            holding_success = current_grip_com_dist <= 0.15
+            holding_metric = current_grip_com_dist
+            holding_threshold = 0.15
+            holding_metric_name = "Grip-COM Dist"
+
+        # Combined Success
+        success_mask = obj_success & gripper_success & holding_success
+       
+        print("="*50)
+        print(f"TASK VERIFIER: SUCCESS - {success_mask.sum().item()}/{B} environments succeeded")
+        print("="*50 + "\n")
+        
+        return success_mask
+
+
 
     def build_grasp_info(
         self,
@@ -412,7 +531,7 @@ class HeuristicManipulation(BaseSimulator):
         }
 
 
-    def grasp_trials(self, gg, std: float = 0.0005):
+    def grasp_trials(self, gg, std: float = 0):
 
         B = self.scene.num_envs
         idx_all = list(range(len(gg)))
@@ -429,47 +548,54 @@ class HeuristicManipulation(BaseSimulator):
         chosen_pre    = None
         chosen_delta  = None
 
-        # assign different grasp proposals to different envs
-        for start in range(0, len(idx_all), B):
-            block = idx_all[start : start + B]
-            if len(block) < B:
-                block = block + [block[-1]] * (B - len(block))
-
-            grasp_pos_w_batch, grasp_quat_w_batch = [], []
-            for idx in block:
-                p_w, q_w = grasp_to_world(gg[int(idx)])
-                grasp_pos_w_batch.append(p_w.astype(np.float32))
-                grasp_quat_w_batch.append(q_w.astype(np.float32))
-            grasp_pos_w_batch  = np.stack(grasp_pos_w_batch,  axis=0)  # (B,3)
-            grasp_quat_w_batch = np.stack(grasp_quat_w_batch, axis=0)  # (B,4)
-            self.show_goal(grasp_pos_w_batch, grasp_quat_w_batch)
-            # random disturbance along approach axis
-            pre_dist_batch = np.full((B,), pre_dist_const, dtype=np.float32)
-            delta_batch    = rng.normal(-0.002, std, size=(B,)).astype(np.float32)
-
-            info = self.build_grasp_info(grasp_pos_w_batch, grasp_quat_w_batch,
-                                          pre_dist_batch, delta_batch)
-
-            ok_batch, score_batch = self.execute_and_lift_once_batch(info)
-            ok_cnt = int(ok_batch.sum())
-            print(f"[SEARCH] block[{start}:{start+B}] -> success {ok_cnt}/{B}")
-            if ok_cnt > 0:
-                winners = []
-                for candidate in range(len(score_batch)):
-                    if score_batch[candidate] == np.max(score_batch):
-                        winner = candidate
-                        chosen_pose_w = (grasp_pos_w_batch[winner], grasp_quat_w_batch[winner])
-                        chosen_pre    = float(pre_dist_batch[winner])
-                        chosen_delta  = float(delta_batch[winner])
-                        success = True
-                        winners.append({
-                            "success": success,
-                            "chosen_pose_w": chosen_pose_w,
-                            "chosen_pre": chosen_pre,
-                            "chosen_delta": chosen_delta,
-                        })
+        # assign different grasp proposals to different envs\
+      
+        winners = []
+        success = False
+        for i in range(self.num_trials):
+            if self.ok_cnt_all >= 2 * self.grasp_num:
                 return winners
+            std = std + 0.003
+            for start in range(0, len(idx_all), B):
+                if self.ok_cnt_all >= 2 * self.grasp_num:
+                    return winners
+                block = idx_all[start : start + B]
+                if len(block) < B:
+                    block = block + [block[-1]] * (B - len(block))
 
+                grasp_pos_w_batch, grasp_quat_w_batch = [], []
+                for idx in block:
+                    p_w, q_w = grasp_to_world(gg[int(idx)])
+                    grasp_pos_w_batch.append(p_w.astype(np.float32))
+                    grasp_quat_w_batch.append(q_w.astype(np.float32))
+                grasp_pos_w_batch  = np.stack(grasp_pos_w_batch,  axis=0)  # (B,3)
+                grasp_quat_w_batch = np.stack(grasp_quat_w_batch, axis=0)  # (B,4)
+                self.show_goal(grasp_pos_w_batch, grasp_quat_w_batch)
+                # random disturbance along approach axis
+                pre_dist_batch = np.full((B,), pre_dist_const, dtype=np.float32)
+                delta_batch    = rng.normal(-0.002, std, size=(B,)).astype(np.float32)
+
+                info = self.build_grasp_info(grasp_pos_w_batch, grasp_quat_w_batch,
+                                            pre_dist_batch, delta_batch)
+
+                ok_batch, score_batch = self.execute_and_lift_once_batch(info)
+                ok_cnt = int(ok_batch.sum())
+                self.ok_cnt_all += ok_cnt
+                print(f"[SEARCH] block[{start}:{start+B}] -> success {ok_cnt}/{B}")
+                if ok_cnt > 0:
+                    for candidate in range(len(score_batch)):
+                        if score_batch[candidate] == np.max(score_batch):
+                            winner = candidate
+                            chosen_pose_w = (grasp_pos_w_batch[winner], grasp_quat_w_batch[winner])
+                            chosen_pre    = float(pre_dist_batch[winner])
+                            chosen_delta  = float(delta_batch[winner])
+                            success = True
+                            winners.append({
+                                "success": success,
+                                "chosen_pose_w": chosen_pose_w,
+                                "chosen_pre": chosen_pre,
+                                "chosen_delta": chosen_delta,
+                            })
         if not success:
             print("[ERR] no proposal succeeded to lift after full search.")
             return [{
@@ -478,6 +604,9 @@ class HeuristicManipulation(BaseSimulator):
                 "chosen_pre": None,
                 "chosen_delta": None,
             }]
+        if success:
+            print(f"[INFO] success num:{self.ok_cnt_all}")
+            return winners
 
     def replay_actions(self, actions: np.ndarray):
         """
@@ -520,7 +649,8 @@ class HeuristicManipulation(BaseSimulator):
             return []
         gg = GraspGroup().from_npy(npy_file_path=npy_path)
 
-
+        assert self.grasp_idx < 0 or self.grasp_num == 1, "[ERR] grasp_idx and grasp_num cannot be set together"
+       
         if self.grasp_idx >= 0:
             if self.grasp_idx >= len(gg):
                 print(f"[ERR] grasp_idx {self.grasp_idx} out of range [0,{len(gg)})")
@@ -534,6 +664,7 @@ class HeuristicManipulation(BaseSimulator):
                 "chosen_delta": self.grasp_delta if self.grasp_delta is not None else 0.0,
             }
             print(f"[INFO] grasp delta (m): {ret['chosen_delta']:.4f}")
+            rets = [ret]
         else:
             rets = self.grasp_trials(gg, std=std)
 
@@ -541,17 +672,35 @@ class HeuristicManipulation(BaseSimulator):
         if rets is None or rets[0]["success"] == False:
             print("[ERR] no proposal succeeded to lift after full search.")
             return []
-        for ret in rets:
-            p_win, q_win = ret["chosen_pose_w"]
-            p_all   = np.repeat(p_win.reshape(1, 3), B, axis=0)
-            q_all   = np.repeat(q_win.reshape(1, 4), B, axis=0)
-            pre_all = np.full((B,), ret["chosen_pre"],   dtype=np.float32)
-            del_all = np.full((B,), ret["chosen_delta"], dtype=np.float32)
+
+
+        success_num = 0
+        success_pregrasp_poses= []
+        success_grasp_pose = []
+        end_object_poses= []
+        robot_poses = []
+
+        B = self.scene.num_envs
+        for i in range(0, len(rets), B):
+            if success_num >= self.grasp_num:
+                break
+            
+            block = range(i, i + B)
+            p_win = [rets[j]["chosen_pose_w"] for j in block]
+            q_win = [rets[j]["chosen_quat_w"] for j in block]
+            p_all = np.array(p_win)
+            q_all = np.array(q_win)
+            pre_all = np.array([rets[j]["chosen_pre"] for j in block], dtype=np.float32)
+            del_all = np.array([rets[j]["chosen_delta"] for j in block], dtype=np.float32)
 
             info_all = self.build_grasp_info(p_all, q_all, pre_all, del_all)
 
             # reset and conduct main process: open→pre→grasp→close→follow_object_goals
             self.reset()
+
+            init_manip_object_com = self.object_prim.data.root_com_pos_w[:, :3].cpu().numpy()
+            init_manip_object_com -= self.scene.env_origins.cpu().numpy()
+            self.init_manip_object_com = init_manip_object_com[0]
             #print(self.object_prim.data.root_state_w[:, :7].cpu().numpy())
             cam_p = self.camera.data.pos_w
             cam_q = self.camera.data.quat_w_ros
@@ -586,32 +735,45 @@ class HeuristicManipulation(BaseSimulator):
             # object goal following
             print(f"[INFO] lifting up by {self.goal_offset[2]} meters")
             self.lift_up(height=self.goal_offset[2], gripper_open=False, steps=8)
-            #jp = self.follow_object_goals(jp, sample_step=5, visualize=True)
+          
             if self.task_type == "simple_pick_place" or self.task_type == "simple_pick":
                 jp, success_ids = self.follow_object_centers(jp, sample_step=1, visualize=True)
             elif self.task_type == "targetted_pick_place":
                 jp, success_ids = self.follow_object_goals(jp, sample_step=1, visualize=True)
             else:
                 raise ValueError(f"[ERR] Invalid task type: {self.task_type}")
+            #jp, success_ids = self.follow_object_goals(jp, sample_step=1, visualize=True)
         
             object_prim_world_pose = self.object_prim.data.root_state_w[:, :7].cpu().numpy()
             object_prim_world_pose[:, :3] = object_prim_world_pose[:, :3] - self.scene.env_origins.cpu().numpy()
-            self.save_dict["final_object_world_pose"] = object_prim_world_pose
+        
             
             robot_world_pose = self.robot.data.root_state_w[:, :7].cpu().numpy()
             robot_world_pose[:, :3] = robot_world_pose[:, :3] - self.scene.env_origins.cpu().numpy()
-            self.save_dict["final_robot_world_pose"] = robot_world_pose
+           
 
             
         
             # Properly handle the case when success_ids is a numpy array
-            # Convert it to a torch tensor if needed, before calling torch.where
+            # Convert it to a torch tensor if needed, before calling torch.whe\+
             print(f"[INFO] success_ids: {success_ids}")
             # If success_ids is already a tensor, we keep as-is
             success_ids = torch.where(success_ids)[0].cpu().numpy()
+            success_num += len(success_ids)
             if len(success_ids) > 0:
-                return success_ids
-        return success_ids
+                self.save_data(ignore_keys=["segmask", "depth"], env_ids=success_ids[:1], export_hdf5=False)
+                for i in success_ids:
+                    success_pregrasp_poses.append(self.save_dict["pregrasp_pose_w"][i])
+                    success_grasp_poses.append(self.save_dict["grasp_pose_w"][i])
+                    end_object_poses.append(object_prim_world_pose[i])
+                    robot_poses.append(robot_world_pose[i])
+            
+        self.success_pregrasp_poses = success_pregrasp_poses
+        self.success_grasp_poses = success_grasp_poses
+        self.end_object_poses = end_object_poses
+        self.robot_poses = robot_poses
+        
+        return success_num
            
 
     def from_data_to_task_cfg(self, key:str) -> TaskCfg:
@@ -646,7 +808,7 @@ class HeuristicManipulation(BaseSimulator):
         grasp_pose = grasp_pose_local[0].tolist()  # Take first env
       
         final_gripper_close = self.final_gripper_closed
-        
+        init_manip_object_com = self.init_manip_object_com.tolist()
         if task_cfg.task_type == TaskType.TARGETTED_PICK_PLACE:
             success_metric = SuccessMetric(
                 success_metric_type = SuccessMetricType.TARGET_POINT,
@@ -679,67 +841,22 @@ class HeuristicManipulation(BaseSimulator):
             robot_type = RobotType.UR5
         else:
             raise ValueError(f"[ERR] Invalid robot type: {self.robot_type}")
-        trajectory_cfg = TrajectoryCfg(
-            robot_pose = robot_pose,
-            object_poses = object_poses,
-            object_trajectory = pose_quat_traj,
-            final_gripper_close = final_gripper_close,
-            success_metric = success_metric,
-            pregrasp_pose = pregrasp_pose,
-            grasp_pose = grasp_pose,
-            robot_type = robot_type,
-        )
-        add_reference_trajectory(task_cfg, trajectory_cfg, base_folder)
+        trajectory_cfg_list = []
+        for i in range(len(self.success_pregrasp_poses)):
+            trajectory_cfg = TrajectoryCfg(
+                robot_pose = self.robot_poses[i],
+                object_poses = self.end_object_poses[i],
+                object_trajectory = pose_quat_traj,
+                final_gripper_close = final_gripper_close,
+                success_metric = success_metric,
+                pregrasp_pose = self.success_pregrasp_poses[i],
+                grasp_pose = self.success_grasp_poses[i],
+                robot_type = robot_type,
+                init_manip_object_com = init_manip_object_com, 
+            )
+            trajectory_cfg_list.append(trajectory_cfg)
+        add_reference_trajectory(task_cfg, trajectory_cfg_list, base_folder)
         return task_cfg
-
-
-# ─────────────────────────── Entry Point ────────────────────────────
-
-
-
-
-# def main():
-#     sim_cfgs = load_sim_parameters(BASE_DIR, args_cli.key)
-#     env, _ = make_env(
-#         cfgs=sim_cfgs, num_envs=args_cli.num_envs,
-#         device=args_cli.device,
-#         bg_simplify=False,
-#     )
-#     sim, scene = env.sim, env.scene
-
-#     my_sim = HeuristicManipulation(
-#         sim, scene, sim_cfgs=sim_cfgs, 
-#         args=args_cli, out_dir=out_dir, img_folder=img_folder
-#     )
-
-#     demo_root = (out_dir / img_folder / "demos").resolve()
-
-#     for _ in range(args_cli.num_trials):
-
-#         robot_pose = torch.tensor(sim_cfgs["robot_cfg"]["robot_pose"], dtype=torch.float32, device=my_sim.sim.device)  # [7], pos(3)+quat(wxyz)(4)
-#         my_sim.set_robot_pose(robot_pose)
-#         my_sim.demo_id = get_next_demo_id(demo_root)
-#         my_sim.reset()
-#         print(f"[INFO] start simulation demo_{my_sim.demo_id}")
-#         # Note: if you set viz_object_goals(), remember to disable gravity and collision for object
-#         # my_sim.viz_object_goals(sample_step=10, hold_steps=40)
-#         success_ids = my_sim.inference()
-#         print(f"[INFO] success_ids: {success_ids}")
-#         if success_ids is not None and len(success_ids) > 0:
-#             success = True
-#             my_sim.from_data_to_task_cfg(args_cli.key)
-#             break
-#         else:
-#             success = False
-        
-#         # actions = np.load("outputs/lab16/demos/demo_5/env_000/actions.npy")
-#         # my_sim.replay_actions(actions)
-
-#     env.close()
-#     simulation_app.close()
-
-
-
 
 
 def sim_heuristic_manip(keys: list[str], args_cli: argparse.Namespace, config_path: Optional[str] = None, config_dict: Optional[dict] = None):
@@ -766,21 +883,17 @@ def sim_heuristic_manip(keys: list[str], args_cli: argparse.Namespace, config_pa
     # if args_cli is None:    
     #     args_cli = create_args_from_config(config_path=config_path, config_dict=config_dict)
     BASE_DIR   = Path.cwd()
-    
-
     out_dir    = BASE_DIR / "outputs"
     local_out_dir = BASE_DIR / "outputs"
-    
+
     for key in keys:
         args_cli.key = key
         local_img_folder = key
-        data_dir = BASE_DIR / "h5py" / key 
-        
         # Load config from running_cfg, allow CLI args to override
         heuristic_cfg = get_heuristic_config(key)
         num_envs = args_cli.num_envs if args_cli.num_envs is not None else heuristic_cfg.num_envs
         num_trials = args_cli.num_trials if args_cli.num_trials is not None else heuristic_cfg.num_trials
-        
+        grasp_num = args_cli.grasp_num if args_cli.grasp_num is not None else heuristic_cfg.grasp_num
         print(f"[INFO] Using config for key '{key}': num_envs={num_envs}, num_trials={num_trials}")
         
         sim_cfgs = load_sim_parameters(BASE_DIR, key)
@@ -794,38 +907,18 @@ def sim_heuristic_manip(keys: list[str], args_cli: argparse.Namespace, config_pa
         my_sim = HeuristicManipulation(
             sim, scene, sim_cfgs=sim_cfgs,
             args=args_cli, out_dir=local_out_dir, img_folder=local_img_folder,
-            data_dir = data_dir )
+            data_dir = data_dir, grasp_num = grasp_num )
 
         demo_root = (local_out_dir / key / "demos").resolve()
-        success = False
-        for i in range(num_trials):
 
-            robot_pose = torch.tensor(sim_cfgs["robot_cfg"]["robot_pose"], dtype=torch.float32, device=my_sim.sim.device)  # [7], pos(3)+quat(wxyz)(4)
-            my_sim.set_robot_pose(robot_pose)
-            my_sim.demo_id = get_next_demo_id(demo_root)
-            my_sim.reset()
-            print(f"[INFO] start simulation demo_{my_sim.demo_id}")
-            # Note: if you set viz_object_goals(), remember to disable gravity and collision for object
-            # my_sim.viz_object_goals(sample_step=10, hold_steps=40)
-            std = 0
-            if i > 0:
-                std = std + 0.003
-            success_ids = my_sim.inference(std=std)
-            print(f"[INFO] success_ids: {success_ids}")
-            if len(success_ids) > 0:
-                success = True
-                task_cfg = my_sim.from_data_to_task_cfg(key)
-                my_sim.task_cfg = task_cfg
-                assert task_cfg.reference_trajectory is not None
-                my_sim.traj_cfg_list = [task_cfg.reference_trajectory]
-                my_sim.save_data(ignore_keys=["segmask", "depth"], env_ids=success_ids[:1], export_hdf5=True)
-                break
-            # actions = np.load("outputs/lab16/demos/demo_5/env_000/actions.npy")
-            # my_sim.replay_actions(actions)
-        if success == False:
-            print("[ERR] no successful environments!")
+        robot_pose = torch.tensor(sim_cfgs["robot_cfg"]["robot_pose"], dtype=torch.float32, device=my_sim.sim.device)  # [7], pos(3)+quat(wxyz)(4)
+        my_sim.set_robot_pose(robot_pose)
+        my_sim.demo_id = get_next_demo_id(demo_root)
+        my_sim.reset()
+        print(f"[INFO] start simulation demo_{my_sim.demo_id}")
+        success_num = my_sim.inference()
+        print(f"[INFO] success_num: {success_num}")
         env.close()
-    #simulation_app.close()
     return True 
 
 def main():

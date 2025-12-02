@@ -9,15 +9,15 @@ from typing import Dict
 class RandomizerConfig:
     """Configuration bundle for `Randomizer.generate_randomized_scene_cfg`."""
 
-    grid_dist: float = 0.03
-    grid_num: int = 10
+    grid_dist: float = 0.01
+    grid_num: int = 5
     angle_random_range: float = math.pi / 10.0
     angle_random_num: int = 10
     traj_randomize_num: int = 20
     scene_randomize_num: int = 20
     robot_pose_randomize_range: float = 0.03
     robot_pose_randomize_angle: float = math.pi / 180.0
-    robot_pose_randomize_num: int = 10
+    robot_pose_randomize_num: int = 3
     fix_end_pose: bool = True
 
     def to_kwargs(self) -> Dict[str, float | int]:
@@ -38,7 +38,7 @@ class RandomizeRolloutConfig:
     """Rollout-related knobs (e.g., required number of successful trajectories)."""
 
     total_num: int = 50
-    num_envs: int = 10
+    num_envs: int = 1
 
 
 @dataclass(frozen=True)

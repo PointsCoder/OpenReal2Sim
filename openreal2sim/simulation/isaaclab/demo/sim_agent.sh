@@ -82,7 +82,7 @@ echo "[INFO] Loaded ${#KEYS[@]} key(s) from ${CONFIG_PATH}: ${KEYS[*]}"
 export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
 cd "${ROOT_DIR}"
 
-declare -a PIPELINE=("usd_conversion" "sim_heuristic_manip" "sim_randomize_rollout")
+declare -a PIPELINE=(  "sim_randomize_rollout")
 
 HEADLESS_ARGS=()
 if [[ -n "${HEADLESS}" ]]; then

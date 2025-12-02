@@ -31,7 +31,7 @@ parser.add_argument("--total_num", type=int, default=None, help="Total number of
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
-args_cli.headless = True  # headless mode for batch execution
+args_cli.headless = True # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
@@ -39,13 +39,11 @@ simulation_app = app_launcher.app
 import isaaclab.sim as sim_utils
 from isaaclab.utils.math import subtract_frame_transforms
 
-
-
 # ─────────── Simulation environments ───────────
 from sim_base import BaseSimulator, get_next_demo_id
 from sim_env_factory import make_env
-from isaaclab.sim_utils.transform_utils import pose_to_mat, mat_to_pose, grasp_to_world, grasp_approach_axis_batch
-from isaaclab.sim_utils.sim_utils import load_sim_parameters
+from sim_utils.transform_utils import pose_to_mat, mat_to_pose, grasp_to_world, grasp_approach_axis_batch
+from sim_utils.sim_utils import load_sim_parameters
 
 BASE_DIR   = Path.cwd()
 
@@ -130,6 +128,11 @@ def compute_poses_from_traj_cfg(traj_cfg_list):
   
     return robot_poses_list, object_poses_dict, object_trajectory_list, final_gripper_state_list, pregrasp_pose_list, grasp_pose_list, end_pose_list
 
+def get_initial_com_pose(traj_cfg):
+    if traj_cfg.init_manip_object_com is not None:
+        return traj_cfg.init_manip_object_com
+    else:
+        return None
 
 
 # ────────────────────────────Heuristic Manipulation ────────────────────────────
@@ -247,13 +250,12 @@ class RandomizeExecution(BaseSimulator):
         T = self.object_trajectory_list[0].shape[0]
         obj_goal = np.zeros((B, T, 4, 4), dtype=np.float32)
         for b in range(B):
-
             for t in range(1, T):
-                goal = self.object_trajectory_list[b][t]
-                goal[:3, 3] += origins[b]  # back to world frame
-                goal[:3, :3] = offset_np
-                obj_goal[b, t] = goal
-
+                goal_4x4 = self.object_trajectory_list[b][t]
+                goal_4x4[:3, 3] += origins[b]  # back to world frame
+                goal_4x4[:3, 3] += offset_np
+                obj_goal[b, t] = goal_4x4
+                
         self.obj_goal_traj_w = obj_goal
 
 
@@ -283,42 +285,31 @@ class RandomizeExecution(BaseSimulator):
           T_ee_goal[t] = T_obj_goal[t] @ (T_obj_grasp^{-1} @ T_ee_grasp)
         Here T_obj_grasp / T_ee_grasp is the transform at the moment of grasping.
         """
-
         B = self.scene.num_envs
         obj_goal_all = self.obj_goal_traj_w  # [B, T, 4, 4]
         T = obj_goal_all.shape[1]
 
-
+       
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
 
-        t_iter = list(range(0, T, sample_step))
+        t_iter = list(range(1, T, sample_step))
         t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
 
         for t in t_iter:
-            if recalibrate_interval> 0 and t % recalibrate_interval == 0:
+            if recalibrate_interval> 0 and (t-1) % recalibrate_interval == 0:
                 ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
-                # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
                 obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
-                T_ee_ws = []
-                T_obj_ws = []
+                T_ee_in_obj = []
                 for b in range(B):
                     T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
                     T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-                    T_ee_ws.append(T_ee_w)
-                    T_obj_ws.append(T_obj_w)
-                print(f"[INFO] recalibrated at step {t}/{T}")
+                    T_ee_in_obj.append((np.linalg.inv(T_obj_w) @ T_ee_w).astype(np.float32))
             goal_pos_list, goal_quat_list = [], []
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
                 T_obj_goal = obj_goal_all[b, t]            # (4,4)
-                trans_offset = T_obj_goal - T_obj_ws[b]
-                T_ee_goal  = T_ee_ws[b] + trans_offset
-                original_R = T_obj_ws[b][:3, :3]
-                new_R = T_ee_goal[:3, :3]
-                original_ee_R = T_ee_ws[b][:3, :3]
-                new_ee_R = new_R @ np.linalg.inv(original_R) @ original_ee_R
-                T_ee_goal[:3, :3] = new_ee_R
+                T_ee_goal  = T_obj_goal @ T_ee_in_obj[b]   # (4,4)
                 pos_b, quat_b = mat_to_pose(T_ee_goal)
                 goal_pos_list.append(pos_b.astype(np.float32))
                 goal_quat_list.append(quat_b.astype(np.float32))
@@ -331,7 +322,7 @@ class RandomizeExecution(BaseSimulator):
             ee_pos_b, ee_quat_b = subtract_frame_transforms(
                 root_w[:, :3], root_w[:, 3:7], goal_pos, goal_quat
             )
-            joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False, record = self.record)
+            joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False)
             self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
 
         is_grasp_success = self.is_grasp_success()
@@ -354,11 +345,11 @@ class RandomizeExecution(BaseSimulator):
         joint_pos = start_joint_pos
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
 
-        t_iter = list(range(0, T, sample_step))
+        t_iter = list(range(1, T, sample_step))
         t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
 
         for t in t_iter:
-            if recalibrate_interval> 0 and t % recalibrate_interval == 0:
+            if recalibrate_interval> 0 and (t-1) % recalibrate_interval == 0:
                 ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
                 # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
                 obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
@@ -374,7 +365,7 @@ class RandomizeExecution(BaseSimulator):
             goal_pos_list, goal_quat_list = [], []
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
-                T_obj_goal = obj_goal_all[b, t]            # (4,4)
+                T_obj_goal = obj_goal_all[b, t]          
                 trans_offset = T_obj_goal - T_obj_ws[b]
                 T_ee_goal  = T_ee_ws[b] + trans_offset
                 pos_b, quat_b = mat_to_pose(T_ee_goal)
@@ -406,15 +397,30 @@ class RandomizeExecution(BaseSimulator):
 
         return joint_pos, is_grasp_success
 
+    def refine_grasp_pose(self, init_manip_object_com, grasp_pose, pregrasp_pose):
+        current_manip_object_com = self.object_prim.data.root_com_pos_w[:, :3].cpu().numpy()
+        current_manip_object_com -= self.scene.env_origins.cpu().numpy()
+        grasp_pose_w = grasp_pose
+        pregrasp_pose_w = pregrasp_pose
+        grasp_pose_w[:, :3] += current_manip_object_com - init_manip_object_com
+        pregrasp_pose_w[:, :3] += current_manip_object_com - init_manip_object_com
+        return grasp_pose_w, pregrasp_pose_w
 
     def is_success(self):
         obj_w = self.object_prim.data.root_state_w[:, :7]
         origins = self.scene.env_origins
         obj_w[:, :3] -= origins
-        obj_pose_l = pose_to_mat(obj_w[:, :3], obj_w[:, 3:7])
-        goal_pose_l = np.array(self.end_pose_list, dtype=np.float32)
-        goal_pose_l = pose_to_mat(goal_pose_l[:, :3], goal_pose_l[:, 3:7])
-        trans_dist, angle = pose_distance(obj_pose_l, goal_pose_l)
+        trans_dist_list = []
+        angle_list = []
+        B = self.scene.num_envs
+        for b in range(B):
+            obj_pose_l = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
+            goal_pose_l = pose_to_mat(self.end_pose_list[b][:3], self.end_pose_list[b][3:7])
+            trans_dist, angle = pose_distance(obj_pose_l, goal_pose_l)
+            trans_dist_list.append(trans_dist)
+            angle_list.append(angle)
+        trans_dist = torch.tensor(np.stack(trans_dist_list))
+        angle = torch.tensor(np.stack(angle_list))
         print(f"[INFO] trans_dist: {trans_dist}, angle: {angle}")
         if self.task_type == "simple_pick_place" or self.task_type == "simple_pick":
             is_success = trans_dist < 0.10
@@ -479,9 +485,6 @@ class RandomizeExecution(BaseSimulator):
         pregrasp_quat_w_batch: np.ndarray,
 
     ) -> dict:
-        """
-        返回与 _build_info 相同结构，但每个 env 的抓取都可不同。
-        """
         B = self.scene.num_envs
         p_w   = np.asarray(grasp_pos_w_batch,  dtype=np.float32).reshape(B, 3)
         q_w   = np.asarray(grasp_quat_w_batch, dtype=np.float32).reshape(B, 4)
@@ -513,19 +516,20 @@ class RandomizeExecution(BaseSimulator):
         """
         B = self.scene.num_envs
 
-        self.wait(gripper_open=True, steps=10, record = self.record)
-
-        
+        #self.wait(gripper_open=True, steps=10, record = self.record)
         # reset and conduct main process: open→pre→grasp→close→follow_object_goals
         self.reset()
-        #self.viz_object_goals()
-
 
         cam_p = self.camera.data.pos_w
         cam_q = self.camera.data.quat_w_ros
         gp_w  = torch.as_tensor(np.array(self.grasp_pose_list,  dtype=np.float32)[:,:3], dtype=torch.float32, device=self.sim.device)
         gq_w  = torch.as_tensor(np.array(self.grasp_pose_list, dtype=np.float32)[:,3:7], dtype=torch.float32, device=self.sim.device)
         pre_w = torch.as_tensor(np.array(self.pregrasp_pose_list, dtype=np.float32)[:,:3], dtype=torch.float32, device=self.sim.device)
+        init_manip_object_com = get_initial_com_pose(self.task_cfg.reference_trajectory)
+        if init_manip_object_com is not None:
+            gp_w, pre_w = self.refine_grasp_pose(init_manip_object_com, gp_w, pre_w)
+            gp_w = torch.as_tensor(gp_w, dtype=torch.float32, device=self.sim.device)
+            pre_w = torch.as_tensor(pre_w, dtype=torch.float32, device=self.sim.device)
         gp_cam,  gq_cam  = subtract_frame_transforms(cam_p, cam_q, gp_w,  gq_w)
         pre_cam, pre_qcm = subtract_frame_transforms(cam_p, cam_q, pre_w, gq_w)
         self.save_dict["grasp_pose_cam"]    = torch.cat([gp_cam,  gq_cam],  dim=1).unsqueeze(0).cpu().numpy()
@@ -551,15 +555,16 @@ class RandomizeExecution(BaseSimulator):
 
         # object goal following
         self.lift_up(height=self.goal_offset[2], gripper_open=False, steps=8)
-        if self.task_type == "simple_pick_place" or self.task_type == "simple_pick":
-            jp, is_success = self.follow_object_centers(jp, sample_step=1, visualize=True)
-        elif self.task_type == "targetted_pick_place":
-            jp, is_success = self.follow_object_goals(jp, sample_step=1, visualize=True)
-        else:
-            raise ValueError(f"[ERR] Invalid task type: {self.task_type}")
+        # if self.task_type == "simple_pick_place" or self.task_type == "simple_pick":
+        #     jp, is_success = self.follow_object_centers(jp, sample_step=1, visualize=True)
+        # elif self.task_type == "targetted_pick_place":
+        #     jp, is_success = self.follow_object_goals(jp, sample_step=1, visualize=True)
+        # else:
+        #     raise ValueError(f"[ERR] Invalid task type: {self.task_type}")
         #jp = self.follow_object_goals(jp, sample_step=1, visualize=True)
+        jp, is_success = self.follow_object_goals(jp, sample_step=1, visualize=True)
 
-        is_success = is_success & self.is_success()
+        is_success = is_success #& self.is_success()
         # Arrange the output: we want to collect only the successful env ids as a list.
         is_success = torch.tensor(is_success, dtype=torch.bool, device=self.sim.device)
         success_env_ids = torch.where(is_success)[0].cpu().numpy().tolist()
@@ -616,10 +621,8 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
                 bg_simplify=False,
             )
         sim, scene = env.sim, env.scene
-        bg_rgb_path = task_cfg.bg_rgb_path
 
-        brecordg_rgb = imageio.imread(bg_rgb_path)
-        my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, data_dir=data_dir, record=True, args_cli=args_cli, bg_rgb=bg_rgb)
+        my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, data_dir=data_dir, record=True, args_cli=args_cli)
         my_sim.task_cfg = task_cfg
         while len(success_trajectory_config_list) < total_require_traj_num:
             traj_cfg_list = random_task_cfg_list[current_timestep: current_timestep + num_envs]

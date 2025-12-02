@@ -49,6 +49,7 @@ class Randomizer(TaskCfg):
         for _ in range(traj_randomize_num):
             start_pose = random.choice(candidate_transforms)
             if fix_end_pose:
+                #import pdb; pdb.set_trace()
                 end_pose = np.eye(4)
             else:
                 if self.task_cfg.task_type == TaskType.SIMPLE_PICK:
@@ -137,7 +138,7 @@ class Randomizer(TaskCfg):
                         ref_traj_mats = np.array(ref_traj_mats)
                         
                         new_traj_mats = self.compute_new_traj(start_pose, end_pose, ref_traj_mats)
-                        
+                        new_traj_mats = self.lift_traj(ref_traj_mats, new_traj_mats)
                         # Convert back to 7D format
                         new_traj_7d = []
                         for mat in new_traj_mats:
@@ -342,6 +343,19 @@ class Randomizer(TaskCfg):
         
         return new_traj
 
+
+    def lift_traj(self, old_traj, new_traj):
+        T = len(old_traj)
+        renewed_traj = []
+        for t in range(T):
+            old_pose = old_traj[t]
+            new_pose = new_traj[t]
+            old_pose_z = old_pose[2,3]
+            new_pose_z = new_pose[2,3]
+            if old_pose_z > new_pose_z:
+               new_pose[2,3] = old_pose_z
+            renewed_traj.append(new_pose)
+        return renewed_traj
 
     def select_randomized_cfg(self, train_set_size: int):
         return random.choice(self.task_cfg.generated_trajectories[train_set_size:])

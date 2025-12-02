@@ -357,113 +357,312 @@ class BaseSimulator:
         return flat.view(B, T, 7).contiguous()
 
     # ---------- Planning / Execution (Single) ----------
+    def reinitialize_motion_gen(self):
+        """
+        Reinitialize the motion generation object.
+        Call this after a crash to restore a clean state.
+        """
+        print("[INFO] Reinitializing motion planner...")
+        try:
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Recreate the motion planner
+            from curobo.types.base import TensorDeviceType
+            from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
+            from curobo.util_file import get_robot_configs_path, join_path, load_yaml
+            from curobo.types.robot import RobotConfig
+            import curobo
+            
+            tensor_args = TensorDeviceType(device=self.sim.device, dtype=torch.float32)
+            curobo_path = curobo.__file__.split("/__init__")[0]
+            robot_file = f"{curobo_path}/content/configs/robot/franka.yml"
+            
+            motion_gen_config = MotionGenConfig.load_from_robot_config(
+                robot_cfg=robot_file,
+                world_model=None,
+                tensor_args=tensor_args,
+                interpolation_dt=self.sim_dt,
+                use_cuda_graph=True if self.num_envs == 1 else False,
+            )
+            
+            self.motion_gen = MotionGen(motion_gen_config)
+            
+            if self.num_envs == 1:
+                self.motion_gen.warmup(enable_graph=True)
+            
+            print("[INFO] Motion planner reinitialized successfully")
+            return True
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to reinitialize motion planner: {e}")
+            return False
+
+  
     def motion_planning_single(
-        self, position, quaternion, max_attempts=1, use_graph=True
+        self, position, quaternion, max_attempts=1, use_graph=True, max_retries=1
     ):
         """
-        single environment planning: prefer plan_single (supports graph / CUDA graph warmup better).
-        Returns [1, T, 7], returns None on failure.
+        Single environment planning with automatic recovery from crashes.
+        Returns None on complete failure to signal restart needed.
         """
-        # current joint position
         joint_pos0 = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids][
             0:1
-        ].contiguous()  # [1,7]
-        start_state = JointState.from_position(joint_pos0)
-
-        # goal (ensure [1,3]/[1,4])
+        ].contiguous()
+        
         pos_b, quat_b = self._ensure_batch_pose(position, quaternion)
         pos_b = pos_b[0:1]
         quat_b = quat_b[0:1]
-        goal_pose = Pose(position=pos_b, quaternion=quat_b)
-
-        plan_cfg = MotionGenPlanConfig(
-            max_attempts=max_attempts, enable_graph=use_graph
-        )
-
-        result = self.motion_gen.plan_single(start_state, goal_pose, plan_cfg)
-
-        traj = result.get_interpolated_plan()  # JointState
-
-        if result.success[0] == True:
-            T = traj.position.shape[-2]
-            BT7 = (
-                traj.position.to(self.sim.device).to(torch.float32).unsqueeze(0)
-            )  # [1,T,7]
-        else:
-            print(f"[WARN] motion planning failed.")
-            BT7 = joint_pos0.unsqueeze(1)  # [1,1,7]
-
-        return BT7, result.success
+        
+        for retry in range(max_retries):
+            try:
+                start_state = JointState.from_position(joint_pos0)
+                goal_pose = Pose(position=pos_b, quaternion=quat_b)
+                plan_cfg = MotionGenPlanConfig(
+                    max_attempts=max_attempts, enable_graph=use_graph
+                )
+                
+                result = self.motion_gen.plan_single(start_state, goal_pose, plan_cfg)
+                
+                # Check if result is valid
+                if result is None:
+                    print(f"[ERROR] Motion planning returned None result on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                    break
+                
+                traj = result.get_interpolated_plan()
+                
+                # Check if trajectory is valid
+                if traj is None:
+                    print(f"[ERROR] Motion planning returned None trajectory on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                    break
+                
+                if result.success[0] == True:
+                    BT7 = (
+                        traj.position.to(self.sim.device).to(torch.float32).unsqueeze(0)
+                    )
+                else:
+                    print(f"[WARN] Motion planning failed.")
+                    BT7 = joint_pos0.unsqueeze(1)
+                
+                return BT7, result.success
+                
+            except AttributeError as e:
+                print(f"[ERROR] Motion planner crash on attempt {retry+1}/{max_retries}: {e}")
+                
+                if retry < max_retries - 1:
+                    if self.reinitialize_motion_gen():
+                        print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                        continue
+                    else:
+                        break
+                else:
+                    print("[ERROR] Max retries reached")
+                    
+            except Exception as e:
+                # Safe error message extraction
+                try:
+                    error_msg = str(e)
+                    error_type = type(e).__name__
+                except:
+                    error_msg = "Unknown error"
+                    error_type = "Exception"
+                
+                print(f"[ERROR] Unexpected error: {error_type}: {error_msg}")
+                
+                # Check for recoverable errors
+                is_recoverable = False
+                try:
+                    is_recoverable = ("cuda graph" in error_msg.lower() or 
+                                    "NoneType" in error_msg or 
+                                    "has no len()" in error_msg)
+                except:
+                    pass
+                
+                if retry < max_retries - 1 and is_recoverable:
+                    if self.reinitialize_motion_gen():
+                        continue
+                break
+        
+        # Complete failure - return dummy trajectory with False success
+        print("[ERROR] Motion planning failed critically - returning dummy trajectory")
+        joint_pos0 = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids][0:1].contiguous()
+        # Return current position as 1-step trajectory with failure
+        dummy_traj = joint_pos0.unsqueeze(1)  # (1, 1, dof)
+        dummy_success = torch.zeros(1, dtype=torch.bool, device=self.sim.device)
+        return dummy_traj, dummy_success
 
     # ---------- Planning / Execution (Batched) ----------
+   
+
     def motion_planning_batch(
-        self, position, quaternion, max_attempts=1, allow_graph=False
+        self, position, quaternion, max_attempts=1, allow_graph=False, max_retries=1
     ):
         """
-        multi-environment planning: use plan_batch.
-        Default require_all=True: if any env fails, return None (keep your original semantics).
-        Returns [B, T, 7].
+        Multi-environment planning with automatic recovery from crashes.
+        Returns None on complete failure to signal restart needed.
         """
         B = self.scene.num_envs
         joint_pos = self.robot.data.joint_pos[
             :, self.robot_entity_cfg.joint_ids
-        ].contiguous()  # [B,7]
-        start_state = JointState.from_position(joint_pos)
+        ].contiguous()
+        
+        pos_b, quat_b = self._ensure_batch_pose(position, quaternion)
+        
+        for retry in range(max_retries):
+            try:
+                # Attempt planning
+                start_state = JointState.from_position(joint_pos)
+                goal_pose = Pose(position=pos_b, quaternion=quat_b)
+                plan_cfg = MotionGenPlanConfig(
+                    max_attempts=max_attempts, enable_graph=allow_graph
+                )
+                
+                try:
+                    result = self.motion_gen.plan_batch(start_state, goal_pose, plan_cfg)
+                except Exception as plan_err:
+                    print(f"[ERROR] curobo.plan_batch raised exception: {plan_err}")
+                    raise plan_err
+                
+                # Check if result is valid
+                if result is None:
+                    print(f"[ERROR] Motion planning returned None result on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                    break
+                
+                # Process results
+                paths = result.get_paths()
+                
+                # Check if paths is valid - use try-except to safely check if it's iterable
+                paths_valid = False
+                try:
+                    if paths is not None:
+                        # Try to get length to verify it's iterable and not empty
+                        _ = len(paths)
+                        if len(paths) > 0:
+                            paths_valid = True
+                except:
+                    pass
+                
+                if not paths_valid:
+                    print(f"[ERROR] Motion planning returned invalid paths on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                        else:
+                            print("[ERROR] Failed to recover motion planner")
+                    # Skip to next retry iteration or exit loop
+                    continue
+                
+                # Double-check paths is still valid (defensive programming)
+                if paths is None:
+                    print(f"[ERROR] paths became None after validation check")
+                    continue
+                
+                T_max = 1
+                
+                # Check if result.success is valid
+                if result.success is None:
+                     print(f"[WARN] result.success is None. Assuming failure for all envs.")
+                     # Create dummy failure tensor
+                     result.success = torch.zeros(B, dtype=torch.bool, device=self.sim.device)
 
-        pos_b, quat_b = self._ensure_batch_pose(position, quaternion)  # [B,3], [B,4]
-        goal_pose = Pose(position=pos_b, quaternion=quat_b)
-
-        plan_cfg = MotionGenPlanConfig(
-            max_attempts=max_attempts, enable_graph=allow_graph
-        )
-
-        result = self.motion_gen.plan_batch(start_state, goal_pose, plan_cfg)
-
-        try:
-            paths = result.get_paths()  # List[JointState]
-            T_max = 1
-            for i, p in enumerate(paths):
-                if not result.success[i]:
-                    print(f"[WARN] motion planning failed for env {i}.")
+                try:
+                    for i, p in enumerate(paths):
+                        if not result.success[i]:
+                            print(f"[WARN] Motion planning failed for env {i}.")
+                        else:
+                            T_max = max(T_max, int(p.position.shape[-2]))
+                except TypeError as te:
+                    print(f"[ERROR] TypeError when processing paths: {te}")
+                    print(f"[DEBUG] paths type: {type(paths)}, paths value: {paths}")
+                    continue
+                
+                dof = joint_pos.shape[-1]
+                BT7 = torch.zeros(
+                    (B, T_max, dof), device=self.sim.device, dtype=torch.float32
+                )
+                
+                for i, p in enumerate(paths):
+                    if result.success[i] == False:
+                        BT7[i, :, :] = (
+                            joint_pos[i : i + 1, :].unsqueeze(1).repeat(1, T_max, 1)
+                        )
+                    else:
+                        Ti = p.position.shape[-2]
+                        BT7[i, :Ti, :] = p.position.to(self.sim.device).to(torch.float32)
+                        if Ti < T_max:
+                            BT7[i, Ti:, :] = BT7[i, Ti - 1 : Ti, :]
+                
+                success = result.success if result.success is not None else torch.zeros(
+                    B, dtype=torch.bool, device=self.sim.device
+                )
+                
+                # Success! Return the trajectory
+                return BT7, success
+                
+            except AttributeError as e:
+                print(f"[ERROR] Motion planner crash on attempt {retry+1}/{max_retries}: {e}")
+                
+                if retry < max_retries - 1:
+                    if self.reinitialize_motion_gen():
+                        print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                        continue
+                    else:
+                        print("[ERROR] Failed to recover motion planner")
+                        break
                 else:
-                    T_max = max(T_max, int(p.position.shape[-2]))
-            dof = joint_pos.shape[-1]
-            BT7 = torch.zeros(
-                (B, T_max, dof), device=self.sim.device, dtype=torch.float32
-            )
-            for i, p in enumerate(paths):
-                if result.success[i] == False:
-                    BT7[i, :, :] = (
-                        joint_pos[i : i + 1, :].unsqueeze(1).repeat(1, T_max, 1)
-                    )
-                else:
-                    Ti = p.position.shape[-2]
-                    BT7[i, :Ti, :] = p.position.to(self.sim.device).to(torch.float32)
-                    if Ti < T_max:
-                        BT7[i, Ti:, :] = BT7[i, Ti - 1 : Ti, :]
-        except Exception as e:
-            print(f"[WARN] motion planning all failed with exception: {e}")
-            success = torch.zeros(
-                B, dtype=torch.bool, device=self.sim.device
-            )  # set to all false
-            BT7 = joint_pos.unsqueeze(1)  # [B,1,7]
+                    print("[ERROR] Max retries reached, motion planning failed critically")
+                    
+            except Exception as e:
+                # Safe error message extraction
+                try:
+                    error_msg = str(e)
+                    error_type = type(e).__name__
+                except:
+                    error_msg = "Unknown error"
+                    error_type = "Exception"
+                
+                print(f"[ERROR] Unexpected error in motion planning: {error_type}: {error_msg}")
+                
+                # Check for recoverable errors
+                is_recoverable = False
+                try:
+                    is_recoverable = ("cuda graph" in error_msg.lower() or 
+                                    "NoneType" in error_msg or 
+                                    "has no len()" in error_msg)
+                except:
+                    pass
+                
+                if retry < max_retries - 1 and is_recoverable:
+                    if self.reinitialize_motion_gen():
+                        print(f"[INFO] Retrying after error (attempt {retry+2}/{max_retries})...")
+                        continue
+                break
+        
+        # If we get here, all retries failed - return dummy trajectory with all False success
+        print("[ERROR] Motion planning failed critically - returning dummy trajectory")
+        B = self.scene.num_envs
+        joint_pos = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids].contiguous()
+        dof = joint_pos.shape[-1]
+        # Return current position as 1-step trajectory with all failures
+        dummy_traj = joint_pos.unsqueeze(1)  # (B, 1, dof)
+        dummy_success = torch.zeros(B, dtype=torch.bool, device=self.sim.device)
+        return dummy_traj, dummy_success
 
-        # check exceptions
-        if result.success is None or result.success.shape[0] != B:
-            print(f"[WARN] motion planning success errors: {result.success}")
-            success = torch.zeros(
-                B, dtype=torch.bool, device=self.sim.device
-            )  # set to all false
-            BT7 = joint_pos.unsqueeze(1)  # [B,1,7]
-        else:
-            success = result.success
-        if BT7.shape[0] != B or BT7.shape[2] != joint_pos.shape[1]:
-            print(
-                f"[WARN] motion planning traj dim mismatch: {BT7.shape} vs {[B, 'T', joint_pos.shape[1]]}"
-            )
-            BT7 = joint_pos.unsqueeze(1)  # [B,1,7]
 
-        return BT7, success
 
     def motion_planning(self, position, quaternion, max_attempts=1):
         if self.scene.num_envs == 1:
@@ -898,23 +1097,23 @@ class BaseSimulator:
                         np.save(env_dir / f"{key}.npy", depth_seq)
                     elif key != "composed_rgb":
                         np.save(env_dir / f"{key}.npy", arr[:, b])
-                writer = imageio.get_writer(demo_path, fps=50, macro_block_size=None)
-                rgb = np.array(self.save_dict["rgb"])
-                mask = np.array(self.save_dict["segmask"])
-                bg_rgb_path = self.task_cfg.background_cfg.background_rgb_path
-                self.bg_rgb = imageio.imread(bg_rgb_path)
-                for t in range(rgb.shape[0]):
-                    composed = self.convert_real(mask[t, b], self.bg_rgb, rgb[t, b])    
-                    self.save_dict["composed_rgb"][t, b] = composed
-                    writer.append_data(composed)
-                writer.close()
-                video_paths.append(demo_path)
+            writer = imageio.get_writer(demo_path, fps=50, macro_block_size=None)
+            rgb = np.array(self.save_dict["rgb"])
+            mask = np.array(self.save_dict["segmask"])
+            bg_rgb_path = self.task_cfg.background_cfg.background_rgb_path
+            self.bg_rgb = imageio.imread(bg_rgb_path)
+            for t in range(rgb.shape[0]):
+                composed = self.convert_real(mask[t, b], self.bg_rgb, rgb[t, b])    
+                self.save_dict["composed_rgb"][t, b] = composed
+                writer.append_data(composed)
+            writer.close()
+            video_paths.append(str(demo_path))
         if export_hdf5:
             self.export_batch_data_to_hdf5(hdf5_names, video_paths)
-        print("[INFO]: Demonstration is saved at: ", demo_save_path)
+        print("[INFO]: Demonstration is saved at: ", video_dir / "videos")
 
 
-    def export_batch_data_to_hdf5(self, hdf5_names: List[str], video_paths: List[Path]) -> int:
+    def export_batch_data_to_hdf5(self, hdf5_names: List[str], video_paths: List[str]) -> int:
         """Export buffered trajectories to RoboTwin-style HDF5 episodes."""
         if self.data_dir is not None:
             target_root = self.data_dir
@@ -931,21 +1130,10 @@ class BaseSimulator:
         for idx, name in enumerate(hdf5_names):
             name = str(name)
             episode_names.append(name.replace("demo_", "episode_"))
-        handled_keys = {
-            "composed_rgb",
-            "depth",
-            "segmask",
-            "joint_pos",
-            "joint_vel",
-            "gripper_pos",
-            "gripper_cmd",
-            "actions",
-            "ee_pose_cam",
-        }
-
+      
         camera_params = self._get_camera_parameters()
 
-        for env_idx, episode_name, video_path in zip(episode_names, video_paths):
+        for env_idx, (episode_name, video_path) in enumerate(zip(episode_names, video_paths)):
             hdf5_path = data_dir / f"{episode_name}.hdf5"
             hdf5_path.parent.mkdir(parents=True, exist_ok=True)
 
