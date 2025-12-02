@@ -19,7 +19,10 @@ def get_next_id(folder: Path) -> int:
     subfolders = [f for f in folder.iterdir() if f.is_dir()]
     task_num = len(subfolders)
     return task_num
-    
+
+def get_task_cfg(key: str, base_folder: Path) -> TaskCfg:
+    json_path = base_folder / "task.json"
+    return load_task_cfg(json_path)
 
 def construct_task_config(key, scene_dict: dict, base_folder: Path):
     task_key = key
@@ -230,8 +233,12 @@ def load_task_cfg(json_path: Path) -> TaskCfg:
         start_related=cfg_dict["start_related"],
         end_related=cfg_dict["end_related"],
         objects=[parse_object_cfg(obj) for obj in cfg_dict["objects"]],
-        reference_trajectory=[parse_traj_cfg(traj) for traj in cfg_dict.get("reference_trajectory", [])],
-        generated_trajectories=[parse_traj_cfg(traj) for traj in cfg_dict.get("generated_trajectories", [])]
+        reference_trajectory=[
+            parse_traj_cfg(traj) for traj in (cfg_dict.get("reference_trajectory") or [])
+        ],
+        generated_trajectories=[
+            parse_traj_cfg(traj) for traj in (cfg_dict.get("generated_trajectories") or [])
+        ]
     )
 
     return task_cfg

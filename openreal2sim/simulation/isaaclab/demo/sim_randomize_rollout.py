@@ -296,6 +296,12 @@ class RandomizeExecution(BaseSimulator):
         t_iter = list(range(1, T, sample_step))
         t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
 
+
+        ee_pos_initial = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+        obj_pos_initial = self.object_prim.data.root_com_pos_w[:, 0:3]
+        initial_grasp_dist = torch.norm(ee_pos_initial - obj_pos_initial, dim=1) # [B]
+        self.initial_grasp_dist = initial_grasp_dist
+        
         for t in t_iter:
             if recalibrate_interval> 0 and (t-1) % recalibrate_interval == 0:
                 ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
@@ -326,6 +332,8 @@ class RandomizeExecution(BaseSimulator):
             self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
 
         is_grasp_success = self.is_grasp_success()
+        is_success = self.is_success()
+
         print('[INFO] last obj goal', obj_goal_all[:, -1])
         print('[INFO] last obj pos', self.object_prim.data.root_state_w[:, :3])
         for b in range(B):
@@ -334,7 +342,7 @@ class RandomizeExecution(BaseSimulator):
             else:
                 self.wait(gripper_open=True, steps=10, record = self.record)
 
-        return joint_pos, is_grasp_success
+        return joint_pos, is_success
 
 
     def follow_object_centers(self, start_joint_pos, sample_step=1, recalibrate_interval = 3, visualize=True):
@@ -347,6 +355,12 @@ class RandomizeExecution(BaseSimulator):
 
         t_iter = list(range(1, T, sample_step))
         t_iter = t_iter + [T-1] if t_iter[-1] != T-1 else t_iter
+
+        ee_pos_initial = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+        obj_pos_initial = self.object_prim.data.root_com_pos_w[:, 0:3]
+        initial_grasp_dist = torch.norm(ee_pos_initial - obj_pos_initial, dim=1) # [B]
+        self.initial_grasp_dist = initial_grasp_dist
+
 
         for t in t_iter:
             if recalibrate_interval> 0 and (t-1) % recalibrate_interval == 0:
@@ -406,29 +420,144 @@ class RandomizeExecution(BaseSimulator):
         pregrasp_pose_w[:, :3] += current_manip_object_com - init_manip_object_com
         return grasp_pose_w, pregrasp_pose_w
 
-    def is_success(self):
-        obj_w = self.object_prim.data.root_state_w[:, :7]
-        origins = self.scene.env_origins
-        obj_w[:, :3] -= origins
-        trans_dist_list = []
-        angle_list = []
+    # def is_success(self):
+    #     obj_w = self.object_prim.data.root_state_w[:, :7]
+    #     origins = self.scene.env_origins
+    #     obj_w[:, :3] -= origins
+    #     trans_dist_list = []
+    #     angle_list = []
+    #     B = self.scene.num_envs
+    #     for b in range(B):
+    #         obj_pose_l = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
+    #         goal_pose_l = pose_to_mat(self.end_pose_list[b][:3], self.end_pose_list[b][3:7])
+    #         trans_dist, angle = pose_distance(obj_pose_l, goal_pose_l)
+    #         trans_dist_list.append(trans_dist)
+    #         angle_list.append(angle)
+    #     trans_dist = torch.tensor(np.stack(trans_dist_list))
+    #     angle = torch.tensor(np.stack(angle_list))
+    #     print(f"[INFO] trans_dist: {trans_dist}, angle: {angle}")
+    #     if self.task_type == "simple_pick_place" or self.task_type == "simple_pick":
+    #         is_success = trans_dist < 0.10
+    #     elif self.task_type == "targetted_pick_place":
+    #         is_success = (trans_dist < 0.10) & (angle < np.radians(10))
+    #     else:
+    #         raise ValueError(f"[ERR] Invalid task type: {self.task_type}")
+    #     return is_success.cpu().numpy()
+
+    
+    def is_success(self, position_threshold: float = 0.10, gripper_threshold: float = 0.10, holding_threshold: float = 0.02) -> torch.Tensor:
+        """
+        Verify if the manipulation task succeeded by checking:
+        1. Object is at Goal (Distance < 10cm)
+        2. Gripper is at Goal (Distance < 10cm) - Explicit check using T_ee_in_obj
+        3. Object is in Gripper (Deviation < 2cm)
+        
+        Args:
+            position_threshold: Distance threshold for Object-Goal check (default: 0.10m = 10cm)
+            skip_envs: Boolean array [B] indicating which envs to skip from verification
+        
+        Returns:
+            torch.Tensor: Boolean tensor [B] indicating success for each environment
+        """
         B = self.scene.num_envs
+        # --- 1. Object Goal Check ---
+        final_goal_matrices = self.obj_goal_traj_w[:, -1, :, :]  # [B, 4, 4]
+        goal_positions_np = final_goal_matrices[:, :3, 3]
+        goal_positions = torch.tensor(goal_positions_np, dtype=torch.float32, device=self.sim.device)
+        
+        # Current Root and COM
+        current_root_state = self.object_prim.data.root_state_w
+        current_root_pos = current_root_state[:, :3]
+        current_root_quat = current_root_state[:, 3:7]
+        current_com_pos = self.object_prim.data.root_com_pos_w[:, :3]
+        
+        # Calculate Goal COM positions
+        # The COM offset is constant in the object's local frame.
+        # We need to: (1) Get the current COM offset in local frame, (2) Apply to goal pose
+        goal_com_positions_list = []
         for b in range(B):
-            obj_pose_l = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
-            goal_pose_l = pose_to_mat(self.end_pose_list[b][:3], self.end_pose_list[b][3:7])
-            trans_dist, angle = pose_distance(obj_pose_l, goal_pose_l)
-            trans_dist_list.append(trans_dist)
-            angle_list.append(angle)
-        trans_dist = torch.tensor(np.stack(trans_dist_list))
-        angle = torch.tensor(np.stack(angle_list))
-        print(f"[INFO] trans_dist: {trans_dist}, angle: {angle}")
-        if self.task_type == "simple_pick_place" or self.task_type == "simple_pick":
-            is_success = trans_dist < 0.10
-        elif self.task_type == "targetted_pick_place":
-            is_success = (trans_dist < 0.10) & (angle < np.radians(10))
+            # Current state
+            root_pos_cur = current_root_pos[b].cpu().numpy()
+            root_quat_cur = current_root_quat[b].cpu().numpy()  # wxyz format
+            com_pos_cur = current_com_pos[b].cpu().numpy()
+            
+            # COM offset in world frame
+            com_offset_world = com_pos_cur - root_pos_cur  # [3]
+            
+            # Convert COM offset to object's local frame
+            # R_cur^T @ com_offset_world gives the offset in local coords (assuming no scale)
+            R_cur = transforms3d.quaternions.quat2mat(root_quat_cur)  # Convert wxyz to rotation matrix
+            com_offset_local = R_cur.T @ com_offset_world  # Rotate to local frame
+            
+            # Goal state
+            T_goal_root = final_goal_matrices[b]  # [4, 4] numpy array
+            goal_root_pos = T_goal_root[:3, 3]
+            R_goal = T_goal_root[:3, :3]
+            
+            # Apply local offset to goal pose
+            # goal_com_pos = goal_root_pos + R_goal @ com_offset_local
+            com_offset_world_goal = R_goal @ com_offset_local
+            goal_com_pos = goal_root_pos + com_offset_world_goal
+            
+            goal_com_positions_list.append(goal_com_pos)
+            
+        goal_com_positions = torch.tensor(np.array(goal_com_positions_list), dtype=torch.float32, device=self.sim.device)
+        
+        # Calculate Distances
+        root_dist = torch.norm(current_root_pos - goal_positions, dim=1)
+        com_dist = torch.norm(current_com_pos - goal_com_positions, dim=1)
+        
+        # Success requires BOTH Root and COM to be within threshold
+        obj_success = (root_dist <= position_threshold) & (com_dist <= position_threshold)
+
+        # --- 2. Gripper Goal Check ---
+        # Calculate Target Gripper Pose: T_ee_goal = T_obj_goal @ T_ee_in_obj
+        # We use the stored T_ee_in_obj from the start of the trajectory
+        ee_pos_final = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+        
+        if hasattr(self, 'T_ee_in_obj') and self.T_ee_in_obj is not None:
+            target_ee_pos_list = []
+            for b in range(B):
+                T_obj_goal = final_goal_matrices[b]
+                T_ee_goal = T_obj_goal @ self.T_ee_in_obj[b]
+                target_ee_pos_list.append(T_ee_goal[:3, 3])
+            
+            target_ee_pos = torch.tensor(np.array(target_ee_pos_list), dtype=torch.float32, device=self.sim.device)
+            grip_goal_dist = torch.norm(ee_pos_final - target_ee_pos, dim=1)
+            gripper_success = grip_goal_dist <= 0.10
         else:
-            raise ValueError(f"[ERR] Invalid task type: {self.task_type}")
-        return is_success.cpu().numpy()
+            # Fallback if T_ee_in_obj not available (should not happen if follow_object_goals ran)
+            print("[WARN] T_ee_in_obj not found, skipping explicit Gripper Goal Check")
+            gripper_success = torch.ones(B, dtype=torch.bool, device=self.sim.device)
+            grip_goal_dist = torch.zeros(B, dtype=torch.float32, device=self.sim.device)
+
+        # --- 3. Holding Check (Object in Gripper) ---
+        # Check if the distance between Gripper and Object COM has remained stable.
+        # We compare the final distance to the initial grasp distance.
+        obj_com_final = self.object_prim.data.root_com_pos_w[:, 0:3]
+        current_grip_com_dist = torch.norm(ee_pos_final - obj_com_final, dim=1)
+        
+        if hasattr(self, 'initial_grasp_dist') and self.initial_grasp_dist is not None:
+            grasp_deviation = torch.abs(current_grip_com_dist - self.initial_grasp_dist)
+            holding_success = grasp_deviation <= 0.02
+            
+            holding_metric = grasp_deviation
+            holding_threshold = 0.02
+            holding_metric_name = "Grip-COM Deviation"
+        else:
+            holding_success = current_grip_com_dist <= 0.15
+            holding_metric = current_grip_com_dist
+            holding_threshold = 0.15
+            holding_metric_name = "Grip-COM Dist"
+
+        # Combined Success
+        success_mask = obj_success & gripper_success & holding_success
+       
+        print("="*50)
+        print(f"TASK VERIFIER: SUCCESS - {success_mask.sum().item()}/{B} environments succeeded")
+        print("="*50 + "\n")
+        
+        return success_mask
 
 
     def is_grasp_success(self):
@@ -525,7 +654,7 @@ class RandomizeExecution(BaseSimulator):
         gp_w  = torch.as_tensor(np.array(self.grasp_pose_list,  dtype=np.float32)[:,:3], dtype=torch.float32, device=self.sim.device)
         gq_w  = torch.as_tensor(np.array(self.grasp_pose_list, dtype=np.float32)[:,3:7], dtype=torch.float32, device=self.sim.device)
         pre_w = torch.as_tensor(np.array(self.pregrasp_pose_list, dtype=np.float32)[:,:3], dtype=torch.float32, device=self.sim.device)
-        init_manip_object_com = get_initial_com_pose(self.task_cfg.reference_trajectory)
+        init_manip_object_com = get_initial_com_pose(self.task_cfg.reference_trajectory[-1])
         if init_manip_object_com is not None:
             gp_w, pre_w = self.refine_grasp_pose(init_manip_object_com, gp_w, pre_w)
             gp_w = torch.as_tensor(gp_w, dtype=torch.float32, device=self.sim.device)
@@ -656,5 +785,11 @@ def main():
   
 
 if __name__ == "__main__":
-    main()
-    simulation_app.close()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    finally:
+        simulation_app.close()

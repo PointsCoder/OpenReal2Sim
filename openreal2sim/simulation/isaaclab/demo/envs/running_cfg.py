@@ -31,6 +31,8 @@ class HeuristicConfig:
 
     num_envs: int = 1
     num_trials: int = 10
+    grasp_num: int = 1
+    robot: str = "franka"
 
 
 @dataclass(frozen=True)

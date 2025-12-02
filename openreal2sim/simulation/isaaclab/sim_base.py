@@ -1108,9 +1108,10 @@ class BaseSimulator:
                 writer.append_data(composed)
             writer.close()
             video_paths.append(str(demo_path))
+            print(f"[INFO]: Demonstration is saved at: {demo_path}")
         if export_hdf5:
             self.export_batch_data_to_hdf5(hdf5_names, video_paths)
-        print("[INFO]: Demonstration is saved at: ", video_dir / "videos")
+       
 
 
     def export_batch_data_to_hdf5(self, hdf5_names: List[str], video_paths: List[str]) -> int:

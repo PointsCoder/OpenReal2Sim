@@ -82,8 +82,8 @@ class TaskCfg:
     start_related: List[int]
     end_related: List[int]
     objects: List[ObjectCfg]
-    reference_trajectory: List[TrajectoryCfg]
-    generated_trajectories: List[TrajectoryCfg] = field(default_factory=list)
+    reference_trajectory: Optional[List[TrajectoryCfg]] = None
+    generated_trajectories: Optional[List[TrajectoryCfg]] = None
 
 
 

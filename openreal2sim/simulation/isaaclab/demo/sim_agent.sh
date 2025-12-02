@@ -8,6 +8,7 @@ ROOT_DIR="$(cd /app && pwd)"
 gpu_id="1"
 HEADLESS="--headless"
 CONFIG_PATH="${ROOT_DIR}/config/config.yaml"
+declare -a PIPELINE=()
 
 usage() {
   cat <<'EOF'
@@ -15,6 +16,12 @@ Usage: sim_agent.sh [options]
 
 Options:
   --config <path>        Path to config.yaml file (default: /app/config/config.yaml)
+  --stage <stage>         Stage to run (can be specified multiple times)
+                          Available stages:
+                            - usd_conversion
+                            - sim_heuristic_manip
+                            - sim_randomize_rollout
+                          If not specified, runs all stages in order
   --no-headless          Disable headless mode (passes through to AppLauncher)
   -h, --help             Show this message and exit
 
@@ -30,6 +37,21 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)
       CONFIG_PATH="${2:?Missing value for --config}"
+      shift 2
+      ;;
+    --stage)
+      STAGE="${2:?Missing value for --stage}"
+      # Validate stage
+      case "${STAGE}" in
+        usd_conversion|sim_heuristic_manip|sim_randomize_rollout)
+          PIPELINE+=("${STAGE}")
+          ;;
+        *)
+          echo "[ERR] Invalid stage: ${STAGE}" >&2
+          echo "[ERR] Valid stages: usd_conversion, sim_heuristic_manip, sim_randomize_rollout" >&2
+          exit 1
+          ;;
+      esac
       shift 2
       ;;
     --no-headless)
@@ -82,7 +104,13 @@ echo "[INFO] Loaded ${#KEYS[@]} key(s) from ${CONFIG_PATH}: ${KEYS[*]}"
 export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
 cd "${ROOT_DIR}"
 
-declare -a PIPELINE=(  "sim_randomize_rollout")
+# If no stages specified, run all stages in order
+if [[ ${#PIPELINE[@]} -eq 0 ]]; then
+  PIPELINE=("usd_conversion" "sim_heuristic_manip" "sim_randomize_rollout")
+  echo "[INFO] No stages specified, running all stages: ${PIPELINE[*]}"
+else
+  echo "[INFO] Running specified stages: ${PIPELINE[*]}"
+fi
 
 HEADLESS_ARGS=()
 if [[ -n "${HEADLESS}" ]]; then

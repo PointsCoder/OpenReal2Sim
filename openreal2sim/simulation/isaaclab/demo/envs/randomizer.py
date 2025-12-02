@@ -71,7 +71,8 @@ class Randomizer(TaskCfg):
         
         # Step 4: Generate robot_pose_randomize_num random robot poses
         # robot_pose format: [x, y, z, w, x, y, z] (position + quaternion wxyz)
-        ref_traj = self.task_cfg.reference_trajectory
+        ## FIXME: hacking
+        ref_traj = self.task_cfg.reference_trajectory[-1]
         assert ref_traj is not None, "Reference trajectory is not found"
         ref_robot_pose = np.array(ref_traj.robot_pose)
         robot_pose_mat = pose_to_mat(ref_robot_pose[:3], ref_robot_pose[3:7])
@@ -100,7 +101,7 @@ class Randomizer(TaskCfg):
         
         # Step 5: Generate trajectories for all combinations
         generated_trajectories = []
-        ref_traj = self.task_cfg.reference_trajectory
+        ref_traj = self.task_cfg.reference_trajectory[-1]
         for start_pose, end_pose in traj_pose_pairs:
             for other_object_poses in scene_poses_combinations:
                 for robot_pose in robot_poses:
