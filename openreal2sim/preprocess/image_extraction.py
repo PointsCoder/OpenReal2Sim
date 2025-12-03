@@ -157,8 +157,7 @@ def run_r3d(key_name: str, cfgs: dict):
 
     temp_dir = Path("outputs") / key_name / "temp_r3d"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    interval = cfgs.get("interval", 1)
-
+    interval = cfgs.get("fps", 1)
     try:
         print("[Info] Extracting R3D file...")
         with ZipFile(input_path) as zip_file:
@@ -167,11 +166,12 @@ def run_r3d(key_name: str, cfgs: dict):
         metadata_path = temp_dir / 'metadata'
         with open(metadata_path, "rb") as f:
             metadata = json.loads(f.read())
-        
+        fps = metadata.get("fps", 1)
         rgbd_dir = temp_dir / 'rgbd'
         rgb_path_list = list(rgbd_dir.glob('*.jpg'))
         rgb_path_list.sort(key = lambda x: int(x.stem))
-    
+        interval = int(fps / cfgs.get("fps", 1))
+        print(f"[Info] Interval: {interval}")
         
         H, W = cv2.imread(str(rgb_path_list[0])).shape[:2]
         if H < W:

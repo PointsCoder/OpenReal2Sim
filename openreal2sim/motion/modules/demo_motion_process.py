@@ -158,6 +158,20 @@ def downsample_traj(trajectory, trans_threshold=0.05, rot_threshold=np.radians(2
 
     return downsampled_indices
 
+def refine_first_frame(hand_masks, object_masks, first_frame):
+    N = min(len(hand_masks), len(object_masks))
+    kernel = np.ones((10, 10), np.uint8)
+    for i in range(first_frame, N):
+        if hand_masks[i] is None:
+            continue
+        hand_mask = hand_masks[i].astype(np.uint8)
+        obj_mask = object_masks[i].astype(np.uint8)
+        obj_mask_dilated = cv2.dilate(obj_mask, kernel, iterations=1)
+        overlap = (hand_mask & obj_mask_dilated).sum()
+        if overlap > 0:
+            return i
+    return first_frame
+
 def refine_end_frame(hand_masks, object_masks):
     N = min(len(hand_masks), len(object_masks))
     kernel = np.ones((10, 10), np.uint8)
@@ -237,10 +251,14 @@ def demo_motion_process(keys, key_scene_dicts, key_cfgs):
         manipulated_trajs_path = scene_json_dict["objects"][str(max_placement_oid)][traj_key]
         manipulated_trajs = np.load(manipulated_trajs_path)
         object_masks = build_mask_array(int(max_placement_oid), scene_dict)
-        hand_masks = scene_dict["motion"]["hand_masks"]  
+        hand_masks = scene_dict["motion"]["hand_masks"]
+        first_frame = scene_dict["info"]["start_frame_idx"]
+        first_frame = refine_first_frame(hand_masks, object_masks, first_frame)
         end_frame = refine_end_frame(hand_masks, object_masks)
         print(f"End frame: {end_frame}")
-        trajs = manipulated_trajs
+        print(f"First frame: {first_frame}")
+      
+
         if end_frame == len(manipulated_trajs) - 1:
             scene_json_dict["gripper_closed"] = True
         elif end_frame == 0:
@@ -248,14 +266,20 @@ def demo_motion_process(keys, key_scene_dicts, key_cfgs):
                 scene_json_dict["gripper_closed"] = False
             else:
                 scene_json_dict["gripper_closed"] = True
+            end_frame = len(manipulated_trajs) - 1
         else:
             scene_json_dict["gripper_closed"] = False
-            #trajs = manipulated_trajs[:end_frame]
         
+        
+        trajs = manipulated_trajs[first_frame:end_frame]
 
         downsampled_indices = downsample_traj(trajs, trans_threshold=0.03, rot_threshold=np.radians(20))
+        clean_downsampled_indices = [0]
+        for i in downsampled_indices[1:]:
+            clean_downsampled_indices.append(i + first_frame)
+        downsampled_indices = clean_downsampled_indices
         scene_json_dict["chosen_indices"] = downsampled_indices
-        trajs = trajs[downsampled_indices]
+        trajs = manipulated_trajs[downsampled_indices]
         
 
         # trajs = lift_traj(trajs, height=0.02)

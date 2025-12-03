@@ -24,7 +24,7 @@ class MotionAgent:
                 scene_dict = pickle.load(f)
             self.key_scene_dicts[key] = scene_dict
         self.stages = [
-            #"hand_extraction",
+            "hand_extraction",
             "demo_motion_process",
             "grasp_point_extraction",
             "grasp_generation",
