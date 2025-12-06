@@ -93,6 +93,15 @@ class ReconAgent:
                     "simple_trajs": str(new_obj_simple_trajs_path),
                     "hybrid_trajs": str(new_obj_hybrid_trajs_path)
                 }
+                            # If there is a video in data folder matching the key, copy it as video.mp4
+            data_dir = self.base_dir / 'data'
+            video_src = None
+            video_file = data_dir / f'{key}.mp4'
+            if video_file.exists():
+                video_src = video_file
+            if video_src is not None:
+                new_video_path = save_dir / 'video.mp4'
+                shutil.copy(video_src, new_video_path)
 
             json_path = save_dir / "scene.json"
             with open(json_path, 'w') as f:
