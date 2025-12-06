@@ -249,15 +249,129 @@ class RandomizeExecution(BaseSimulator):
         # —— 3) Precompute absolute object goals for all envs ——
         T = self.object_trajectory_list[0].shape[0]
         obj_goal = np.zeros((B, T, 4, 4), dtype=np.float32)
+        print(f"[DEBUG] env_origins[0]: {origins[0]}")
+        print(f"[DEBUG] offset_np: {offset_np}")
+        
         for b in range(B):
-            for t in range(1, T):
-                goal_4x4 = self.object_trajectory_list[b][t]
-                goal_4x4[:3, 3] += origins[b]  # back to world frame
+            for t in range(T):
+                goal_4x4 = self.object_trajectory_list[b][t].copy()  # Make a copy to avoid modifying original
+                # object_trajectory_list is relative to env origin, so add origin to get world frame
+                goal_4x4[:3, 3] += origins[b]  
                 goal_4x4[:3, 3] += offset_np
                 obj_goal[b, t] = goal_4x4
                 
         self.obj_goal_traj_w = obj_goal
 
+
+    def execute_and_lift_once_batch(self, lift_height=0.12) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Test grasp quality: close → lift → check coupling in all dimensions.
+        A good grasp should maintain:
+        - XY position (object shouldn't slip sideways)
+        - Roll, Pitch, Yaw orientation (object shouldn't rotate unexpectedly)
+        - Z height (tight coupling during vertical lift)
+        
+        Returns (success[B], score[B]).
+        """
+        B = self.scene.num_envs
+        
+        # Record initial state: position (xyz) + orientation (quat)
+        obj0 = self.object_prim.data.root_com_pos_w[:, 0:3]     # [B,3]
+        obj_quat0 = self.object_prim.data.root_state_w[:, 3:7]  # [B,4] wxyz
+        ee_w = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
+        ee_p0 = ee_w[:, :3]
+        ee_q0 = ee_w[:, 3:7]
+        
+        print(f"[INFO] Pre-lift - Object XYZ: mean={obj0.mean(dim=0)}, EE XYZ: mean={ee_p0.mean(dim=0)}")
+
+        # lift: keep orientation, add height
+        target_p = ee_p0.clone()
+        target_p[:, 2] += lift_height
+
+        root = self.robot.data.root_state_w[:, 0:7]
+        p_lift_b, q_lift_b = subtract_frame_transforms(
+            root[:, 0:3], root[:, 3:7],
+            target_p, ee_q0
+        )
+        jp, success = self.move_to(p_lift_b, q_lift_b, gripper_open=False, record=self.record)
+        if torch.any(success==False): return np.zeros(B, bool), np.zeros(B, np.float32)
+        jp = self.wait(gripper_open=False, steps=8, record=self.record)
+
+        # Record final state
+        obj1 = self.object_prim.data.root_com_pos_w[:, 0:3]
+        obj_quat1 = self.object_prim.data.root_state_w[:, 3:7]  # [B,4] wxyz
+        ee_w1 = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
+        ee_p1 = ee_w1[:, :3]
+        ee_q1 = ee_w1[:, 3:7]
+        
+        print(f"[INFO] Post-lift - Object XYZ: mean={obj1.mean(dim=0)}, EE XYZ: mean={ee_p1.mean(dim=0)}")
+
+        # --- Check 1: Z-axis tight coupling (vertical lift) ---
+        ee_z_diff = ee_p1[:, 2] - ee_p0[:, 2]
+        obj_z_diff = obj1[:, 2] - obj0[:, 2]
+        z_coupling = torch.abs(ee_z_diff - obj_z_diff) <= 0.01  # [B]
+        z_lifted = (torch.abs(ee_z_diff) >= 0.5 * lift_height) & \
+                   (torch.abs(obj_z_diff) >= 0.5 * lift_height)  # [B]
+        
+        # --- Check 2: XY position stability (no lateral slip) ---
+        # Object XY should move with gripper (within 2cm tolerance)
+        ee_xy_diff = ee_p1[:, :2] - ee_p0[:, :2]  # [B, 2]
+        obj_xy_diff = obj1[:, :2] - obj0[:, :2]    # [B, 2]
+        xy_deviation = torch.norm(ee_xy_diff - obj_xy_diff, dim=1)  # [B]
+        xy_stable = xy_deviation <= 0.02  # [B]
+        
+        # --- Check 3: Orientation stability (roll, pitch, yaw) ---
+        # Convert quaternions to euler angles for easier checking
+        def quat_to_euler(quat):
+            """Convert wxyz quaternion to roll, pitch, yaw (radians)"""
+            w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+            
+            # Roll (x-axis rotation)
+            sinr_cosp = 2 * (w * x + y * z)
+            cosr_cosp = 1 - 2 * (x * x + y * y)
+            roll = torch.atan2(sinr_cosp, cosr_cosp)
+            
+            # Pitch (y-axis rotation)
+            sinp = 2 * (w * y - z * x)
+            sinp = torch.clamp(sinp, -1.0, 1.0)
+            pitch = torch.asin(sinp)
+            
+            # Yaw (z-axis rotation)
+            siny_cosp = 2 * (w * z + x * y)
+            cosy_cosp = 1 - 2 * (y * y + z * z)
+            yaw = torch.atan2(siny_cosp, cosy_cosp)
+            
+            return roll, pitch, yaw
+        
+        roll0, pitch0, yaw0 = quat_to_euler(obj_quat0)
+        roll1, pitch1, yaw1 = quat_to_euler(obj_quat1)
+        
+        # Check angular changes (should be minimal for good grasp)
+        roll_diff = torch.abs(roll1 - roll0)
+        pitch_diff = torch.abs(pitch1 - pitch0)
+        yaw_diff = torch.abs(yaw1 - yaw0)
+        
+        # Allow up to 10 degrees rotation in any axis
+        orientation_stable = (roll_diff <= torch.deg2rad(torch.tensor(10.0, device=roll_diff.device))) & \
+                            (pitch_diff <= torch.deg2rad(torch.tensor(10.0, device=pitch_diff.device))) & \
+                            (yaw_diff <= torch.deg2rad(torch.tensor(10.0, device=yaw_diff.device)))  # [B]
+        
+        # --- Combined success criteria ---
+        lifted = z_coupling & z_lifted & xy_stable & orientation_stable  # [B]
+        
+        # Detailed logging
+        for b in range(min(B, 3)):  # Log first 3 envs for debugging
+            print(f"  Env[{b}]: Z-coupling={z_coupling[b].item()}, "
+                  f"XY-stable={xy_stable[b].item()} (dev={xy_deviation[b].item():.4f}m), "
+                  f"Orient-stable={orientation_stable[b].item()} "
+                  f"(roll={torch.rad2deg(roll_diff[b]).item():.1f}°, "
+                  f"pitch={torch.rad2deg(pitch_diff[b]).item():.1f}°, "
+                  f"yaw={torch.rad2deg(yaw_diff[b]).item():.1f}°) "
+                  f"→ PASS={lifted[b].item()}")
+
+        score = torch.zeros_like(ee_z_diff)
+        score[lifted] = 1000.0
+        return lifted.detach().cpu().numpy().astype(bool), score.detach().cpu().numpy().astype(np.float32)
 
     def lift_up(self, height=0.12, gripper_open=False, steps=8):
         """
@@ -272,8 +386,8 @@ class RandomizeExecution(BaseSimulator):
             root[:, 0:3], root[:, 3:7],
             target_p, ee_w[:, 3:7]
         ) # [B,3], [B,4]
-        jp, success = self.move_to(p_lift_b, q_lift_b, gripper_open=gripper_open)
-        jp = self.wait(gripper_open=gripper_open, steps=steps)
+        jp, success = self.move_to(p_lift_b, q_lift_b, gripper_open=gripper_open, record=self.record)
+        jp = self.wait(gripper_open=gripper_open, steps=steps, record=self.record)
         return jp
 
     def follow_object_goals(self, start_joint_pos, sample_step=1, recalibrate_interval = 3, visualize=True):
@@ -302,6 +416,9 @@ class RandomizeExecution(BaseSimulator):
         initial_grasp_dist = torch.norm(ee_pos_initial - obj_pos_initial, dim=1) # [B]
         self.initial_grasp_dist = initial_grasp_dist
         
+        # Store T_ee_in_obj for success checking
+        T_ee_in_obj = None
+        
         for t in t_iter:
             if recalibrate_interval> 0 and (t-1) % recalibrate_interval == 0:
                 ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
@@ -311,6 +428,8 @@ class RandomizeExecution(BaseSimulator):
                     T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
                     T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
                     T_ee_in_obj.append((np.linalg.inv(T_obj_w) @ T_ee_w).astype(np.float32))
+                # Store for success checking
+                self.T_ee_in_obj = T_ee_in_obj
             goal_pos_list, goal_quat_list = [], []
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):
@@ -682,8 +801,33 @@ class RandomizeExecution(BaseSimulator):
         jp = self.wait(gripper_open=False, steps=50, record = self.record)
         self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.ones((B, 1))], axis=1))
 
-        # object goal following
-        self.lift_up(height=self.goal_offset[2], gripper_open=False, steps=8)
+        # Validate grasp quality with lift test
+        print("[INFO] Validating grasp quality with lift test...")
+        grasp_ok, grasp_scores = self.execute_and_lift_once_batch(lift_height=0.12)
+        grasp_success_count = int(grasp_ok.sum())
+        print(f"[INFO] Grasp validation: {grasp_success_count}/{B} grasps passed tight coupling test")
+        
+        # Return indices: success=True for passed, False for failed grasps
+        # Caller will regenerate poses for failed envs
+        grasp_passed_mask = torch.tensor(grasp_ok, dtype=torch.bool, device=self.sim.device)
+        
+        if grasp_success_count == 0:
+            print("[WARN] All grasps failed validation, need to regenerate all poses")
+            return {"success_env_ids": [], "failed_env_ids": list(range(B))}
+        
+        # Only proceed with trajectory following for envs that passed grasp check
+        passed_env_ids = torch.where(grasp_passed_mask)[0].cpu().numpy().tolist()
+        failed_env_ids = torch.where(~grasp_passed_mask)[0].cpu().numpy().tolist()
+        
+        if len(failed_env_ids) > 0:
+            print(f"[WARN] {len(failed_env_ids)} envs failed grasp validation: {failed_env_ids}")
+            print(f"[INFO] Proceeding with trajectory collection only for successful envs: {passed_env_ids}")
+
+        # object goal following (already lifted from grasp check, so reduce additional lift)
+        # Only lift the remaining amount if needed
+        remaining_lift = max(0.0, self.goal_offset[2] - 0.12)
+        if remaining_lift > 0.01:
+            self.lift_up(height=remaining_lift, gripper_open=False, steps=8)
         # if self.task_type == "simple_pick_place" or self.task_type == "simple_pick":
         #     jp, is_success = self.follow_object_centers(jp, sample_step=1, visualize=True)
         # elif self.task_type == "targetted_pick_place":
@@ -696,20 +840,24 @@ class RandomizeExecution(BaseSimulator):
         is_success = is_success #& self.is_success()
         # Arrange the output: we want to collect only the successful env ids as a list.
         is_success = torch.tensor(is_success, dtype=torch.bool, device=self.sim.device)
+        
+        # Only consider envs that passed grasp validation
+        is_success = is_success & grasp_passed_mask
         success_env_ids = torch.where(is_success)[0].cpu().numpy().tolist()
 
-        print(f"[INFO] success_env_ids: {success_env_ids}")
-        if self.record:
+        print(f"[INFO] Final success_env_ids (grasp+trajectory): {success_env_ids}")
+        if self.record and len(success_env_ids) > 0:
             self.save_data(ignore_keys=["segmask", "depth"], env_ids=success_env_ids, export_hdf5=True)
         
-        return success_env_ids
+        return {"success_env_ids": success_env_ids, "failed_env_ids": failed_env_ids}
 
     def run_batch_trajectory(self, traj_cfg_list: List[TrajectoryCfg]):
         self.traj_cfg_list = traj_cfg_list
         self.compute_components()
         self.compute_object_goal_traj()
         
-        return self.inference()
+        result = self.inference()
+        return result["success_env_ids"], result["failed_env_ids"]
 
 
 
@@ -753,19 +901,46 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
 
         my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, data_dir=data_dir, record=True, args_cli=args_cli)
         my_sim.task_cfg = task_cfg
+        
+        # Track pending env slots and their trajectory configs
+        pending_traj_cfgs = []  # List of trajectory configs to try
+        
         while len(success_trajectory_config_list) < total_require_traj_num:
-            traj_cfg_list = random_task_cfg_list[current_timestep: current_timestep + num_envs]
-            current_timestep += num_envs
-           
-            success_env_ids = my_sim.run_batch_trajectory(traj_cfg_list)
+            # Fill pending list if needed
+            if len(pending_traj_cfgs) < num_envs:
+                needed = num_envs - len(pending_traj_cfgs)
+                # Generate more random configs if we've used up the initial batch
+                if current_timestep >= len(random_task_cfg_list):
+                    print(f"[INFO] Generating {needed} additional random trajectory configs...")
+                    new_random_cfgs = randomizer.generate_randomized_scene_cfg(**randomizer_kwargs)
+                    random_task_cfg_list.extend(new_random_cfgs[:needed])
+                
+                new_cfgs = random_task_cfg_list[current_timestep: current_timestep + needed]
+                pending_traj_cfgs.extend(new_cfgs)
+                current_timestep += needed
             
-            env.close()
+            # Take batch of num_envs configs to try
+            traj_cfg_list = pending_traj_cfgs[:num_envs]
+            
+            # Run batch and get success/failure info
+            success_env_ids, failed_env_ids = my_sim.run_batch_trajectory(traj_cfg_list)
+            
+            # Collect successful trajectories
             if len(success_env_ids) > 0:
                 for env_id in success_env_ids:
                     success_trajectory_config_list.append(traj_cfg_list[env_id])
+                    print(f"[INFO] Collected trajectory {len(success_trajectory_config_list)}/{total_require_traj_num}")
             
-            print(f"[INFO] success_trajectory_config_list: {len(success_trajectory_config_list)}")
-            print(total_require_traj_num)
+            # Remove all attempted configs from pending
+            pending_traj_cfgs = pending_traj_cfgs[num_envs:]
+            
+            # For failed envs, generate new random poses (they'll be added to pending in next iteration)
+            if len(failed_env_ids) > 0:
+                print(f"[INFO] {len(failed_env_ids)} envs need new randomized poses, will retry in next batch")
+            
+            print(f"[INFO] Progress: {len(success_trajectory_config_list)}/{total_require_traj_num} trajectories collected")
+           
+        env.close()
 
         # for timestep in range(len(success_trajectory_config_list),10):
         #     traj_cfg_list = random_task_cfg_list[timestep: min(timestep + 10, len(random_task_cfg_list))]

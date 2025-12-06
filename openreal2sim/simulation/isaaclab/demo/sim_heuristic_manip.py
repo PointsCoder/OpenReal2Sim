@@ -313,43 +313,101 @@ class HeuristicManipulation(BaseSimulator):
         # close
         jp = self.wait(gripper_open=False, steps=6)
 
-        # initial heights
+        # Record initial state: position (xyz) + orientation (quat)
         obj0 = self.object_prim.data.root_com_pos_w[:, 0:3]     # [B,3]
+        obj_quat0 = self.object_prim.data.root_state_w[:, 3:7]  # [B,4] wxyz
         ee_w = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
         ee_p0 = ee_w[:, :3]
-        robot_ee_z0 = ee_p0[:, 2].clone()
-        obj_z0 = obj0[:, 2].clone()
-        print(f"[INFO] mean object z0={obj_z0.mean().item():.3f} m, mean EE z0={robot_ee_z0.mean().item():.3f} m")
+        ee_q0 = ee_w[:, 3:7]
+        
+        print(f"[INFO] Pre-lift - Object XYZ: mean={obj0.mean(dim=0)}, EE XYZ: mean={ee_p0.mean(dim=0)}")
 
         # lift: keep orientation, add height
-        ee_q = ee_w[:, 3:7]
         target_p = ee_p0.clone()
         target_p[:, 2] += lift_height
 
         root = self.robot.data.root_state_w[:, 0:7]
         p_lift_b, q_lift_b = subtract_frame_transforms(
             root[:, 0:3], root[:, 3:7],
-            target_p, ee_q
+            target_p, ee_q0
         )
         jp, success = self.move_to(p_lift_b, q_lift_b, gripper_open=False)
         if torch.any(success==False): return np.zeros(B, bool), np.zeros(B, np.float32)
         jp = self.wait(gripper_open=False, steps=8)
 
-        # final heights
+        # Record final state
         obj1 = self.object_prim.data.root_com_pos_w[:, 0:3]
+        obj_quat1 = self.object_prim.data.root_state_w[:, 3:7]  # [B,4] wxyz
         ee_w1 = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
-        robot_ee_z1 = ee_w1[:, 2]
-        obj_z1 = obj1[:, 2]
-        print(f"[INFO] mean object z1={obj_z1.mean().item():.3f} m, mean EE z1={robot_ee_z1.mean().item():.3f} m")
+        ee_p1 = ee_w1[:, :3]
+        ee_q1 = ee_w1[:, 3:7]
+        
+        print(f"[INFO] Post-lift - Object XYZ: mean={obj1.mean(dim=0)}, EE XYZ: mean={ee_p1.mean(dim=0)}")
 
-        # lifted if EE and object rise similarly (tight coupling)
-        ee_diff  = robot_ee_z1 - robot_ee_z0
-        obj_diff = obj_z1 - obj_z0
-        lifted = (torch.abs(ee_diff - obj_diff) <= 0.03) & \
-            (torch.abs(ee_diff) >= 0.5 * lift_height) & \
-            (torch.abs(obj_diff) >= 0.5 * lift_height)  # [B] bool
+        # --- Check 1: Z-axis tight coupling (vertical lift) ---
+        ee_z_diff = ee_p1[:, 2] - ee_p0[:, 2]
+        obj_z_diff = obj1[:, 2] - obj0[:, 2]
+        z_coupling = torch.abs(ee_z_diff - obj_z_diff) <= 0.01  # [B]
+        z_lifted = (torch.abs(ee_z_diff) >= 0.5 * lift_height) & \
+                   (torch.abs(obj_z_diff) >= 0.5 * lift_height)  # [B]
+        
+        # --- Check 2: XY position stability (no lateral slip) ---
+        # Object XY should move with gripper (within 2cm tolerance)
+        ee_xy_diff = ee_p1[:, :2] - ee_p0[:, :2]  # [B, 2]
+        obj_xy_diff = obj1[:, :2] - obj0[:, :2]    # [B, 2]
+        xy_deviation = torch.norm(ee_xy_diff - obj_xy_diff, dim=1)  # [B]
+        xy_stable = xy_deviation <= 0.02  # [B]
+        
+        # --- Check 3: Orientation stability (roll, pitch, yaw) ---
+        # Convert quaternions to euler angles for easier checking
+        def quat_to_euler(quat):
+            """Convert wxyz quaternion to roll, pitch, yaw (radians)"""
+            w, x, y, z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+            
+            # Roll (x-axis rotation)
+            sinr_cosp = 2 * (w * x + y * z)
+            cosr_cosp = 1 - 2 * (x * x + y * y)
+            roll = torch.atan2(sinr_cosp, cosr_cosp)
+            
+            # Pitch (y-axis rotation)
+            sinp = 2 * (w * y - z * x)
+            sinp = torch.clamp(sinp, -1.0, 1.0)
+            pitch = torch.asin(sinp)
+            
+            # Yaw (z-axis rotation)
+            siny_cosp = 2 * (w * z + x * y)
+            cosy_cosp = 1 - 2 * (y * y + z * z)
+            yaw = torch.atan2(siny_cosp, cosy_cosp)
+            
+            return roll, pitch, yaw
+        
+        roll0, pitch0, yaw0 = quat_to_euler(obj_quat0)
+        roll1, pitch1, yaw1 = quat_to_euler(obj_quat1)
+        
+        # Check angular changes (should be minimal for good grasp)
+        roll_diff = torch.abs(roll1 - roll0)
+        pitch_diff = torch.abs(pitch1 - pitch0)
+        yaw_diff = torch.abs(yaw1 - yaw0)
+        
+        # Allow up to 10 degrees rotation in any axis
+        orientation_stable = (roll_diff <= torch.deg2rad(torch.tensor(10.0, device=roll_diff.device))) & \
+                            (pitch_diff <= torch.deg2rad(torch.tensor(10.0, device=pitch_diff.device))) & \
+                            (yaw_diff <= torch.deg2rad(torch.tensor(10.0, device=yaw_diff.device)))  # [B]
+        
+        # --- Combined success criteria ---
+        lifted = z_coupling & z_lifted & xy_stable & orientation_stable  # [B]
+        
+        # Detailed logging
+        for b in range(min(B, 3)):  # Log first 3 envs for debugging
+            print(f"  Env[{b}]: Z-coupling={z_coupling[b].item()}, "
+                  f"XY-stable={xy_stable[b].item()} (dev={xy_deviation[b].item():.4f}m), "
+                  f"Orient-stable={orientation_stable[b].item()} "
+                  f"(roll={torch.rad2deg(roll_diff[b]).item():.1f}°, "
+                  f"pitch={torch.rad2deg(pitch_diff[b]).item():.1f}°, "
+                  f"yaw={torch.rad2deg(yaw_diff[b]).item():.1f}°) "
+                  f"→ PASS={lifted[b].item()}")
 
-        score = torch.zeros_like(ee_diff)
+        score = torch.zeros_like(ee_z_diff)
         score[lifted] = 1000.0
         return lifted.detach().cpu().numpy().astype(bool), score.detach().cpu().numpy().astype(np.float32)
 
