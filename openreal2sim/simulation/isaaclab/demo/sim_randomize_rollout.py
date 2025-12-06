@@ -13,6 +13,7 @@ import yaml
 import sys
 from isaaclab.app import AppLauncher
 from typing import Optional, List
+import copy
 file_path = Path(__file__).resolve()
 import imageio 
 
@@ -35,6 +36,8 @@ args_cli.headless = True # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
+from sim_utils_demo.transform_utils import pose_to_mat, mat_to_pose, grasp_to_world, grasp_approach_axis_batch
+from sim_utils_demo.sim_utils import load_sim_parameters
 # ─────────── Runtime imports ───────────
 import isaaclab.sim as sim_utils
 from isaaclab.utils.math import subtract_frame_transforms
@@ -42,8 +45,7 @@ from isaaclab.utils.math import subtract_frame_transforms
 # ─────────── Simulation environments ───────────
 from sim_base_demo import BaseSimulator, get_next_demo_id
 from sim_env_factory_demo import make_env
-from sim_utils.transform_utils import pose_to_mat, mat_to_pose, grasp_to_world, grasp_approach_axis_batch
-from sim_utils.sim_utils import load_sim_parameters
+
 
 BASE_DIR   = Path.cwd()
 
@@ -183,7 +185,7 @@ class RandomizeExecution(BaseSimulator):
         # --- object pose/vel: set object at env origins with identity quat ---
         env_origins = self.scene.env_origins.to(device)[env_ids_t]  # (M,3)
         # Set poses for all objects from object_poses_dict
-        from sim_env_factory import get_prim_name_from_oid
+        from sim_env_factory_demo import get_prim_name_from_oid
         for oid in self.object_poses_dict.keys():
             # Get prim name from oid
             prim_name = get_prim_name_from_oid(str(oid))
@@ -205,7 +207,6 @@ class RandomizeExecution(BaseSimulator):
             object_prim.write_data_to_sim()
         rp_local = np.array(self.robot_poses_list, dtype=np.float32)
         env_origins_robot = self.scene.env_origins.to(device)[env_ids_t]
-        import copy
         robot_pose_world = copy.deepcopy(rp_local)
         robot_pose_world[:, :3] = env_origins_robot.cpu().numpy() + robot_pose_world[env_ids_t.cpu().numpy(), :3]
         #robot_pose_world[:, 3:7] = [1.0, 0.0, 0.0, 0.0]
@@ -247,7 +248,7 @@ class RandomizeExecution(BaseSimulator):
         obj_goal = np.zeros((B, T, 4, 4), dtype=np.float32)
         for b in range(B):
             for t in range(1, T):
-                goal_4x4 = self.object_trajectory_list[b][t]
+                goal_4x4 = self.object_trajectory_list[b][t].copy()
                 goal_4x4[:3, 3] += origins[b]  # back to world frame
                 if t < T-1:
                     goal_4x4[:3, 3] += offset_np
@@ -298,7 +299,7 @@ class RandomizeExecution(BaseSimulator):
         obj_pos_initial = self.object_prim.data.root_com_pos_w[:, 0:3]
         initial_grasp_dist = torch.norm(ee_pos_initial - obj_pos_initial, dim=1) # [B]
         self.initial_grasp_dist = initial_grasp_dist
-        
+        T_ee_in_obj = None
         for t in t_iter:
             if recalibrate_interval> 0 and (t-1) % recalibrate_interval == 0:
                 ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
@@ -308,6 +309,7 @@ class RandomizeExecution(BaseSimulator):
                     T_ee_w  = pose_to_mat(ee_w[b, :3],  ee_w[b, 3:7])
                     T_obj_w = pose_to_mat(obj_w[b, :3], obj_w[b, 3:7])
                     T_ee_in_obj.append((np.linalg.inv(T_obj_w) @ T_ee_w).astype(np.float32))
+                self.T_ee_in_obj = T_ee_in_obj
             goal_pos_list, goal_quat_list = [], []
             print(f"[INFO] follow object goal step {t}/{T}")
             for b in range(B):

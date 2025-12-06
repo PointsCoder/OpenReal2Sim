@@ -185,13 +185,16 @@ def process_reject(key: str, video_name: str):
     Args:
         key: Task key
         video_name: Video file name (e.g., demo_000.mp4)
+    
+    Returns:
+        (success, message): Tuple of (bool, str)
     """
     print(f"[INFO] Processing rejection for key={key}, video={video_name}")
     
     # Get trajectory index
     traj_idx = get_trajectory_index_from_video_name(video_name)
     if traj_idx is None:
-        return f"Error: Could not parse trajectory index from {video_name}"
+        return False, f"Error: Could not parse trajectory index from {video_name}"
     
     # Detect trajectory type
     is_reference, adjusted_idx = detect_trajectory_type(key, traj_idx)
@@ -200,7 +203,8 @@ def process_reject(key: str, video_name: str):
     # Remove from JSON
     success = remove_trajectory_from_json(key, adjusted_idx, is_reference=is_reference)
     if not success:
-        return f"Error: Could not remove {traj_type_str} trajectory {adjusted_idx} from JSON"
+        # Still try to delete files even if JSON removal failed
+        print(f"[WARN] Could not remove {traj_type_str} trajectory {adjusted_idx} from JSON, but will still delete files")
     
     # Delete HDF5
     hdf5_deleted = delete_hdf5_file(key, video_name)
@@ -214,98 +218,139 @@ def process_reject(key: str, video_name: str):
     if video_deleted:
         result_parts.append("Video deleted")
     
-    return " | ".join(result_parts)
+    return True, " | ".join(result_parts)
+
+
+def batch_process_reject(key: str, video_names: List[str]) -> str:
+    """Batch process rejections: delete trajectories, HDF5 files, and videos.
+    
+    Args:
+        key: Task key
+        video_names: List of video file names to reject
+    
+    Returns:
+        Summary message
+    """
+    if not video_names:
+        return "No videos to reject"
+    
+    print(f"[INFO] Batch processing {len(video_names)} rejections for key={key}")
+    
+    results = []
+    for video_name in video_names:
+        success, message = process_reject(key, video_name)
+        if success:
+            results.append(f"✓ {video_name}")
+        else:
+            results.append(f"✗ {video_name}: {message}")
+    
+    summary = f"Processed {len(video_names)} rejections:\n" + "\n".join(results)
+    return summary
 
 
 def create_gradio_interface():
     """Create Gradio interface for reviewing videos."""
     
     # State to track current key and video index
-    current_state = {"key": None, "video_idx": 0, "videos": []}
+    current_state = {"key": None, "video_idx": 0, "videos": [], "rejected_videos": []}
     
     def load_key(key: str):
         """Load videos for a key."""
         if not key:
-            return None, "Please select a key", gr.update(visible=False), gr.update(visible=False), gr.update(value=1.0)
+            return None, "Please select a key", gr.update(visible=False), gr.update(visible=False), gr.update(value=1.0), gr.update(value="")
         
         videos = get_videos_for_key(key)
         if not videos:
-            return None, f"No videos found for key '{key}'", gr.update(visible=False), gr.update(visible=False), gr.update(value=1.0)
+            return None, f"No videos found for key '{key}'", gr.update(visible=False), gr.update(visible=False), gr.update(value=1.0), gr.update(value="")
         
         current_state["key"] = key
         current_state["videos"] = videos
         current_state["video_idx"] = 0
+        current_state["rejected_videos"] = []
         
         video_name, video_path = videos[0]
         video_info = f"Key: {key}\nVideo: {video_name}\n({len(videos)} total videos)"
+        rejected_list = ""
         
-        return str(video_path), video_info, gr.update(visible=True), gr.update(visible=True), gr.update(value=1.0)
+        return str(video_path), video_info, gr.update(visible=True), gr.update(visible=True), gr.update(value=1.0), gr.update(value=rejected_list)
     
     def next_video(playback_speed: float):
         """Move to next video."""
         if not current_state["videos"]:
-            return gr.update(value=None), "No videos loaded", gr.update(visible=False), gr.update(visible=False), gr.update(value=1.0)
+            rejected_list = "\n".join(current_state["rejected_videos"]) if current_state["rejected_videos"] else ""
+            return gr.update(value=None), "No videos loaded", gr.update(visible=False), gr.update(visible=False), gr.update(value=1.0), gr.update(value=rejected_list)
         
         current_state["video_idx"] = (current_state["video_idx"] + 1) % len(current_state["videos"])
         video_name, video_path = current_state["videos"][current_state["video_idx"]]
         key = current_state["key"]
         
         video_info = f"Key: {key}\nVideo: {video_name}\n({len(current_state['videos'])} total videos, {current_state['video_idx'] + 1}/{len(current_state['videos'])})"
+        rejected_list = "\n".join(current_state["rejected_videos"]) if current_state["rejected_videos"] else ""
         
-        return str(video_path), video_info, gr.update(visible=True), gr.update(visible=True), gr.update(value=playback_speed)
+        return str(video_path), video_info, gr.update(visible=True), gr.update(visible=True), gr.update(value=playback_speed), gr.update(value=rejected_list)
     
     def prev_video(playback_speed: float):
         """Move to previous video."""
         if not current_state["videos"]:
-            return gr.update(value=None), "No videos loaded", gr.update(visible=False), gr.update(visible=False), gr.update(value=1.0)
+            rejected_list = "\n".join(current_state["rejected_videos"]) if current_state["rejected_videos"] else ""
+            return gr.update(value=None), "No videos loaded", gr.update(visible=False), gr.update(visible=False), gr.update(value=1.0), gr.update(value=rejected_list)
         
         current_state["video_idx"] = (current_state["video_idx"] - 1) % len(current_state["videos"])
         video_name, video_path = current_state["videos"][current_state["video_idx"]]
         key = current_state["key"]
         
         video_info = f"Key: {key}\nVideo: {video_name}\n({len(current_state['videos'])} total videos, {current_state['video_idx'] + 1}/{len(current_state['videos'])})"
+        rejected_list = "\n".join(current_state["rejected_videos"]) if current_state["rejected_videos"] else ""
         
-        return str(video_path), video_info, gr.update(visible=True), gr.update(visible=True), gr.update(value=playback_speed)
+        return str(video_path), video_info, gr.update(visible=True), gr.update(visible=True), gr.update(value=playback_speed), gr.update(value=rejected_list)
+   
     
-    def accept_video():
-        """Accept current video (no action needed)."""
+    def accept_video(playback_speed: float):
+        """Accept current video: remove from rejected list if it was marked for deletion."""
         if not current_state["videos"]:
-            return "No video to accept"
-        
-        video_name, _ = current_state["videos"][current_state["video_idx"]]
-        key = current_state["key"]
-        
-        # Detect trajectory type for info
-        traj_idx = get_trajectory_index_from_video_name(video_name)
-        if traj_idx is not None:
-            is_reference, _ = detect_trajectory_type(key, traj_idx)
-            traj_type_str = "reference" if is_reference else "generated"
-            return f"Accepted: {video_name} (key: {key}, {traj_type_str} trajectory)"
-        else:
-            return f"Accepted: {video_name} (key: {key})"
-    
-    def reject_video(playback_speed: float):
-        """Reject current video: delete trajectory, HDF5, and video."""
-        if not current_state["videos"]:
-            return "No video to reject", gr.update(value=None), "No videos", gr.update(value=1.0)
+            rejected_list = "\n".join(current_state["rejected_videos"]) if current_state["rejected_videos"] else ""
+            return "No video to accept", gr.update(value=None), "No videos", gr.update(value=1.0), gr.update(value=rejected_list)
         
         video_name, video_path = current_state["videos"][current_state["video_idx"]]
         key = current_state["key"]
         
-        result = process_reject(key, video_name)
+        # Remove from rejected list if it's there
+        if video_name in current_state["rejected_videos"]:
+            current_state["rejected_videos"].remove(video_name)
+            message = f"Removed {video_name} from deletion list"
+        else:
+            message = f"{video_name} is already accepted"
         
-        # Remove from current list and move to next
-        current_state["videos"].pop(current_state["video_idx"])
-        if current_state["video_idx"] >= len(current_state["videos"]):
-            current_state["video_idx"] = 0
+        video_info = f"Key: {key}\nVideo: {video_name}\n({len(current_state['videos'])} total videos, {current_state['video_idx'] + 1}/{len(current_state['videos'])})"
+        rejected_list = "\n".join(current_state["rejected_videos"]) if current_state["rejected_videos"] else ""
+        
+        return message, str(video_path), video_info, gr.update(value=playback_speed), gr.update(value=rejected_list)
+    
+    def reject_video(playback_speed: float):
+        """Mark current video as rejected (will be deleted when Save Results is clicked)."""
+        if not current_state["videos"]:
+            rejected_list = "\n".join(current_state["rejected_videos"]) if current_state["rejected_videos"] else ""
+            return "No video to reject", gr.update(value=None), "No videos", gr.update(value=1.0), gr.update(value=rejected_list)
+        
+        video_name, video_path = current_state["videos"][current_state["video_idx"]]
+        key = current_state["key"]
+        
+        # Add to rejected list if not already there
+        if video_name not in current_state["rejected_videos"]:
+            current_state["rejected_videos"].append(video_name)
+        
+        # Move to next video
+        current_state["video_idx"] = (current_state["video_idx"] + 1) % len(current_state["videos"])
         
         if current_state["videos"]:
             next_video_name, next_video_path = current_state["videos"][current_state["video_idx"]]
-            video_info = f"Key: {key}\nVideo: {next_video_name}\n({len(current_state['videos'])} remaining videos)"
+            video_info = f"Key: {key}\nVideo: {next_video_name}\n({len(current_state['videos'])} total videos, {current_state['video_idx'] + 1}/{len(current_state['videos'])})"
+            rejected_list = "\n".join(current_state["rejected_videos"]) if current_state["rejected_videos"] else ""
             
-            return result, str(next_video_path), video_info, gr.update(value=playback_speed)
+            return f"Marked {video_name} for deletion", str(next_video_path), video_info, gr.update(value=playback_speed), gr.update(value=rejected_list)
         else:
-            return result, None, f"Key: {key}\nNo more videos", gr.update(value=playback_speed)
+            rejected_list = "\n".join(current_state["rejected_videos"]) if current_state["rejected_videos"] else ""
+            return f"Marked {video_name} for deletion", None, f"Key: {key}\nNo more videos", gr.update(value=playback_speed), gr.update(value=rejected_list)
     
     def update_playback_speed(playback_speed: float):
         """Update video playback speed - returns the same video to trigger update."""
@@ -316,12 +361,52 @@ def create_gradio_interface():
         # Return the same video path to trigger reload, which will apply the new speed
         return str(video_path)
     
+    def save_results(playback_speed: float):
+        """Save results: batch delete all rejected videos and move to next key."""
+        if not current_state["rejected_videos"]:
+            return "No videos marked for deletion", gr.update(), gr.update(value=""), gr.update()
+        
+        key = current_state["key"]
+        rejected_count = len(current_state["rejected_videos"])
+        
+        # Batch process rejections
+        summary = batch_process_reject(key, current_state["rejected_videos"])
+        
+        # Get next key
+        all_keys = get_all_keys()
+        current_key_idx = all_keys.index(key) if key in all_keys else -1
+        next_key_idx = current_key_idx + 1
+        
+        if next_key_idx < len(all_keys):
+            next_key = all_keys[next_key_idx]
+            # Load next key
+            videos = get_videos_for_key(next_key)
+            if videos:
+                current_state["key"] = next_key
+                current_state["videos"] = videos
+                current_state["video_idx"] = 0
+                current_state["rejected_videos"] = []
+                
+                video_name, video_path = videos[0]
+                video_info = f"Key: {next_key}\nVideo: {video_name}\n({len(videos)} total videos)"
+                rejected_list = ""
+                
+                result_msg = f"Deleted {rejected_count} videos from '{key}'\n\n{summary}\n\nSwitched to next key: {next_key}"
+                return result_msg, gr.update(choices=all_keys, value=next_key), str(video_path), video_info, gr.update(visible=True), gr.update(visible=True), gr.update(value=1.0), gr.update(value=rejected_list)
+            else:
+                result_msg = f"Deleted {rejected_count} videos from '{key}'\n\n{summary}\n\nNo more keys with videos"
+                return result_msg, gr.update(choices=all_keys), None, f"Key: {key}\nNo more videos", gr.update(visible=False), gr.update(visible=False), gr.update(value=1.0), gr.update(value="")
+        else:
+            result_msg = f"Deleted {rejected_count} videos from '{key}'\n\n{summary}\n\nNo more keys"
+            return result_msg, gr.update(choices=all_keys), None, f"Key: {key}\nNo more keys", gr.update(visible=False), gr.update(visible=False), gr.update(value=1.0), gr.update(value="")
+    
     # Create Gradio interface
     with gr.Blocks(title="Demo Judge") as demo:
         gr.Markdown("# Demo Judge Tool")
         gr.Markdown("Review and filter trajectories (both reference and generated) by watching videos.")
-        gr.Markdown("**Accept**: Keep the trajectory (no action)")
-        gr.Markdown("**Reject**: Delete trajectory from JSON, HDF5 file, and video file")
+        gr.Markdown("**Accept**: Keep the video (remove from deletion list if marked)")
+        gr.Markdown("**Reject**: Mark video for deletion (will be deleted when 'Save Results' is clicked)")
+        gr.Markdown("**Save Results**: Delete all marked videos and move to next key")
         
         with gr.Row():
             key_dropdown = gr.Dropdown(
@@ -333,13 +418,23 @@ def create_gradio_interface():
         
         with gr.Row():
             video_player = gr.Video(label="Video Player", autoplay=True)
-            video_info = gr.Textbox(label="Video Info", interactive=False)
+            with gr.Column():
+                video_info = gr.Textbox(label="Video Info", interactive=False)
+                rejected_list = gr.Textbox(
+                    label="Videos Marked for Deletion",
+                    interactive=False,
+                    lines=5,
+                    placeholder="No videos marked for deletion yet"
+                )
         
         with gr.Row():
             prev_btn = gr.Button("Previous Video")
             next_btn = gr.Button("Next Video")
             accept_btn = gr.Button("Accept", variant="stop")
             reject_btn = gr.Button("Reject", variant="stop")
+        
+        with gr.Row():
+            save_results_btn = gr.Button("Save Results", variant="primary")
         
         with gr.Row():
             playback_speed_slider = gr.Slider(
@@ -409,31 +504,37 @@ def create_gradio_interface():
         load_btn.click(
             fn=load_key,
             inputs=[key_dropdown],
-            outputs=[video_player, video_info, accept_btn, reject_btn, playback_speed_slider]
+            outputs=[video_player, video_info, accept_btn, reject_btn, playback_speed_slider, rejected_list]
         ).then(fn=apply_video_settings, js=video_js)
         
         next_btn.click(
             fn=next_video,
             inputs=[playback_speed_slider],
-            outputs=[video_player, video_info, accept_btn, reject_btn, playback_speed_slider]
+            outputs=[video_player, video_info, accept_btn, reject_btn, playback_speed_slider, rejected_list]
         ).then(fn=apply_video_settings, js=video_js)
         
         prev_btn.click(
             fn=prev_video,
             inputs=[playback_speed_slider],
-            outputs=[video_player, video_info, accept_btn, reject_btn, playback_speed_slider]
+            outputs=[video_player, video_info, accept_btn, reject_btn, playback_speed_slider, rejected_list]
         ).then(fn=apply_video_settings, js=video_js)
         
         accept_btn.click(
             fn=accept_video,
-            inputs=[],
-            outputs=[result_text]
-        )
+            inputs=[playback_speed_slider],
+            outputs=[result_text, video_player, video_info, playback_speed_slider, rejected_list]
+        ).then(fn=apply_video_settings, js=video_js)
         
         reject_btn.click(
             fn=reject_video,
             inputs=[playback_speed_slider],
-            outputs=[result_text, video_player, video_info, playback_speed_slider]
+            outputs=[result_text, video_player, video_info, playback_speed_slider, rejected_list]
+        ).then(fn=apply_video_settings, js=video_js)
+        
+        save_results_btn.click(
+            fn=save_results,
+            inputs=[playback_speed_slider],
+            outputs=[result_text, key_dropdown, video_player, video_info, accept_btn, reject_btn, playback_speed_slider, rejected_list]
         ).then(fn=apply_video_settings, js=video_js)
         
         def apply_speed(playback_speed: float):
