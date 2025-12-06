@@ -88,18 +88,7 @@ class RandomPolicy(BasePolicy):
         else:
             self.qpos_high = qpos_high.to(device) if torch.is_tensor(qpos_high) else torch.tensor(qpos_high, device=device, dtype=torch.float32)
         
-        # Set default end-effector workspace limits
-        if ee_pos_low is None:
-            # Approximate workspace bounds (meters)
-            self.ee_pos_low = torch.tensor([-0.5, -0.5, 0.0], device=device, dtype=torch.float32)
-        else:
-            self.ee_pos_low = ee_pos_low.to(device) if torch.is_tensor(ee_pos_low) else torch.tensor(ee_pos_low, device=device, dtype=torch.float32)
-        
-        if ee_pos_high is None:
-            self.ee_pos_high = torch.tensor([0.5, 0.5, 0.8], device=device, dtype=torch.float32)
-        else:
-            self.ee_pos_high = ee_pos_high.to(device) if torch.is_tensor(ee_pos_high) else torch.tensor(ee_pos_high, device=device, dtype=torch.float32)
-    
+       
     def get_action(self, observation: Dict[str, Any]) -> Action:
         """
         Generate random action.

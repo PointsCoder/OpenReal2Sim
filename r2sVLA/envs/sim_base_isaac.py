@@ -1,0 +1,1252 @@
+from __future__ import annotations
+
+import json
+import os
+import random
+import shutil
+from pathlib import Path
+from typing import Any, Optional, Dict, Sequence, Tuple
+from typing import List
+import copy
+import numpy as np
+import torch
+import imageio
+import cv2
+import h5py
+import sys
+file_path = Path(__file__).resolve()
+sys.path.append(str(file_path.parent))
+sys.path.append(str(file_path.parent.parent))
+from envs.cfgs.task_cfg import CameraInfo, TaskCfg, TrajectoryCfg
+from envs.cfgs.eval_cfg import EvaluationConfig
+# Isaac Lab
+import isaaclab.sim as sim_utils
+from isaaclab.sensors.camera import Camera
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
+from isaaclab.utils.math import subtract_frame_transforms, transform_points, unproject_depth
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+
+ # Curobo imports are done lazily in prepare_curobo() to avoid warp/inspect issues with isaaclab namespace package
+# Patch inspect.getfile to handle namespace packages (like isaaclab)
+# This is needed because warp's set_module_options() uses inspect.stack() which tries to get file paths
+# for all modules in the call stack, including namespace packages that don't have a __file__ attribute
+import inspect
+_original_getfile = inspect.getfile
+def _patched_getfile(object):
+    """Patched getfile that handles namespace packages."""
+    try:
+        return _original_getfile(object)
+    except TypeError as e:
+        if "is a built-in module" in str(e) or "namespace" in str(e).lower():
+            # For namespace packages, return a dummy path to avoid errors
+            # This allows warp's inspect.stack() to work even when isaaclab is in the call stack
+            if hasattr(object, '__name__'):
+                return f'<namespace:{object.__name__}>'
+            return '<namespace:unknown>'
+        raise
+inspect.getfile = _patched_getfile
+
+import curobo
+from curobo.types.base import TensorDeviceType
+from curobo.types.math import Pose
+from curobo.types.robot import JointState, RobotConfig
+from curobo.util.logger import setup_curobo_logger
+from curobo.util_file import get_robot_configs_path, join_path, load_yaml
+from curobo.wrap.reacher.motion_gen import (
+    MotionGen,
+    MotionGenConfig,
+    MotionGenPlanConfig,
+)
+from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+from isaaclab.sensors.camera import Camera
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.utils.math import (
+    subtract_frame_transforms,
+    transform_points,
+    unproject_depth,
+)
+
+##-- for sim background to real background video composition--
+from PIL import Image 
+import cv2  
+
+
+
+def get_next_demo_id(demo_root: Path) -> int:
+    if not demo_root.exists():
+        return 0
+    demo_ids = []
+    for name in os.listdir(demo_root):
+        if name.startswith("demo_"):
+            try:
+                demo_ids.append(int(name.split("_")[1]))
+            except Exception:
+                pass
+    return max(demo_ids) + 1 if demo_ids else 0
+
+
+class BaseSimulator:
+
+    def __init__(
+        self,
+        sim: sim_utils.SimulationContext,
+        scene: Any,  # InteractiveScene
+        *,
+        out_dir : Optional[Path] = None,
+        set_physics_props: bool = True,
+        enable_motion_planning: bool = True,
+        debug_level: int = 1,
+        task_cfg: Optional[TaskCfg] = None,
+        eval_cfg: Optional[EvaluationConfig] = None,
+    ) -> None:
+        # basic simulation setup
+        self.sim: sim_utils.SimulationContext = sim
+        self.scene = scene
+        self.sim_dt = sim.get_physics_dt()  # Single physics substep dt
+        self.eval_cfg = eval_cfg
+        self.decimation = eval_cfg.decimation 
+        self.save_interval = eval_cfg.save_interval if eval_cfg is not None else 1
+
+        # Task step dt = physics_dt * decimation (time for one task step)
+        self.task_dt = self.sim_dt * self.decimation
+        self.num_envs: int = int(scene.num_envs)
+        self._all_env_ids = torch.arange(
+            self.num_envs, device=sim.device, dtype=torch.long
+        )
+
+        self.out_dir: Path = out_dir
+      
+        # scene entities
+        self.task_cfg = task_cfg
+        self.robot = scene["robot"]
+        
+        robot_pose = torch.tensor(np.array(self.task_cfg.reference_trajectory[0].robot_pose))
+        
+        if robot_pose.ndim == 1:
+            self.robot_pose = (
+                robot_pose.view(1, -1).repeat(self.num_envs, 1).to(self.robot.device)
+            )
+        else:
+            assert robot_pose.shape[0] == self.num_envs and robot_pose.shape[1] == 7, (
+                f"robot_pose must be [B,7], got {robot_pose.shape}"
+            )
+            self.robot_pose = robot_pose.to(self.robot.device).contiguous()
+        
+        # Get object prim based on selected_object_id
+        # Default to object_00 for backward compatibility
+        # Note: selected_object_id is set in subclasses after super().__init__()
+        # So we use a helper method that can be called later
+        self._selected_object_id = None  # Will be set by subclasses
+        self.object_prim = scene["object_00"]  # Default, will be updated if needed
+        self._update_object_prim()
+        self.joint_pos_des_list = []
+
+        self.gripper_cmd_list = []
+        # Get all other object prims (excluding the main object)
+        self.other_object_prims = [scene[key] for key in scene.keys() 
+                                   if f"object_" in key and key != "object_00"]
+        self.background_prim = scene["background"]
+        self.camera: Camera = scene["camera"]
+
+        # physics properties
+        if set_physics_props:
+            static_friction = 5.0
+            dynamic_friction = 5.0
+            restitution = 0.0
+
+            # object: rigid prim -> has root_physx_view
+            if (
+                hasattr(self.object_prim, "root_physx_view")
+                and self.object_prim.root_physx_view is not None
+            ):
+                obj_view = self.object_prim.root_physx_view
+                obj_mats = obj_view.get_material_properties()
+                vals_obj = torch.tensor(
+                    [static_friction, dynamic_friction, restitution],
+                    device=obj_mats.device,
+                    dtype=obj_mats.dtype,
+                )
+                obj_mats[:] = vals_obj
+                obj_view.set_material_properties(
+                    obj_mats, self._all_env_ids.to(obj_mats.device)
+                )
+
+            # background: GroundPlaneCfg -> XFormPrim (no root_physx_view); skip if unavailable
+            if (
+                hasattr(self.background_prim, "root_physx_view")
+                and self.background_prim.root_physx_view is not None
+            ):
+                bg_view = self.background_prim.root_physx_view
+                bg_mats = bg_view.get_material_properties()
+                vals_bg = torch.tensor(
+                    [static_friction, dynamic_friction, restitution],
+                    device=bg_mats.device,
+                    dtype=bg_mats.dtype,
+                )
+                bg_mats[:] = vals_bg
+                bg_view.set_material_properties(
+                    bg_mats, self._all_env_ids.to(bg_mats.device)
+                )
+
+        # ik controller
+        self.diff_ik_cfg = DifferentialIKControllerCfg(
+            command_type="pose", use_relative_mode=False, ik_method="dls"
+        )
+        self.diff_ik_controller = DifferentialIKController(
+            self.diff_ik_cfg, num_envs=self.num_envs, device=sim.device
+        )
+
+        # robot: joints / gripper / jacobian indices
+        self.robot_entity_cfg = SceneEntityCfg(
+            "robot", joint_names=["panda_joint.*"], body_names=["panda_hand"]
+        )
+        self.robot_gripper_cfg = SceneEntityCfg(
+            "robot", joint_names=["panda_finger_joint.*"], body_names=["panda_hand"]
+        )
+        self.robot_entity_cfg.resolve(scene)
+        self.robot_gripper_cfg.resolve(scene)
+        self.gripper_open_tensor = 0.04 * torch.ones(
+            (self.num_envs, len(self.robot_gripper_cfg.joint_ids)),
+            device=self.robot.device,
+        )
+        self.gripper_close_tensor = torch.zeros(
+            (self.num_envs, len(self.robot_gripper_cfg.joint_ids)),
+            device=self.robot.device,
+        )
+        if self.robot.is_fixed_base:
+            self.ee_jacobi_idx = self.robot_entity_cfg.body_ids[0] - 1
+        else:
+            self.ee_jacobi_idx = self.robot_entity_cfg.body_ids[0]
+
+        # demo count and data saving
+        self.count = 0  # Physical step counter
+        self.task_step_count = 0  # Task step counter (count // decimation)
+        self.demo_id = 0
+        self.save_dict = {
+            "rgb": [], "depth": [], "segmask": [],
+            "joint_pos": [], "joint_vel": [], "actions": [],
+            "gripper_pos": [], "gripper_cmd": [], "ee_pose_cam": [],
+            "composed_rgb": []  # composed rgb image with background and foreground
+        }
+
+        # visualization
+        self.selected_object_id = 0
+        self._selected_object_id = 0
+        self.debug_level = debug_level
+
+        self.goal_vis_list = []
+        
+        if self.debug_level > 0:
+            for b in range(self.num_envs):
+                cfg = VisualizationMarkersCfg(
+                    prim_path=f"/Visuals/ee_goal/env_{b:03d}",
+                    markers={
+                        "frame": sim_utils.UsdFileCfg(
+                            usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd",
+                            scale=(0.06, 0.06, 0.06),
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=(1.0, 0.0, 0.0)
+                            ),
+                        ),
+                    },
+                )
+                self.goal_vis_list.append(VisualizationMarkers(cfg))
+
+        # curobo motion planning
+        self.enable_motion_planning = enable_motion_planning
+        if self.enable_motion_planning:
+            print(f"prepare curobo motion planning: {enable_motion_planning}")
+            self.prepare_curobo()
+            print("curobo motion planning ready.")
+        
+    def _update_object_prim(self):
+        """Update object_prim based on selected_object_id. Called after selected_object_id is set."""
+        if self._selected_object_id is None:
+            return
+        try:
+            from sim_task_isaac import get_prim_name_from_oid
+            oid_str = str(self._selected_object_id)
+            prim_name = get_prim_name_from_oid(oid_str)
+            if prim_name in self.scene:
+                self.object_prim = self.scene[prim_name]
+                # Update other_object_prims
+                self.other_object_prims = [self.scene[key] for key in self.scene.keys() 
+                                           if f"object_" in key and key != prim_name]
+        except (ImportError, ValueError, KeyError) as e:
+            # Fallback to object_00 if mapping not available
+            pass
+
+    # -------- Curobo Motion Planning ----------
+    def prepare_curobo(self):
+
+        setup_curobo_logger("error")
+        # tensor_args = TensorDeviceType()
+        tensor_args = TensorDeviceType(device=self.sim.device, dtype=torch.float32)
+        curobo_path = curobo.__file__.split("/__init__")[0]
+        robot_file = f"{curobo_path}/content/configs/robot/franka.yml"
+        motion_gen_config = MotionGenConfig.load_from_robot_config(
+            robot_cfg=robot_file,
+            world_model=None,
+            tensor_args=tensor_args,
+            interpolation_dt=self.sim_dt,
+            use_cuda_graph=True if self.num_envs == 1 else False,
+        )
+        self.motion_gen = MotionGen(motion_gen_config)
+        if self.num_envs == 1:
+            self.motion_gen.warmup(enable_graph=True)
+        _ = RobotConfig.from_dict(
+            load_yaml(join_path(get_robot_configs_path(), robot_file))["robot_cfg"],
+            tensor_args,
+        )
+
+    # ---------- Helpers ----------
+    def _ensure_batch_pose(self, p, q):
+        """Ensure position [B,3], quaternion [B,4] on device."""
+        B = self.scene.num_envs
+        p = torch.as_tensor(p, dtype=torch.float32, device=self.sim.device)
+        q = torch.as_tensor(q, dtype=torch.float32, device=self.sim.device)
+        if p.ndim == 1:
+            p = p.view(1, -1).repeat(B, 1)
+        if q.ndim == 1:
+            q = q.view(1, -1).repeat(B, 1)
+        return p.contiguous(), q.contiguous()
+
+    def _traj_to_BT7(self, traj):
+        """Normalize various curobo traj.position shapes to [B, T, 7]."""
+        B = self.scene.num_envs
+        pos = traj.position  # torch or numpy
+        pos = torch.as_tensor(pos, device=self.sim.device, dtype=torch.float32)
+
+        if pos.ndim == 3:
+            # candidate shapes: [B,T,7] or [T,B,7]
+            if pos.shape[0] == B and pos.shape[-1] == 7:
+                return pos  # [B,T,7]
+            if pos.shape[1] == B and pos.shape[-1] == 7:
+                return pos.permute(1, 0, 2).contiguous()  # [B,T,7]
+        elif pos.ndim == 2 and pos.shape[-1] == 7:
+            # [T,7] → broadcast to all envs
+            return pos.unsqueeze(0).repeat(B, 1, 1)
+        # Fallback: flatten and infer
+        flat = pos.reshape(-1, 7)  # [B*T,7]
+        T = flat.shape[0] // B
+        return flat.view(B, T, 7).contiguous()
+
+    # ---------- Planning / Execution (Single) ----------
+    def reinitialize_motion_gen(self):
+        """
+        Reinitialize the motion generation object.
+        Call this after a crash to restore a clean state.
+        """
+        print("[INFO] Reinitializing motion planner...")
+        try:
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Recreate the motion planner
+            from curobo.types.base import TensorDeviceType
+            from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
+            from curobo.util_file import get_robot_configs_path, join_path, load_yaml
+            from curobo.types.robot import RobotConfig
+            import curobo
+            
+            tensor_args = TensorDeviceType(device=self.sim.device, dtype=torch.float32)
+            curobo_path = curobo.__file__.split("/__init__")[0]
+            robot_file = f"{curobo_path}/content/configs/robot/franka.yml"
+            
+            motion_gen_config = MotionGenConfig.load_from_robot_config(
+                robot_cfg=robot_file,
+                world_model=None,
+                tensor_args=tensor_args,
+                interpolation_dt=self.sim_dt,
+                use_cuda_graph=True if self.num_envs == 1 else False,
+            )
+            
+            self.motion_gen = MotionGen(motion_gen_config)
+            
+            if self.num_envs == 1:
+                self.motion_gen.warmup(enable_graph=True)
+            
+            print("[INFO] Motion planner reinitialized successfully")
+            return True
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to reinitialize motion planner: {e}")
+            return False
+
+  
+    def motion_planning_single(
+        self, position, quaternion, max_attempts=1, use_graph=True, max_retries=1
+    ):
+        """
+        Single environment planning with automatic recovery from crashes.
+        Returns None on complete failure to signal restart needed.
+        """
+        joint_pos0 = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids][
+            0:1
+        ].contiguous()
+        
+        pos_b, quat_b = self._ensure_batch_pose(position, quaternion)
+        pos_b = pos_b[0:1]
+        quat_b = quat_b[0:1]
+        
+        for retry in range(max_retries):
+            try:
+                start_state = JointState.from_position(joint_pos0)
+                goal_pose = Pose(position=pos_b, quaternion=quat_b)
+                plan_cfg = MotionGenPlanConfig(
+                    max_attempts=max_attempts, enable_graph=use_graph
+                )
+                
+                result = self.motion_gen.plan_single(start_state, goal_pose, plan_cfg)
+                
+                # Check if result is valid
+                if result is None:
+                    print(f"[ERROR] Motion planning returned None result on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                    break
+                
+                traj = result.get_interpolated_plan()
+                
+                # Check if trajectory is valid
+                if traj is None:
+                    print(f"[ERROR] Motion planning returned None trajectory on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                    break
+                
+                if result.success[0] == True:
+                    BT7 = (
+                        traj.position.to(self.sim.device).to(torch.float32).unsqueeze(0)
+                    )
+                else:
+                    print(f"[WARN] Motion planning failed.")
+                    BT7 = joint_pos0.unsqueeze(1)
+                
+                return BT7, result.success
+                
+            except AttributeError as e:
+                print(f"[ERROR] Motion planner crash on attempt {retry+1}/{max_retries}: {e}")
+                
+                if retry < max_retries - 1:
+                    if self.reinitialize_motion_gen():
+                        print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                        continue
+                    else:
+                        break
+                else:
+                    print("[ERROR] Max retries reached")
+                    
+            except Exception as e:
+                # Safe error message extraction
+                try:
+                    error_msg = str(e)
+                    error_type = type(e).__name__
+                except:
+                    error_msg = "Unknown error"
+                    error_type = "Exception"
+                
+                print(f"[ERROR] Unexpected error: {error_type}: {error_msg}")
+                
+                # Check for recoverable errors
+                is_recoverable = False
+                try:
+                    is_recoverable = ("cuda graph" in error_msg.lower() or 
+                                    "NoneType" in error_msg or 
+                                    "has no len()" in error_msg)
+                except:
+                    pass
+                
+                if retry < max_retries - 1 and is_recoverable:
+                    if self.reinitialize_motion_gen():
+                        continue
+                break
+        
+        # Complete failure - return dummy trajectory with False success
+        print("[ERROR] Motion planning failed critically - returning dummy trajectory")
+        joint_pos0 = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids][0:1].contiguous()
+        # Return current position as 1-step trajectory with failure
+        dummy_traj = joint_pos0.unsqueeze(1)  # (1, 1, dof)
+        dummy_success = torch.zeros(1, dtype=torch.bool, device=self.sim.device)
+        return dummy_traj, dummy_success
+
+    # ---------- Planning / Execution (Batched) ----------
+   
+
+    def motion_planning_batch(
+        self, position, quaternion, max_attempts=1, allow_graph=False, max_retries=1
+    ):
+        """
+        Multi-environment planning with automatic recovery from crashes.
+        Returns None on complete failure to signal restart needed.
+        """
+        B = self.scene.num_envs
+        joint_pos = self.robot.data.joint_pos[
+            :, self.robot_entity_cfg.joint_ids
+        ].contiguous()
+        
+        pos_b, quat_b = self._ensure_batch_pose(position, quaternion)
+        
+        for retry in range(max_retries):
+            try:
+                # Attempt planning
+                start_state = JointState.from_position(joint_pos)
+                goal_pose = Pose(position=pos_b, quaternion=quat_b)
+                plan_cfg = MotionGenPlanConfig(
+                    max_attempts=max_attempts, enable_graph=allow_graph
+                )
+                
+                try:
+                    result = self.motion_gen.plan_batch(start_state, goal_pose, plan_cfg)
+                except Exception as plan_err:
+                    print(f"[ERROR] curobo.plan_batch raised exception: {plan_err}")
+                    raise plan_err
+                
+                # Check if result is valid
+                if result is None:
+                    print(f"[ERROR] Motion planning returned None result on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                    break
+                
+                # Process results
+                paths = result.get_paths()
+                
+                # Check if paths is valid - use try-except to safely check if it's iterable
+                paths_valid = False
+                try:
+                    if paths is not None:
+                        # Try to get length to verify it's iterable and not empty
+                        _ = len(paths)
+                        if len(paths) > 0:
+                            paths_valid = True
+                except:
+                    pass
+                
+                if not paths_valid:
+                    print(f"[ERROR] Motion planning returned invalid paths on attempt {retry+1}/{max_retries}")
+                    if retry < max_retries - 1:
+                        if self.reinitialize_motion_gen():
+                            print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                            continue
+                        else:
+                            print("[ERROR] Failed to recover motion planner")
+                    # Skip to next retry iteration or exit loop
+                    continue
+                
+                # Double-check paths is still valid (defensive programming)
+                if paths is None:
+                    print(f"[ERROR] paths became None after validation check")
+                    continue
+                
+                T_max = 1
+                
+                # Check if result.success is valid
+                if result.success is None:
+                     print(f"[WARN] result.success is None. Assuming failure for all envs.")
+                     # Create dummy failure tensor
+                     result.success = torch.zeros(B, dtype=torch.bool, device=self.sim.device)
+
+                try:
+                    for i, p in enumerate(paths):
+                        if not result.success[i]:
+                            print(f"[WARN] Motion planning failed for env {i}.")
+                        else:
+                            T_max = max(T_max, int(p.position.shape[-2]))
+                except TypeError as te:
+                    print(f"[ERROR] TypeError when processing paths: {te}")
+                    print(f"[DEBUG] paths type: {type(paths)}, paths value: {paths}")
+                    continue
+                
+                dof = joint_pos.shape[-1]
+                BT7 = torch.zeros(
+                    (B, T_max, dof), device=self.sim.device, dtype=torch.float32
+                )
+                
+                for i, p in enumerate(paths):
+                    if result.success[i] == False:
+                        BT7[i, :, :] = (
+                            joint_pos[i : i + 1, :].unsqueeze(1).repeat(1, T_max, 1)
+                        )
+                    else:
+                        Ti = p.position.shape[-2]
+                        BT7[i, :Ti, :] = p.position.to(self.sim.device).to(torch.float32)
+                        if Ti < T_max:
+                            BT7[i, Ti:, :] = BT7[i, Ti - 1 : Ti, :]
+                
+                success = result.success if result.success is not None else torch.zeros(
+                    B, dtype=torch.bool, device=self.sim.device
+                )
+                
+                # Success! Return the trajectory
+                return BT7, success
+                
+            except AttributeError as e:
+                print(f"[ERROR] Motion planner crash on attempt {retry+1}/{max_retries}: {e}")
+                
+                if retry < max_retries - 1:
+                    if self.reinitialize_motion_gen():
+                        print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
+                        continue
+                    else:
+                        print("[ERROR] Failed to recover motion planner")
+                        break
+                else:
+                    print("[ERROR] Max retries reached, motion planning failed critically")
+                    
+            except Exception as e:
+                # Safe error message extraction
+                try:
+                    error_msg = str(e)
+                    error_type = type(e).__name__
+                except:
+                    error_msg = "Unknown error"
+                    error_type = "Exception"
+                
+                print(f"[ERROR] Unexpected error in motion planning: {error_type}: {error_msg}")
+                
+                # Check for recoverable errors
+                is_recoverable = False
+                try:
+                    is_recoverable = ("cuda graph" in error_msg.lower() or 
+                                    "NoneType" in error_msg or 
+                                    "has no len()" in error_msg)
+                except:
+                    pass
+                
+                if retry < max_retries - 1 and is_recoverable:
+                    if self.reinitialize_motion_gen():
+                        print(f"[INFO] Retrying after error (attempt {retry+2}/{max_retries})...")
+                        continue
+                break
+        
+        # If we get here, all retries failed - return dummy trajectory with all False success
+        print("[ERROR] Motion planning failed critically - returning dummy trajectory")
+        B = self.scene.num_envs
+        joint_pos = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids].contiguous()
+        dof = joint_pos.shape[-1]
+        # Return current position as 1-step trajectory with all failures
+        dummy_traj = joint_pos.unsqueeze(1)  # (B, 1, dof)
+        dummy_success = torch.zeros(B, dtype=torch.bool, device=self.sim.device)
+        return dummy_traj, dummy_success
+
+
+
+    def motion_planning(self, position, quaternion, max_attempts=1):
+        if self.scene.num_envs == 1:
+            return self.motion_planning_single(
+                position, quaternion, max_attempts=max_attempts, use_graph=True
+            )
+        else:
+            return self.motion_planning_batch(
+                position, quaternion, max_attempts=max_attempts, allow_graph=False
+            )
+
+    def move_to_motion_planning(
+        self,
+        position: torch.Tensor,
+        quaternion: torch.Tensor,
+        gripper_open: bool = True,
+        record: bool = True,
+    ) -> torch.Tensor:
+        """
+        Cartesian space control: Move the end effector to the desired position and orientation using motion planning.
+        Works with batched envs. If inputs are 1D, they will be broadcast to all envs.
+        """
+        traj, success = self.motion_planning(position, quaternion)
+        BT7 = traj
+        T = BT7.shape[1]
+        last = None
+        for i in range(T):
+            joint_pos_des = BT7[:, i, :]  # [B,7]
+            self.apply_actions(joint_pos_des, gripper_open=gripper_open, record=record)
+            last = joint_pos_des
+        return last, success
+
+    def set_robot_pose(self, robot_pose: torch.Tensor):
+        if robot_pose.ndim == 1:
+            self.robot_pose = (
+                robot_pose.view(1, -1).repeat(self.num_envs, 1).to(self.robot.device)
+            )
+        else:
+            assert robot_pose.shape[0] == self.num_envs and robot_pose.shape[1] == 7, (
+                f"robot_pose must be [B,7], got {robot_pose.shape}"
+            )
+            self.robot_pose = robot_pose.to(self.robot.device).contiguous()
+
+
+    # ---------- Environment Step ----------
+    def step(self):
+        self.scene.write_data_to_sim()
+        self.sim.step()
+        # Camera update should use task_dt (decimation * sim_dt) since camera
+        # is typically updated at task step frequency, not physics substep frequency
+        # This matches the render_interval setting
+        if self.count % self.decimation == 0:
+            self.camera.update(dt=self.task_dt)
+            self.task_step_count += 1  # Increment task step counter
+        self.count += 1  # Increment physical step counter
+        self.scene.update(self.sim_dt)
+
+    # ---------- Apply actions to robot joints ----------
+    def apply_actions(self, joint_pos_des, gripper_open: bool = True, record: bool = True):
+        # joint_pos_des: [B, n_joints]
+        self.gripper_cmd_list.append(gripper_open)
+        self.joint_pos_des_list.append(joint_pos_des)
+        self.robot.set_joint_position_target(
+            joint_pos_des, joint_ids=self.robot_entity_cfg.joint_ids
+        )
+        ### FIXME: HACK
+        if gripper_open:
+            self.robot.set_joint_position_target(
+                self.gripper_open_tensor, joint_ids=self.robot_gripper_cfg.joint_ids
+            )
+        else:
+            self.robot.set_joint_position_target(
+                self.gripper_close_tensor, joint_ids=self.robot_gripper_cfg.joint_ids
+            )
+        # Execute decimation number of physics steps to complete one task step
+        for _ in range(self.decimation):
+            self.step()
+        obs = self.get_observation(gripper_open=gripper_open)
+        if record:
+            self.record_data(obs)
+        return obs
+
+    # ---------- EE control ----------
+    def move_to(
+        self,
+        position: torch.Tensor,
+        quaternion: torch.Tensor,
+        gripper_open: bool = True,
+        record: bool = True,
+    ) -> torch.Tensor:
+        if self.enable_motion_planning:
+            return self.move_to_motion_planning(
+                position, quaternion, gripper_open=gripper_open, record=record
+            )
+        else:
+            return self.move_to_ik(
+                position, quaternion, gripper_open=gripper_open, record=record
+            )
+
+    def move_to_ik(
+        self,
+        position: torch.Tensor,
+        quaternion: torch.Tensor,
+        steps: int = 3,
+        gripper_open: bool = True,
+        record: bool = True,
+    ) -> torch.Tensor:
+        """
+        Cartesian space control: Move the end effector to the desired position and orientation using inverse kinematics.
+        Works with batched envs. If inputs are 1D, they will be broadcast to all envs.
+
+        Early-stop when both position and orientation errors are within tolerances.
+        'steps' now acts as a max-iteration cap; the loop breaks earlier on convergence.
+        """
+        # Ensure [B,3]/[B,4] tensors on device
+        position, quaternion = self._ensure_batch_pose(position, quaternion)
+
+        # IK command (world frame goals)
+        ee_goals = torch.cat([position, quaternion], dim=1).to(self.sim.device).float()
+        self.diff_ik_controller.reset()
+        self.diff_ik_controller.set_command(ee_goals)
+
+        # Tolerances (you can tune if needed)
+        pos_tol = 1e-3  # meters
+        ori_tol = 3.0 * np.pi / 180.0  # radians (~3 degrees)
+
+        # Interpret 'steps' as max iterations; early-stop on convergence
+        max_steps = int(steps) if steps is not None and steps > 0 else 10_000
+
+        joint_pos_des = None
+        for _ in range(max_steps):
+            # Current EE pose (world) and Jacobian
+            jacobian = self.robot.root_physx_view.get_jacobians()[
+                :, self.ee_jacobi_idx, :, self.robot_entity_cfg.joint_ids
+            ]
+            ee_pose_w = self.robot.data.body_state_w[
+                :, self.robot_entity_cfg.body_ids[0], 0:7
+            ]
+            root_pose_w = self.robot.data.root_state_w[:, 0:7]
+            joint_pos = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
+
+            # Current EE pose expressed in robot base
+            ee_pos_b, ee_quat_b = subtract_frame_transforms(
+                root_pose_w[:, 0:3],
+                root_pose_w[:, 3:7],
+                ee_pose_w[:, 0:3],
+                ee_pose_w[:, 3:7],
+            )
+
+            # Compute next joint command
+            joint_pos_des = self.diff_ik_controller.compute(
+                ee_pos_b, ee_quat_b, jacobian, joint_pos
+            )
+
+            # Apply
+            self.apply_actions(joint_pos_des, gripper_open=gripper_open, record=record)
+            # --- Early-stop check ---
+            # Desired EE pose in base frame (convert world goal -> base)
+            des_pos_b, des_quat_b = subtract_frame_transforms(
+                root_pose_w[:, 0:3], root_pose_w[:, 3:7], position, quaternion
+            )
+            # Position error [B]
+            pos_err = torch.norm(des_pos_b - ee_pos_b, dim=1)
+            # Orientation error [B]: angle between quaternions
+            # Note: q and -q are equivalent -> take |dot|
+            dot = torch.sum(des_quat_b * ee_quat_b, dim=1).abs().clamp(-1.0, 1.0)
+            ori_err = 2.0 * torch.acos(dot)
+
+            done = (pos_err <= pos_tol) & (ori_err <= ori_tol)
+            if bool(torch.all(done)):
+                break
+
+        return joint_pos_des
+
+    # ---------- Robot Waiting ----------
+    def wait(self, gripper_open, steps: int, record: bool = True):
+        joint_pos_des = self.robot.data.joint_pos[
+            :, self.robot_entity_cfg.joint_ids
+        ].clone()
+        for _ in range(steps):
+            self.apply_actions(joint_pos_des, gripper_open=gripper_open)
+        return joint_pos_des
+
+    # ---------- Reset Envs ----------
+    def reset(self, env_ids=None):
+        """
+        Reset all envs or only those in env_ids.
+        Assumptions:
+          - self.robot_pose.shape == (B, 7)        # base pose per env (wxyz in [:,3:])
+          - self.robot.data.default_joint_pos == (B, 7)
+          - self.robot.data.default_joint_vel == (B, 7)
+        """
+        device = self.object_prim.device
+        if env_ids is None:
+            env_ids_t = self._all_env_ids.to(device)  # (B,)
+        else:
+            env_ids_t = torch.as_tensor(env_ids, device=device, dtype=torch.long).view(
+                -1
+            )  # (M,)
+        M = int(env_ids_t.shape[0])
+
+        # --- object pose/vel: set object at env origins with identity quat ---
+        env_origins = self.scene.env_origins.to(device)[env_ids_t]  # (M,3)
+        object_pose = torch.zeros((M, 7), device=device, dtype=torch.float32)
+        object_pose[:, :3] = env_origins
+        object_pose[:, 3] = 1.0  # wxyz = [1,0,0,0]
+        self.object_prim.write_root_pose_to_sim(object_pose, env_ids=env_ids_t)
+        self.object_prim.write_root_velocity_to_sim(
+            torch.zeros((M, 6), device=device, dtype=torch.float32), env_ids=env_ids_t
+        )
+        self.object_prim.write_data_to_sim()
+        for prim in self.other_object_prims:
+            prim.write_root_pose_to_sim(object_pose, env_ids=env_ids_t)
+            prim.write_root_velocity_to_sim(
+                torch.zeros((M, 6), device=device, dtype=torch.float32),
+                env_ids=env_ids_t,
+            )
+            prim.write_data_to_sim()
+
+        # --- robot base pose/vel ---
+        # robot_pose is (B,7) in *local* base frame; add env origin offset per env
+        rp_local = self.robot_pose.to(self.robot.device)[env_ids_t]  # (M,7)
+        env_origins_robot = env_origins.to(self.robot.device)  # (M,3)
+        robot_pose_world = rp_local.clone().float()
+        robot_pose_world[:, :3] = env_origins_robot + robot_pose_world[:, :3]
+        #print(f"[INFO] robot_pose_world: {robot_pose_world}")
+        self.robot.write_root_pose_to_sim(robot_pose_world, env_ids=env_ids_t)
+        self.robot.write_root_velocity_to_sim(
+            torch.zeros((M, 6), device=self.robot.device, dtype=torch.float32),
+            env_ids=env_ids_t,
+        )
+
+        # --- joints (B,7) -> select ids (M,7) ---
+        joint_pos = self.robot.data.default_joint_pos.to(self.robot.device)[
+            env_ids_t
+        ]  # (M,7)
+        joint_vel = self.robot.data.default_joint_vel.to(self.robot.device)[
+            env_ids_t
+        ]  # (M,7)
+        self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids_t)
+        self.robot.write_data_to_sim()
+
+        self.step()
+        # housekeeping
+        self.count = 0
+        self.task_step_count = 0
+        self.clear_data()
+
+    # ---------- Get Observations ----------
+    def get_observation(self, gripper_open) -> Dict[str, torch.Tensor]:
+        # camera outputs (already batched)
+        rgb = self.camera.data.output["rgb"]  # [B,H,W,3]
+        depth = self.camera.data.output["distance_to_image_plane"]  # [B,H,W]
+        ins_all = self.camera.data.output["instance_id_segmentation_fast"]  # [B,H,W]
+
+        B, H, W, _ = ins_all.shape
+        fg_mask_list = []
+        obj_mask_list = []
+        for b in range(B):
+            ins_id_seg = ins_all[b]
+            id_mapping = self.camera.data.info[b]["instance_id_segmentation_fast"][
+                "idToLabels"
+            ]
+            fg_mask_b = torch.zeros_like(
+                ins_id_seg, dtype=torch.bool, device=ins_id_seg.device
+            )
+            obj_mask_b = torch.zeros_like(
+                ins_id_seg, dtype=torch.bool, device=ins_id_seg.device
+            )
+            for key, value in id_mapping.items():
+                if "object" in value:
+                    fg_mask_b |= ins_id_seg == key
+                    obj_mask_b |= ins_id_seg == key
+                if "Robot" in value:
+                    fg_mask_b |= ins_id_seg == key
+            fg_mask_list.append(fg_mask_b)
+            obj_mask_list.append(obj_mask_b)
+        fg_mask = torch.stack(fg_mask_list, dim=0)  # [B,H,W]
+        obj_mask = torch.stack(obj_mask_list, dim=0)  # [B,H,W]
+
+        ee_pose_w = self.robot.data.body_state_w[
+            :, self.robot_entity_cfg.body_ids[0], 0:7
+        ]
+        joint_pos = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
+        joint_vel = self.robot.data.joint_vel[:, self.robot_entity_cfg.joint_ids]
+        gripper_pos = self.robot.data.joint_pos[:, self.robot_gripper_cfg.joint_ids]
+        gripper_cmd = (
+            self.gripper_open_tensor if gripper_open else self.gripper_close_tensor
+        )
+
+        cam_pos_w = self.camera.data.pos_w
+        cam_quat_w = self.camera.data.quat_w_ros
+        ee_pos_cam, ee_quat_cam = subtract_frame_transforms(
+            cam_pos_w, cam_quat_w, ee_pose_w[:, 0:3], ee_pose_w[:, 3:7]
+        )
+        ee_pose_cam = torch.cat([ee_pos_cam, ee_quat_cam], dim=1)
+
+        points_3d_cam = unproject_depth(
+            self.camera.data.output["distance_to_image_plane"],
+            self.camera.data.intrinsic_matrices,
+        )
+        points_3d_world = transform_points(
+            points_3d_cam, self.camera.data.pos_w, self.camera.data.quat_w_ros
+        )
+
+        object_center = self.object_prim.data.root_com_pos_w[:, :3]
+
+        # Convert real background composition (batch-aware)
+        rgb_real = self.convert_real_batch(fg_mask, rgb)
+        return {
+            "rgb": rgb,
+            "composed_rgb": rgb_real,
+            "depth": depth,
+            "fg_mask": fg_mask,
+            "joint_pos": joint_pos,
+            "gripper_pos": gripper_pos,
+            "gripper_cmd": gripper_cmd,
+            "joint_vel": joint_vel,
+            "ee_pose_cam": ee_pose_cam,
+            "ee_pose_w": ee_pose_w,
+            "object_mask": obj_mask,
+            "points_cam": points_3d_cam,
+            "points_world": points_3d_world,
+            "object_center": object_center,
+        }
+
+    # ---------- Task Completion Verifier ----------
+    def is_success(self) -> bool:
+        raise NotImplementedError(
+            "BaseSimulator.is_success() should be implemented in subclass."
+        )
+
+    # ---------- Data Recording & Saving & Clearing ----------
+    def record_data(self, obs: Dict[str, torch.Tensor]):
+        if self.task_step_count % self.save_interval == 0:
+            self.save_dict["rgb"].append(obs["rgb"].cpu().numpy())  # [B,H,W,3]
+            self.save_dict["composed_rgb"].append(obs["composed_rgb"].cpu().numpy())  # [B,H,W,3]
+            self.save_dict["depth"].append(obs["depth"].cpu().numpy())  # [B,H,W]
+            self.save_dict["segmask"].append(obs["fg_mask"].cpu().numpy())  # [B,H,W]
+            self.save_dict["joint_pos"].append(obs["joint_pos"].cpu().numpy())  # [B,nJ]
+            self.save_dict["gripper_pos"].append(obs["gripper_pos"].cpu().numpy())  # [B,3]
+            self.save_dict["gripper_cmd"].append(obs["gripper_cmd"].cpu().numpy())  # [B,1]
+            self.save_dict["joint_vel"].append(obs["joint_vel"].cpu().numpy())
+            self.save_dict["ee_pose_cam"].append(obs["ee_pose_cam"].cpu().numpy())
+            
+    def clear_data(self):
+        for key in self.save_dict.keys():
+            self.save_dict[key] = []
+ 
+    def _env_dir(self, base: Path, b: int) -> Path:
+        d = base / f"env_{b:03d}"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    def _get_next_demo_dir(self, base: Path) -> Path:
+        already_existing_num = len(list(base.iterdir()))
+        return base / f"demo_{already_existing_num:03d}.mp4"
+
+    def save_data(self, ignore_keys: List[str] = [], env_ids: Optional[List[int]] = None, export_hdf5: bool = False, save_other_things: bool = False):
+        stacked = self.save_dict.copy()
+        if env_ids is None:
+            env_ids = self._all_env_ids.cpu().numpy()
+        video_dir = self.out_dir
+        video_dir.mkdir(parents=True, exist_ok=True)
+        hdf5_names = []
+        video_paths = []
+        fps = 1 / (self.sim_dt * self.decimation * self.save_interval)
+        for b in env_ids:
+            demo_path = self._get_next_demo_dir(video_dir)
+            hdf5_names.append(demo_path.name.replace(".mp4", ""))
+            if save_other_things:
+                demo_dir = self.out_dir / self.img_folder/ "demos"
+                demo_dir = self._get_next_demo_dir(demo_dir).replace(".mp4", "")
+                env_dir = self._env_dir(demo_dir, b)
+                for key, arr in stacked.items():
+                    if key in ignore_keys:  # skip the keys for storage
+                        continue
+                    if key == "rgb":
+                        video_path = env_dir / "sim_video.mp4"
+                        writer = imageio.get_writer(
+                            video_path, fps=fps, macro_block_size=None
+                        )
+                        for t in range(arr.shape[0]):
+                            writer.append_data(arr[t][b])
+                        writer.close()
+                        
+                    elif key == "segmask":
+                        video_path = env_dir / "mask_video.mp4"
+                        writer = imageio.get_writer(
+                            video_path, fps=fps, macro_block_size=None
+                        )
+                        for t in range(arr.shape[0]):
+                            writer.append_data((arr[t][b].astype(np.uint8) * 255))
+                        writer.close()
+                    elif key == "depth":
+                        depth_seq = arr[:, b]
+                        flat = depth_seq[depth_seq > 0]
+                        max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
+                        depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(
+                            np.uint8
+                        )
+                        video_path = env_dir / "depth_video.mp4"
+                        writer = imageio.get_writer(
+                            video_path, fps=50, macro_block_size=None
+                        )
+                        for t in range(depth_norm.shape[0]):
+                            writer.append_data(depth_norm[t])
+                        writer.close()
+                        np.save(env_dir / f"{key}.npy", depth_seq)
+                    elif key != "composed_rgb":
+                        np.save(env_dir / f"{key}.npy", arr[b])
+            writer = imageio.get_writer(demo_path, fps=fps, macro_block_size=None)
+            for t in range(len(self.save_dict["composed_rgb"])):
+                writer.append_data(self.save_dict["composed_rgb"][t][b])
+            writer.close()
+            video_paths.append(str(demo_path))
+            print(f"[INFO]: Demonstration is saved at: {demo_path}")
+        if export_hdf5:
+            self.export_batch_data_to_hdf5(hdf5_names, video_paths)
+       
+
+    # def convert_real(self, segmask, bg_rgb, fg_rgb):
+    #     """Convert single image with background composition (non-batch version)."""
+    #     segmask_2d = segmask[..., 0] if segmask.ndim > 2 else segmask
+    #     composed = bg_rgb.copy()
+    #     composed[segmask_2d] = fg_rgb[segmask_2d]
+    #     return composed
+    
+    def convert_real_batch(self, fg_mask, rgb):
+        """
+        Convert batch of images with background composition.
+        
+        Args:
+            fg_mask: [B, H, W] torch.Tensor, boolean mask for foreground
+            rgb: [B, H, W, 3] torch.Tensor, foreground RGB images
+            
+        Returns:
+            composed_rgb: [B, H, W, 3] torch.Tensor, composed images with background
+        """
+        # Ensure bg_rgb is loaded
+        if not hasattr(self, 'bg_rgb') or self.bg_rgb is None:
+            bg_rgb_path = self.task_cfg.background_cfg.background_rgb_path
+            self.bg_rgb = imageio.imread(bg_rgb_path)
+        
+        # Convert to torch if needed
+        if isinstance(self.bg_rgb, np.ndarray):
+            bg_rgb_tensor = torch.from_numpy(self.bg_rgb).to(rgb.device)
+        else:
+            bg_rgb_tensor = self.bg_rgb.to(rgb.device)
+        
+        # Ensure bg_rgb has batch dimension [1, H, W, 3] and expand to [B, H, W, 3]
+        if bg_rgb_tensor.ndim == 3:
+            bg_rgb_tensor = bg_rgb_tensor.unsqueeze(0)  # [1, H, W, 3]
+        B = rgb.shape[0]
+        bg_rgb_batch = bg_rgb_tensor.expand(B, -1, -1, -1)  # [B, H, W, 3]
+        
+        # Normalize bg_rgb to same range as rgb if needed
+        # Isaac Lab typically outputs RGB in [0, 1] range (float32)
+        # imageio.imread typically outputs [0, 255] range (uint8)
+        if bg_rgb_batch.dtype == torch.uint8:
+            bg_rgb_batch = bg_rgb_batch.float() / 255.0
+        elif bg_rgb_batch.max() > 1.0:
+            bg_rgb_batch = bg_rgb_batch.float() / 255.0
+        
+        # Ensure rgb is in [0, 1] range
+        rgb_normalized = rgb.float() if rgb.dtype != torch.float32 else rgb
+        if rgb_normalized.max() > 1.0:
+            rgb_normalized = rgb_normalized / 255.0
+        
+        # Ensure both are float32
+        bg_rgb_batch = bg_rgb_batch.to(dtype=torch.float32)
+        rgb_normalized = rgb_normalized.to(dtype=torch.float32)
+        
+        # Ensure fg_mask is [B, H, W] then expand to [B, H, W, 1] for broadcasting
+        if fg_mask.ndim == 4:
+            fg_mask = fg_mask.squeeze(-1)  # Remove last dimension if present
+        fg_mask_expanded = fg_mask.unsqueeze(-1)  # [B, H, W, 1]
+        
+        # Compose: use fg_rgb where mask is True, bg_rgb where mask is False
+        composed = torch.where(fg_mask_expanded, rgb_normalized, bg_rgb_batch)
+        
+        # Draw count and joint_pos_des_list last value on images
+        # Convert to numpy for cv2 operations
+        composed_np = composed.cpu().numpy()  # [B, H, W, 3] in [0, 1] range
+        # Convert to [0, 255] uint8 and BGR for cv2, ensure contiguous array
+        composed_np = (composed_np * 255.0).astype(np.uint8)
+        composed_np = composed_np[..., ::-1].copy()  # RGB to BGR, ensure contiguous
+        
+        # # Get count value
+        # count_str = f"Count: {self.count}"
+        
+        # # Get last joint_pos_des value if available
+        # last_joint_pos = None
+        # gripper_cmd = None
+        # if hasattr(self, 'joint_pos_des_list') and len(self.joint_pos_des_list) > 0:
+        #     last_joint_pos = self.joint_pos_des_list[-1]  # [B, n_joints]
+        
+        # # Get gripper command if available
+        # if hasattr(self, 'gripper_cmd_list') and len(self.gripper_cmd_list) > 0:
+        #     gripper_cmd = self.gripper_cmd_list[-1]  # Last gripper command
+        
+        # # Draw text on each image in the batch
+        # for b in range(B):
+        #     # Create a copy to ensure contiguous and writable array
+        #     img = composed_np[b].copy()  # [H, W, 3] BGR, contiguous copy
+            
+        #     # Draw count
+        #     cv2.putText(img, count_str, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+        #                0.7, (0, 255, 0), 2)  # Green text
+            
+        #     # Draw joint position
+        #     if last_joint_pos is not None:
+        #         if last_joint_pos.ndim == 2:
+        #             # For batch, use b-th env's last joint value
+        #             last_joint_val = last_joint_pos[b].cpu().numpy()  # Last joint of b-th env
+        #         else:
+        #             last_joint_val = last_joint_pos[b].cpu().numpy()
+        #         # Format joint values: first 4 on first line, last 3 on second line
+        #         joint_pos_str1 = f"Joint: {', '.join([f'{last_joint_val[j]:.3f}' for j in range(4)])}"
+        #         joint_pos_str2 = f"      {', '.join([f'{last_joint_val[j]:.3f}' for j in range(4, 7)])}"
+                
+        #         cv2.putText(img, joint_pos_str1, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 
+        #                    0.7, (0, 255, 0), 2)  # Green text
+        #         cv2.putText(img, joint_pos_str2, (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 
+        #                    0.7, (0, 255, 0), 2)  # Green text
+            
+        #     # Draw gripper command
+        #     if gripper_cmd is not None:
+        #         try:
+        #             if isinstance(gripper_cmd, torch.Tensor):
+        #                 if gripper_cmd.ndim == 0:
+        #                     gripper_val = gripper_cmd.item()
+        #                 elif gripper_cmd.ndim == 1:
+        #                     gripper_val = gripper_cmd[b].item()
+        #                 else:
+        #                     # 2D or higher: take first element of b-th row
+        #                     gripper_val = gripper_cmd[b, 0].item() if gripper_cmd.shape[1] > 0 else gripper_cmd[b].item()
+        #             else:
+        #                 # numpy array or list
+        #                 gripper_cmd_np = np.asarray(gripper_cmd)
+        #                 if gripper_cmd_np.ndim == 0:
+        #                     gripper_val = float(gripper_cmd_np)
+        #                 elif gripper_cmd_np.ndim == 1:
+        #                     gripper_val = float(gripper_cmd_np[b])
+        #                 else:
+        #                     # 2D or higher: take first element of b-th row
+        #                     gripper_val = float(gripper_cmd_np[b, 0]) if gripper_cmd_np.shape[1] > 0 else float(gripper_cmd_np[b])
+        #             gripper_cmd_str = f"Gripper: {gripper_val:.3f}"
+        #             cv2.putText(img, gripper_cmd_str, (10, 120), cv2.FONT_HERSHEY_SIMPLEX,
+        #                        0.7, (0, 255, 0), 2)  # Green text
+        #         except (IndexError, AttributeError, TypeError) as e:
+        #             # Skip gripper display if there's an error
+        #             pass
+            
+        #     # Write back the modified image
+        #     composed_np[b] = img
+        
+        # Convert back to RGB and [0, 1] range
+        composed_np = composed_np[..., ::-1]  # BGR to RGB
+        composed_np = composed_np.astype(np.float32) / 255.0
+        composed = torch.from_numpy(composed_np).to(composed.device)
+        
+        return composed
+
+    def _quat_to_rot(self, quat: Sequence[float]) -> np.ndarray:
+        w, x, y, z = quat
+        rot = np.array(
+            [
+                [1 - 2 * (y ** 2 + z ** 2), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x ** 2 + z ** 2), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x ** 2 + y ** 2)],
+            ],
+            dtype=np.float32,
+        )
+        return rot
+
+    def _get_camera_parameters(self) -> Optional[Tuple[np.ndarray, np.ndarray, Tuple[int, int]]]:
+        if self.task_cfg is None:
+            return None
+        camera_info = getattr(self.task_cfg, "camera_info", None)
+        if camera_info is None:
+            return None
+
+        intrinsics = np.array(
+            [
+                [camera_info.fx, 0.0, camera_info.cx],
+                [0.0, camera_info.fy, camera_info.cy],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+
+        if getattr(camera_info, "camera_opencv_to_world", None) is not None:
+            extrinsics = np.array(camera_info.camera_opencv_to_world, dtype=np.float32)
+        else: 
+            extrinsics = np.eye(4, dtype=np.float32)
+            if getattr(camera_info, "camera_heading_wxyz", None) is not None:
+                rot = self._quat_to_rot(camera_info.camera_heading_wxyz)
+            else:
+                rot = np.eye(3, dtype=np.float32)
+            extrinsics[:3, :3] = rot
+            if getattr(camera_info, "camera_position", None) is not None:
+                extrinsics[:3, 3] = np.array(camera_info.camera_position, dtype=np.float32)
+        resolution = (
+            int(camera_info.width),
+            int(camera_info.height),
+        )
+        return intrinsics, extrinsics, resolution
