@@ -25,17 +25,37 @@ ENV CMAKE_BUILD_PARALLEL_LEVEL=2
 ENV CUDA_HOME=/usr/local/cuda
 ENV FORCE_CUDA=1
 
+RUN useradd -ms /bin/bash isaac && chown -R isaac:isaac /app
+ENV HOME=/home/isaac
+USER isaac
+ENV PATH=$HOME/.local/bin:$PATH
+
+# RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 \
+#     torch==2.5.1+cu118 torchvision==0.20.1+cu118 torchaudio==2.5.1+cu118
 
 RUN pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 
+# graspnetapi (will install open3d & change numpy version from 1.26.4 to 1.23.4)
+RUN git clone https://github.com/PointsCoder/graspnetAPI.git "$HOME/graspnetAPI"
+RUN cd "$HOME/graspnetAPI" && pip install -e .
 
+
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;12.0"
+# graspness (will compile pointnet2, knn)
+RUN git clone https://github.com/PointsCoder/graspness_unofficial.git "$HOME/third_party/graspness_unofficial"
+RUN cd "$HOME/third_party/graspness_unofficial/pointnet2" && python -m pip install --user -v --no-build-isolation .
+# RUN cd "$HOME/third_party/graspness_unofficial/knn" && python -m pip install --user -v --no-build-isolation . # (knn is not necessary)
+
+USER root
+# Patch shared_ptr_base.h
 RUN sed -i 's|auto __raw = __to_address(__r.get())|auto __raw = std::__to_address(__r.get())|' \
     /usr/include/c++/11/bits/shared_ptr_base.h
+
+USER isaac
 
 
 ENV TORCH_CUDA_ARCH_LIST="8.9+PTX"
 # curobo
-RUN echo $HOME
 RUN git clone https://github.com/NVlabs/curobo.git "$HOME/curobo" && \
     cd "$HOME/curobo" && pip install -e . --no-build-isolation --user
 
@@ -55,4 +75,4 @@ RUN git clone https://github.com/PointsCoder/IsaacLab.git "$HOME/IsaacLab" && \
 # curobo changes the numpy version from 1.23.4 to 2.x, need to get it back
 RUN pip install loguru rich numpy==1.23.4 transforms3d gradio
 
-ENV PYTHONPATH=/app:$HOME/third_party
+ENV PYTHONPATH=/app:$HOME/third_party:
