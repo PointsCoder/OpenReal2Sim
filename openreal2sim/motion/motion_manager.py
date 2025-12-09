@@ -3,7 +3,7 @@ import sys
 import pickle
 import yaml
 import argparse
-
+import json
 sys.path.append(str(Path.cwd() / "openreal2sim" / "motion" / "modules"))
 sys.path.append(str(Path.cwd() / "openreal2sim" / "motion" / "utils"))
 
@@ -23,6 +23,12 @@ class MotionAgent:
             with open(scene_pkl, 'rb') as f:
                 scene_dict = pickle.load(f)
             self.key_scene_dicts[key] = scene_dict
+        self.key_scene_json_dicts = {}
+        for key in self.keys:
+            scene_json_path = self.base_dir / f'outputs/{key}/simulation/scene.json'
+            with open(scene_json_path, "r") as f:
+                scene_json_dict = json.load(f)
+            self.key_scene_json_dicts[key] = scene_json_dict
         self.stages = [
             "hand_extraction",
             "demo_motion_process",
@@ -55,7 +61,7 @@ class MotionAgent:
 
     def grasp_point_extraction(self):
         from modules.grasp_point_extraction import grasp_point_extraction
-        self.key_scene_dicts = grasp_point_extraction(self.keys, self.key_scene_dicts, self.key_cfgs)
+        self.key_scene_dicts = grasp_point_extraction(self.keys, self.key_scene_dicts, self.key_scene_json_dicts, self.key_cfgs)
         print("[Info] Grasp point extraction completed.")
 
     def grasp_generation(self):
