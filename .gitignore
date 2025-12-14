@@ -1,6 +1,7 @@
 # Project
 data/
 outputs/
+h5py/demo_video
 .gradio/
 third_party/IsaacLab
 
