@@ -208,18 +208,38 @@ class RandomizeExecution(BaseSimulator):
         rp_local = np.array(self.robot_poses_list, dtype=np.float32)
         env_origins_robot = self.scene.env_origins.to(device)[env_ids_t]
         robot_pose_world = copy.deepcopy(rp_local)
+        print(f"[RESET DEBUG] rp_local shape: {rp_local.shape}, values:\n{rp_local}")
+        print(f"[RESET DEBUG] env_origins_robot:\n{env_origins_robot.cpu().numpy()}")
+        print(f"[RESET DEBUG] env_ids_t: {env_ids_t.cpu().numpy()}")
         robot_pose_world[:, :3] = env_origins_robot.cpu().numpy() + robot_pose_world[env_ids_t.cpu().numpy(), :3]
+        print(f"[RESET DEBUG] robot_pose_world after assignment:\n{robot_pose_world}")
         #robot_pose_world[:, 3:7] = [1.0, 0.0, 0.0, 0.0]
         self.robot.write_root_pose_to_sim(torch.tensor(robot_pose_world, dtype=torch.float32, device=device), env_ids=env_ids_t)
         self.robot.write_root_velocity_to_sim(
             torch.zeros((M, 6), device=device, dtype=torch.float32), env_ids=env_ids_t
         )
-
-
+        
+        # Set joint positions before updating state buffers
         joint_pos = self.robot.data.default_joint_pos.to(self.robot.device)[env_ids_t]  # (M,7)
         joint_vel = self.robot.data.default_joint_vel.to(self.robot.device)[env_ids_t]  # (M,7)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids_t)
+        
+        # Write all data to simulation at once
         self.robot.write_data_to_sim()
+
+        # Perform a simulation step to update physics with new poses and joints
+        self.sim.step(render=False)
+        
+        # Update robot state buffers to reflect new base poses and joint states
+        self.robot.update(dt=self.sim.get_physics_dt())
+        
+        # Verify EE positions after update
+        ee_test = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+        root_test = self.robot.data.root_state_w[:, 0:3]
+        print(f"[RESET VERIFY] After robot.update():")
+        print(f"  Robot base positions: {root_test.cpu().numpy()}")
+        print(f"  EE positions: {ee_test.cpu().numpy()}")
+        print(f"  Expected EE X ~= base X ± 0.5m")
 
         self.clear_data()
 
@@ -232,20 +252,28 @@ class RandomizeExecution(BaseSimulator):
         B = self.scene.num_envs
         # obj_state = self.object_prim.data.root_com_state_w[:, :7]  # [B,7], pos(3)+quat(wxyz)(4)
         obj_state = self.object_prim.data.root_state_w[:, :7]  # [B,7], pos(3)+quat(wxyz)(4)
+        print(f"obj_state shape: {obj_state.shape}")
         self.show_goal(obj_state[:, :3], obj_state[:, 3:7])
 
         obj_state_np = obj_state.detach().cpu().numpy().astype(np.float32)
+        print(f"obj_state_np shape: {obj_state_np.shape}")
         offset_np = np.asarray(self.goal_offset, dtype=np.float32)
+        print(f"offset_np shape: {offset_np.shape}")
         obj_state_np[:, :3] += offset_np  # raise a bit to avoid collision
+        print(f"obj_state_np after offset addition shape: {obj_state_np.shape}")
 
         # Note: here the relative traj Δ_w is defined in world frame with origin (0,0,0),
         # Hence, we need to normalize it to each env's origin frame.
         origins = self.scene.env_origins.detach().cpu().numpy().astype(np.float32)  # (B,3)
+        print(origins)
         obj_state_np[:, :3] -= origins # normalize to env origin frame
+        print(f"obj_state_np after origins subtraction shape: {obj_state_np.shape}")
 
         # —— 3) Precompute absolute object goals for all envs ——
         T = self.object_trajectory_list[0].shape[0]
+        print(f"T: {T}")
         obj_goal = np.zeros((B, T, 4, 4), dtype=np.float32)
+        print(f"obj_goal shape: {obj_goal.shape}")
         for b in range(B):
             for t in range(1, T):
                 goal_4x4 = self.object_trajectory_list[b][t].copy()
@@ -254,23 +282,50 @@ class RandomizeExecution(BaseSimulator):
                     goal_4x4[:3, 3] += offset_np
                 obj_goal[b, t] = goal_4x4
                 
+        print("origins:", origins)
+        print("final timestep goal positions (obj positions):", obj_goal[:, -1, :3, 3])
         self.obj_goal_traj_w = obj_goal
+        print(f"self.obj_goal_traj_w shape: {self.obj_goal_traj_w.shape}")
 
 
     def lift_up(self, height=0.12, gripper_open=False, steps=8):
         """
         Lift up by a certain height (m) from current EE pose.
         """
+        # Force robot state update to ensure FK is current before reading EE pose
+        self.robot.update(dt=self.sim.get_physics_dt())
+        
         ee_w = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
-        target_p = ee_w[:, :3].clone()
-        target_p[:, 2] += height
-
         root = self.robot.data.root_state_w[:, 0:7]
+        
+        # Sanity check: EE should be within ~1m of robot base
+        ee_to_base_dist = torch.norm(ee_w[:, :3] - root[:, :3], dim=1)
+        print(f"[DEBUG lift_up] EE-to-base distance: {ee_to_base_dist.cpu().numpy()}")
+        if torch.any(ee_to_base_dist > 1.5):
+            print(f"[ERROR] EE position seems invalid! EE: {ee_w[:, :3].cpu().numpy()}, Root: {root[:, :3].cpu().numpy()}")
+            print(f"[ERROR] This suggests stale robot state. Returning current joint pos.")
+            return self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
+        
+        print(f"ee_w shape: {ee_w.shape}, positions: {ee_w[:, :3].cpu().numpy()}")
+        target_p = ee_w[:, :3].clone()
+        print(f"target_p shape: {target_p.shape}, values: {target_p.cpu().numpy()}")
+        target_p[:, 2] += height
+        print(f"target_p after height addition: {target_p.cpu().numpy()}")
+
+        print(f"root shape: {root.shape}")
+        print(f"robot root_state_w positions: {root[:, 0:3].cpu().numpy()}")
         p_lift_b, q_lift_b = subtract_frame_transforms(
             root[:, 0:3], root[:, 3:7],
             target_p, ee_w[:, 3:7]
         ) # [B,3], [B,4]
+        print(f"p_lift_b shape: {p_lift_b.shape}, values: {p_lift_b.cpu().numpy()}")
+        print(f"q_lift_b shape: {q_lift_b.shape}, values: {q_lift_b.cpu().numpy()}")
         jp, success = self.move_to(p_lift_b, q_lift_b, gripper_open=gripper_open)
+        
+        if jp is None:
+            print("[ERROR] lift_up: move_to returned None! Returning current joint pos.")
+            return self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
+
         jp = self.wait(gripper_open=gripper_open, steps=steps)
         return jp
 
@@ -289,6 +344,10 @@ class RandomizeExecution(BaseSimulator):
 
        
         joint_pos = start_joint_pos
+        
+        # Force robot state update before reading poses
+        self.robot.update(dt=self.sim.get_physics_dt())
+        
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
 
         t_iter = list(range(1, T, sample_step))
@@ -299,9 +358,17 @@ class RandomizeExecution(BaseSimulator):
         obj_pos_initial = self.object_prim.data.root_com_pos_w[:, 0:3]
         initial_grasp_dist = torch.norm(ee_pos_initial - obj_pos_initial, dim=1) # [B]
         self.initial_grasp_dist = initial_grasp_dist
+        
+        # Debug: verify EE position is valid
+        ee_to_base_dist = torch.norm(ee_pos_initial - root_w[:, :3], dim=1)
+        print(f"[DEBUG follow_object_goals] Initial EE-to-base distance: {ee_to_base_dist.cpu().numpy()}")
+        
         T_ee_in_obj = None
         for t in t_iter:
             if recalibrate_interval> 0 and (t-1) % recalibrate_interval == 0:
+                # Force robot state update before recalibration
+                self.robot.update(dt=self.sim.get_physics_dt())
+                
                 ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
                 obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
                 T_ee_in_obj = []
@@ -327,7 +394,12 @@ class RandomizeExecution(BaseSimulator):
             ee_pos_b, ee_quat_b = subtract_frame_transforms(
                 root_w[:, :3], root_w[:, 3:7], goal_pos, goal_quat
             )
-            joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False)
+            res = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False)
+            if res is None:
+                 print(f"[ERROR] follow_object_goals: move_to returned None at step {t}!")
+                 continue
+            joint_pos, success = res
+
             if self.count % self.save_interval == 0:
                 self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
 
@@ -351,6 +423,10 @@ class RandomizeExecution(BaseSimulator):
         T = obj_goal_all.shape[1]
 
         joint_pos = start_joint_pos
+        
+        # Force robot state update before reading poses
+        self.robot.update(dt=self.sim.get_physics_dt())
+        
         root_w = self.robot.data.root_state_w[:, 0:7]  # robot base poses per env
 
         t_iter = list(range(1, T, sample_step))
@@ -364,6 +440,9 @@ class RandomizeExecution(BaseSimulator):
 
         for t in t_iter:
             if recalibrate_interval> 0 and (t-1) % recalibrate_interval == 0:
+                # Force robot state update before recalibration
+                self.robot.update(dt=self.sim.get_physics_dt())
+                
                 ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]  # [B,7]
                 # obj_w = self.object_prim.data.root_com_state_w[:, :7]                                 # [B,7]
                 obj_w = self.object_prim.data.root_state_w[:, :7]                                 # [B,7]
@@ -395,7 +474,11 @@ class RandomizeExecution(BaseSimulator):
             ee_pos_b, ee_quat_b = subtract_frame_transforms(
                 root_w[:, :3], root_w[:, 3:7], goal_pos, goal_quat
             )
-            joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False, record = self.record)
+            res = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False, record = self.record)
+            if res is None:
+                 print(f"[ERROR] follow_object_centers: move_to returned None at step {t}!")
+                 continue
+            joint_pos, success = res
 
             print(obj_goal_all[:,t])
             print(self.object_prim.data.root_state_w[:, :7])
@@ -692,10 +775,10 @@ class RandomizeExecution(BaseSimulator):
         pre_p_w = np.asarray(pregrasp_pos_w_batch, dtype=np.float32).reshape(B, 3)
         pre_q_w = np.asarray(pregrasp_quat_w_batch, dtype=np.float32).reshape(B, 4)
     
-
-        origins = self.scene.env_origins.detach().cpu().numpy().astype(np.float32)  # (B,3)
-        pre_p_w = pre_p_w + origins
-        p_w = p_w + origins
+        # Inputs are already in World Frame, no need to add origins
+        # origins = self.scene.env_origins.detach().cpu().numpy().astype(np.float32)  # (B,3)
+        # pre_p_w = pre_p_w + origins
+        # p_w = p_w + origins
 
         pre_pb, pre_qb = self._to_base(pre_p_w, pre_q_w)
         pb, qb = self._to_base(p_w, q_w)
@@ -723,9 +806,15 @@ class RandomizeExecution(BaseSimulator):
 
         cam_p = self.camera.data.pos_w
         cam_q = self.camera.data.quat_w_ros
-        gp_w  = torch.as_tensor(np.array(self.grasp_pose_list,  dtype=np.float32)[:,:3], dtype=torch.float32, device=self.sim.device)
+        
+        # Treat grasp_pose_list as Local Frame (relative to env origin) and convert to World Frame
+        gp_local = torch.as_tensor(np.array(self.grasp_pose_list,  dtype=np.float32)[:,:3], dtype=torch.float32, device=self.sim.device)
+        gp_w = gp_local + self.scene.env_origins
+        
         gq_w  = torch.as_tensor(np.array(self.grasp_pose_list, dtype=np.float32)[:,3:7], dtype=torch.float32, device=self.sim.device)
-        pre_w = torch.as_tensor(np.array(self.pregrasp_pose_list, dtype=np.float32)[:,:3], dtype=torch.float32, device=self.sim.device)
+        
+        pre_local = torch.as_tensor(np.array(self.pregrasp_pose_list, dtype=np.float32)[:,:3], dtype=torch.float32, device=self.sim.device)
+        pre_w = pre_local + self.scene.env_origins
         
         # Get reference root pose from reset state (after reset, object is at env_origin with identity quat)
         # This is the reference pose from the traj
@@ -746,18 +835,34 @@ class RandomizeExecution(BaseSimulator):
 
         # pre → grasp
         info_all = self.build_grasp_info(gp_w.cpu().numpy(), gq_w.cpu().numpy(), pre_w.cpu().numpy(), gq_w.cpu().numpy())
-        jp, success = self.move_to(info_all["pre_p_b"], info_all["pre_q_b"], gripper_open=True, record = self.record)
+        res = self.move_to(info_all["pre_p_b"], info_all["pre_q_b"], gripper_open=True, record = self.record)
+        if res is None:
+             print("[ERROR] inference: move_to (pregrasp) returned None!")
+             return []
+        jp, success = res
         if torch.any(success==False): return []
         self.save_dict["actions"].append(np.concatenate([info_all["pre_p_b"].cpu().numpy(), info_all["pre_q_b"].cpu().numpy(), np.zeros((B, 1))], axis=1))
         jp = self.wait(gripper_open=True, steps=3, record = self.record)
 
-        jp, success = self.move_to(info_all["p_b"], info_all["q_b"], gripper_open=True, record = self.record)
+        res = self.move_to(info_all["p_b"], info_all["q_b"], gripper_open=True, record = self.record)
+        if res is None:
+             print("[ERROR] inference: move_to (grasp) returned None!")
+             return []
+        jp, success = res
         if torch.any(success==False): return []
         self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.zeros((B, 1))], axis=1))
 
         # close gripper
         jp = self.wait(gripper_open=False, steps=50, record = self.record)
         self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.ones((B, 1))], axis=1))
+
+        # Debug: Check robot state before lift_up
+        self.robot.update(dt=self.sim.get_physics_dt())
+        ee_check = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+        root_check = self.robot.data.root_state_w[:, 0:3]
+        print(f"[DEBUG Before lift_up] EE positions: {ee_check.cpu().numpy()}")
+        print(f"[DEBUG Before lift_up] Robot bases: {root_check.cpu().numpy()}")
+        print(f"[DEBUG Before lift_up] EE-base diff: {(ee_check - root_check).cpu().numpy()}")
 
         # object goal following
         self.lift_up(height=self.goal_offset[2], gripper_open=False, steps=8)
@@ -777,16 +882,27 @@ class RandomizeExecution(BaseSimulator):
 
         print(f"[INFO] success_env_ids: {success_env_ids}")
         if self.record:
+            import time
+            t_save_start = time.time()
             self.save_data(ignore_keys=["segmask", "depth"], env_ids=success_env_ids, export_hdf5=True)
+            print(f"[TIMING] save_data took {time.time() - t_save_start:.2f}s")
         
         return success_env_ids
 
     def run_batch_trajectory(self, traj_cfg_list: List[TrajectoryCfg]):
+        import time
+        t_start = time.time()
+        
         self.traj_cfg_list = traj_cfg_list
         self.compute_components()
         self.compute_object_goal_traj()
         
-        return self.inference()
+        t_inference_start = time.time()
+        result = self.inference()
+        print(f"[TIMING] inference took {time.time() - t_inference_start:.2f}s")
+        print(f"[TIMING] run_batch_trajectory total: {time.time() - t_start:.2f}s")
+        
+        return result
     
 
 
@@ -855,19 +971,28 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
 
         my_sim = RandomizeExecution(sim, scene, sim_cfgs=sim_cfgs, data_dir=data_dir, record=True, args_cli=args_cli, goal_offset=goal_offset, save_interval=save_interval, decimation=decimation)
         my_sim.task_cfg = task_cfg
+        
+        import time
         while len(success_trajectory_config_list) < total_require_traj_num:
+            iteration_start = time.time()
+            
             traj_cfg_list = random_task_cfg_list[current_timestep: current_timestep + num_envs]
             current_timestep += num_envs
            
             success_env_ids = my_sim.run_batch_trajectory(traj_cfg_list)
             
-            env.close()
+            # Don't close env in the loop - keep it alive for next iteration!
             if len(success_env_ids) > 0:
                 for env_id in success_env_ids:
                     success_trajectory_config_list.append(traj_cfg_list[env_id])
                     add_generated_trajectories(task_cfg, [traj_cfg_list[env_id]], task_json_path.parent)
-            print(f"[INFO] success_trajectory_config_list: {len(success_trajectory_config_list)}")
-            print(total_require_traj_num)
+            
+            print(f"[INFO] success_trajectory_config_list: {len(success_trajectory_config_list)}/{total_require_traj_num}")
+            print(f"[TIMING] Full iteration took {time.time() - iteration_start:.2f}s\n")
+        
+        # Close env only once at the end
+        print("[INFO] Closing environment...")
+        env.close()
 
         # for timestep in range(len(success_trajectory_config_list),10):
         #     traj_cfg_list = random_task_cfg_list[timestep: min(timestep + 10, len(random_task_cfg_list))]

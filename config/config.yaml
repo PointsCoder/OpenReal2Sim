@@ -1,7 +1,7 @@
 keys:
-  - demo_image
+  # - demo_image
   - demo_video
-  - demo_genvideo
+  # - demo_genvideo
 
 # global settings, can be overridden by local settings
 global:

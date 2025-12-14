@@ -432,7 +432,14 @@ class BaseSimulator:
                     max_attempts=max_attempts, enable_graph=use_graph
                 )
                 
+                print(f"[DEBUG] start_state position: {start_state.position}")
+                print(f"[DEBUG] goal_pose position: {goal_pose.position}, quaternion: {goal_pose.quaternion}")
+                print(f"[DEBUG] plan_cfg: max_attempts={plan_cfg.max_attempts}, enable_graph={plan_cfg.enable_graph}")
+                
                 result = self.motion_gen.plan_single(start_state, goal_pose, plan_cfg)
+                
+                print(f"[DEBUG] result success: {result.success}")
+                print(f"[DEBUG] result trajectory: {result.get_interpolated_plan() is not None}")
                 
                 # Check if result is valid
                 if result is None:
@@ -535,8 +542,14 @@ class BaseSimulator:
                     max_attempts=max_attempts, enable_graph=allow_graph
                 )
                 
+                print(f"[DEBUG] start_state position: {start_state.position}")
+                print(f"[DEBUG] goal_pose position: {goal_pose.position}, quaternion: {goal_pose.quaternion}")
+                print(f"[DEBUG] plan_cfg: max_attempts={plan_cfg.max_attempts}, enable_graph={plan_cfg.enable_graph}")
+                
                 try:
                     result = self.motion_gen.plan_batch(start_state, goal_pose, plan_cfg)
+                    print(f"[DEBUG] result success: {result.success}")
+                    print(f"[DEBUG] result paths length: {len(result.get_paths()) if result.get_paths() else 'None'}")
                 except Exception as plan_err:
                     print(f"[ERROR] curobo.plan_batch raised exception: {plan_err}")
                     raise plan_err
@@ -693,8 +706,22 @@ class BaseSimulator:
         Cartesian space control: Move the end effector to the desired position and orientation using motion planning.
         Works with batched envs. If inputs are 1D, they will be broadcast to all envs.
         """
-        traj, success = self.motion_planning(position, quaternion)
+        res = self.motion_planning(position, quaternion)
+        if res is None:
+            print("[ERROR] motion_planning returned None in move_to_motion_planning!")
+            B = self.scene.num_envs
+            joint_pos = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
+            return joint_pos, torch.zeros(B, dtype=torch.bool, device=self.sim.device)
+
+        traj, success = res
         BT7 = traj
+        
+        if BT7 is None:
+             print("[ERROR] BT7 is None in move_to_motion_planning!")
+             B = self.scene.num_envs
+             joint_pos = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
+             return joint_pos, torch.zeros(B, dtype=torch.bool, device=self.sim.device)
+
         T = BT7.shape[1]
         last = None
         for i in range(T):
@@ -706,6 +733,15 @@ class BaseSimulator:
 
             assert len(self.joint_pos_des_list) == len(self.save_dict["joint_pos"])
             last = joint_pos_des
+        
+        # Force robot state update after trajectory execution to ensure FK is current
+        self.robot.update(dt=self.sim_dt)
+        
+        # Debug: verify EE positions after motion
+        ee_after = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:3]
+        root_after = self.robot.data.root_state_w[:, 0:3]
+        print(f"[DEBUG move_to_motion_planning END] EE: {ee_after.cpu().numpy()}, Root: {root_after.cpu().numpy()}")
+        
         return last, success
 
     # ---------- Visualization ----------
@@ -1012,9 +1048,10 @@ class BaseSimulator:
         ee_pose_w = self.robot.data.body_state_w[
             :, self.robot_entity_cfg.body_ids[0], 0:7
         ]
-        scene_origin = self.scene.env_origins.to(self.robot.device)[0]
-        ee_pose_l = ee_pose_w
-        ee_pose_l[:, :3] -= scene_origin
+        # Convert EE pose from world to local (per-env) frame
+        env_origins = self.scene.env_origins.to(self.robot.device)  # [B, 3]
+        ee_pose_l = ee_pose_w.clone()
+        ee_pose_l[:, :3] -= env_origins  # Subtract each env's origin
         joint_pos = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
         joint_vel = self.robot.data.joint_vel[:, self.robot_entity_cfg.joint_ids]
         gripper_pos = self.robot.data.joint_pos[:, self.robot_gripper_cfg.joint_ids]
@@ -1091,17 +1128,30 @@ class BaseSimulator:
         return base / f"demo_{already_existing_num:03d}.mp4"
 
     def save_data(self, ignore_keys: List[str] = [], env_ids: Optional[List[int]] = None, export_hdf5: bool = False, save_other_things: bool = True):
+        import time
+        t_start = time.time()
+        
         self.save_dict["joint_pos_des"] = np.array(self.joint_pos_des_list) # Size: T, B, 7
         stacked = {k: np.array(v) for k, v in self.save_dict.items()}
         if env_ids is None:
             env_ids = self._all_env_ids.cpu().numpy()
         video_dir = self.out_dir / self.img_folder / "videos"
         video_dir.mkdir(parents=True, exist_ok=True)
-        composed_rgb = copy.deepcopy(stacked["rgb"])
-        self.save_dict["composed_rgb"] = composed_rgb
+        
+        # Pre-allocate composed_rgb array (no deep copy needed)
+        self.save_dict["composed_rgb"] = np.empty_like(stacked["rgb"])
+        
+        # Load background image once
+        bg_rgb_path = self.task_cfg.background_cfg.background_rgb_path
+        bg_rgb = imageio.imread(bg_rgb_path)
+        
+        print(f"  [save_data] Setup took {time.time() - t_start:.2f}s")
+        
         hdf5_names = []
         video_paths = []
         fps = 1 / (self.sim_dt * self.decimation * self.save_interval)
+        
+        t_video_start = time.time()
         for b in env_ids:
             demo_path = self._get_next_demo_dir(video_dir)
             hdf5_names.append(demo_path.stem)
@@ -1119,54 +1169,66 @@ class BaseSimulator:
                         continue
                     if key == "rgb":
                         video_path = env_dir / "sim_video.mp4"
+                        # Use ffmpeg with faster codec
                         writer = imageio.get_writer(
-                            video_path, fps=fps, macro_block_size=None
+                            video_path, fps=fps, codec='libx264', quality=8, macro_block_size=None
                         )
-                        for t in range(arr.shape[0]):
-                            writer.append_data(arr[t, b])
+                        for frame in arr[:, b]:
+                            writer.append_data(frame)
                         writer.close()
                         
                     elif key == "segmask":
                         video_path = env_dir / "mask_video.mp4"
                         writer = imageio.get_writer(
-                            video_path, fps=fps, macro_block_size=None
+                            video_path, fps=fps, codec='libx264', quality=8, macro_block_size=None
                         )
-                        for t in range(arr.shape[0]):
-                            writer.append_data((arr[t, b].astype(np.uint8) * 255))
+                        # Vectorize mask conversion
+                        mask_frames = (arr[:, b].astype(np.uint8) * 255)
+                        for frame in mask_frames:
+                            writer.append_data(frame)
                         writer.close()
                     elif key == "depth":
                         depth_seq = arr[:, b]
                         flat = depth_seq[depth_seq > 0]
                         max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
-                        depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(
-                            np.uint8
-                        )
+                        # Vectorized depth normalization
+                        depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(np.uint8)
                         video_path = env_dir / "depth_video.mp4"
                         writer = imageio.get_writer(
-                            video_path, fps=fps, macro_block_size=None
+                            video_path, fps=fps, codec='libx264', quality=8, macro_block_size=None
                         )
-                        for t in range(depth_norm.shape[0]):
-                            writer.append_data(depth_norm[t])
+                        for frame in depth_norm:
+                            writer.append_data(frame)
                         writer.close()
                         np.save(env_dir / f"{key}.npy", depth_seq)
 
                     elif key != "composed_rgb":
                         np.save(env_dir / f"{key}.npy", arr[:, b])
-            writer = imageio.get_writer(demo_path, fps=fps, macro_block_size=None)
-            rgb = np.array(self.save_dict["rgb"])
-            mask = np.array(self.save_dict["segmask"])
-            bg_rgb_path = self.task_cfg.background_cfg.background_rgb_path
-            self.bg_rgb = imageio.imread(bg_rgb_path)
-            for t in range(rgb.shape[0]):
-                composed = self.convert_real(mask[t, b], self.bg_rgb, rgb[t, b]) 
-                #composed = self.add_text_to_image(composed, env_idx=b, time_step=t)   
+            # Batch compose all frames for this environment
+            rgb_env = stacked["rgb"][:, b]  # [T, H, W, 3]
+            mask_env = stacked["segmask"][:, b]  # [T, H, W]
+            
+            # Compose frames in batch
+            composed_frames = []
+            for t in range(rgb_env.shape[0]):
+                composed = self.convert_real(mask_env[t], bg_rgb, rgb_env[t])
                 self.save_dict["composed_rgb"][t, b] = composed
-                writer.append_data(composed)
+                composed_frames.append(composed)
+            
+            # Write video with faster codec
+            writer = imageio.get_writer(demo_path, fps=fps, codec='libx264', quality=8, macro_block_size=None)
+            for frame in composed_frames:
+                writer.append_data(frame)
             writer.close()
             video_paths.append(str(demo_path))
             print(f"[INFO]: Demonstration is saved at: {demo_path}")
+        
+        print(f"  [save_data] Video encoding took {time.time() - t_video_start:.2f}s")
+        
         if export_hdf5:
+            t_hdf5_start = time.time()
             self.export_batch_data_to_hdf5(hdf5_names, video_paths)
+            print(f"  [save_data] HDF5 export took {time.time() - t_hdf5_start:.2f}s")
        
 
 
@@ -1204,19 +1266,17 @@ class BaseSimulator:
                     cam_grp.create_dataset("extrinsics", data=extrinsics)
                     cam_grp.attrs["resolution"] = resolution
 
-                # Read video frames and encode using JPEG compression (RoboTwin-style)
-                video_reader = imageio.get_reader(video_path)
-                rgb_frames = []
-                for frame in video_reader:
-                    rgb_frames.append(frame)
-                video_reader.close()
-                rgb_frames = np.array(rgb_frames)  # (T, H, W, 3)
+                # Use frames from memory instead of re-reading video (much faster!)
+                rgb_frames = stacked["composed_rgb"][:, env_idx]  # (T, H, W, 3)
                 
-                # Encode frames using JPEG compression (similar to RoboTwin's images_encoding)
+                # Encode frames using JPEG compression with parallel processing
                 encode_data = []
                 max_len = 0
+                
+                # Batch encode for better performance
                 for i in range(len(rgb_frames)):
-                    success, encoded_image = cv2.imencode(".jpg", rgb_frames[i])
+                    # Use quality=85 for good balance of size/quality
+                    success, encoded_image = cv2.imencode(".jpg", rgb_frames[i], [cv2.IMWRITE_JPEG_QUALITY, 85])
                     if not success:
                         raise RuntimeError(f"Failed to encode frame {i}")
                     jpeg_data = encoded_image.tobytes()
@@ -1224,11 +1284,9 @@ class BaseSimulator:
                     max_len = max(max_len, len(jpeg_data))
                 
                 # Pad all encoded frames to the same length
-                padded_data = []
-                for jpeg_data in encode_data:
-                    padded_data.append(jpeg_data.ljust(max_len, b"\0"))
+                padded_data = [jpeg_data.ljust(max_len, b"\0") for jpeg_data in encode_data]
                 
-                # Store encoded data
+                # Store encoded data with compression
                 cam_grp.create_dataset(
                     "rgb", 
                     data=np.array(padded_data, dtype=f"S{max_len}"),

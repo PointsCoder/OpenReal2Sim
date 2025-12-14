@@ -113,10 +113,25 @@ class Randomizer(TaskCfg):
                 for robot_pose in robot_poses:
                     # Generate trajectory for manipulated object
                     if self.task_cfg.task_type == TaskType.SIMPLE_PICK:
-                        new_traj_mats = []
+                        # The reference trajectory poses are not guaranteed to be expressed
+                        # relative to a canonical origin; anchor them to the reference start pose.
+                        # This ensures the same transform that maps ref start -> new start also maps
+                        # every waypoint (including the final goal).
+                        ref_mats = []
                         for traj_pose_7d in ref_traj.object_trajectory:
-                            pose_mat = pose_to_mat(np.array(traj_pose_7d[:3]), np.array(traj_pose_7d[3:7]))
-                            new_traj_mats.append(start_pose @ pose_mat)
+                            ref_mats.append(
+                                pose_to_mat(
+                                    np.array(traj_pose_7d[:3]),
+                                    np.array(traj_pose_7d[3:7]),
+                                )
+                            )
+                        ref_mats = np.asarray(ref_mats, dtype=np.float32)
+                        T_ref0_inv = np.linalg.inv(ref_mats[0]).astype(np.float32)
+
+                        new_traj_mats = []
+                        for pose_mat in ref_mats:
+                            rel_mat = (pose_mat @ T_ref0_inv).astype(np.float32)
+                            new_traj_mats.append((start_pose @ rel_mat).astype(np.float32))
                         # Convert back to 7D format
                         new_traj_7d = []
                         for mat in new_traj_mats:
@@ -125,14 +140,24 @@ class Randomizer(TaskCfg):
                         
                         # Transform pregrasp and grasp poses
                         if ref_traj.pregrasp_pose:
-                            pregrasp_mat = start_pose @ pose_to_mat(np.array(ref_traj.pregrasp_pose[:3]), np.array(ref_traj.pregrasp_pose[3:7]))
+                            pre_ref = pose_to_mat(
+                                np.array(ref_traj.pregrasp_pose[:3]),
+                                np.array(ref_traj.pregrasp_pose[3:7]),
+                            ).astype(np.float32)
+                            pre_rel = (pre_ref @ T_ref0_inv).astype(np.float32)
+                            pregrasp_mat = (start_pose @ pre_rel).astype(np.float32)
                             pos, quat = mat_to_pose(pregrasp_mat)
                             pregrasp_pose = np.concatenate([pos, quat]).tolist()
                         else:
                             pregrasp_pose = None
                             
                         if ref_traj.grasp_pose:
-                            grasp_mat = start_pose @ pose_to_mat(np.array(ref_traj.grasp_pose[:3]), np.array(ref_traj.grasp_pose[3:7]))
+                            grasp_ref = pose_to_mat(
+                                np.array(ref_traj.grasp_pose[:3]),
+                                np.array(ref_traj.grasp_pose[3:7]),
+                            ).astype(np.float32)
+                            grasp_rel = (grasp_ref @ T_ref0_inv).astype(np.float32)
+                            grasp_mat = (start_pose @ grasp_rel).astype(np.float32)
                             pos, quat = mat_to_pose(grasp_mat)
                             grasp_pose = np.concatenate([pos, quat]).tolist()
                         else:
@@ -142,15 +167,19 @@ class Randomizer(TaskCfg):
                         ref_traj_mats = []
                         for traj_pose_7d in ref_traj.object_trajectory:
                             ref_traj_mats.append(pose_to_mat(np.array(traj_pose_7d[:3]), np.array(traj_pose_7d[3:7])))
-                        ref_traj_mats = np.array(ref_traj_mats)
+                        ref_traj_mats = np.array(ref_traj_mats, dtype=np.float32)
+
+                        # Anchor reference trajectory to its first pose.
+                        T_ref0_inv = np.linalg.inv(ref_traj_mats[0]).astype(np.float32)
+                        ref_traj_mats_rel = np.matmul(ref_traj_mats, T_ref0_inv)
                         
                         if use_no_interpolation:
-                            new_traj_mats = ref_traj_mats.copy()
-                            new_traj_mats[0] = start_pose @ ref_traj_mats[0]
-                            new_traj_mats[-1] = end_pose @ ref_traj_mats[-1]
+                            new_traj_mats = ref_traj_mats_rel.copy()
+                            new_traj_mats[0] = (start_pose @ ref_traj_mats_rel[0]).astype(np.float32)
+                            new_traj_mats[-1] = (end_pose @ ref_traj_mats_rel[-1]).astype(np.float32)
                         else:
-                            new_traj_mats = self.compute_new_traj(start_pose, end_pose, ref_traj_mats)
-                            new_traj_mats = self.lift_traj(ref_traj_mats, new_traj_mats)
+                            new_traj_mats = self.compute_new_traj(start_pose, end_pose, ref_traj_mats_rel)
+                            new_traj_mats = self.lift_traj(ref_traj_mats_rel, new_traj_mats)
                         # Convert back to 7D format
                         new_traj_7d = []
                         for mat in new_traj_mats:
@@ -159,14 +188,24 @@ class Randomizer(TaskCfg):
                         #new_traj_7d = lift_traj(new_traj_7d)
                         # Transform pregrasp and grasp poses
                         if ref_traj.pregrasp_pose:
-                            pregrasp_mat = start_pose @ pose_to_mat(np.array(ref_traj.pregrasp_pose[:3]), np.array(ref_traj.pregrasp_pose[3:7]))
+                            pre_ref = pose_to_mat(
+                                np.array(ref_traj.pregrasp_pose[:3]),
+                                np.array(ref_traj.pregrasp_pose[3:7]),
+                            ).astype(np.float32)
+                            pre_rel = (pre_ref @ T_ref0_inv).astype(np.float32)
+                            pregrasp_mat = (start_pose @ pre_rel).astype(np.float32)
                             pos, quat = mat_to_pose(pregrasp_mat)
                             pregrasp_pose = np.concatenate([pos, quat]).tolist()
                         else:
                             pregrasp_pose = None
                             
                         if ref_traj.grasp_pose:
-                            grasp_mat = start_pose @ pose_to_mat(np.array(ref_traj.grasp_pose[:3]), np.array(ref_traj.grasp_pose[3:7]))
+                            grasp_ref = pose_to_mat(
+                                np.array(ref_traj.grasp_pose[:3]),
+                                np.array(ref_traj.grasp_pose[3:7]),
+                            ).astype(np.float32)
+                            grasp_rel = (grasp_ref @ T_ref0_inv).astype(np.float32)
+                            grasp_mat = (start_pose @ grasp_rel).astype(np.float32)
                             pos, quat = mat_to_pose(grasp_mat)
                             grasp_pose = np.concatenate([pos, quat]).tolist()
                         else:

@@ -53,7 +53,7 @@ class RandomizeRolloutConfig:
     """Rollout-related knobs (e.g., required number of successful trajectories)."""
 
     total_num: int = 50
-    num_envs: int = 1
+    num_envs: int = 8
     goal_offset: float = 0.03
 
 
