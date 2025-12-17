@@ -252,7 +252,7 @@ def demo_motion_process(keys, key_scene_dicts, key_cfgs):
         manipulated_trajs = np.load(manipulated_trajs_path)
         object_masks = build_mask_array(int(max_placement_oid), scene_dict)
         hand_masks = scene_dict["motion"]["hand_masks"]
-        first_frame = scene_dict["info"]["start_frame_idx"]
+        first_frame = 0
         first_frame = refine_first_frame(hand_masks, object_masks, first_frame)
         end_frame = refine_end_frame(hand_masks, object_masks)
         print(f"End frame: {end_frame}")
