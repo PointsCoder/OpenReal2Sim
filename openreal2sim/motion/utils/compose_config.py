@@ -1,13 +1,14 @@
 
 default_config = {
     "gpu": "0",
-    "rescore_strategy": "point_only",
     "n_points": 5000,
     "keep": None,
-    "nms": True,
     "overwrite": False,
     "vis_pts_per_gripper": 400,
-    "affordance_erosion_pixel": 5
+    "affordance_erosion_pixel": 5,
+    "traj_key": None,
+    "manipulated_oid": None,
+    "overwrite": True,
 }
 
 def compose_configs(key_name: str, config: dict) -> dict:

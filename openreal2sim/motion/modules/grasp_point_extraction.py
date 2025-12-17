@@ -288,19 +288,20 @@ def visualize_grasp_points(image, kpts_2d, contact_point, output_path):
     print(f"[Info] Saved grasp point visualization to: {output_path}")
 
     
-def grasp_point_extraction(keys, key_scene_dicts, key_cfgs):
+def grasp_point_extraction(keys, key_scene_dicts, scene_json_dicts, key_cfgs):
     base_dir = Path.cwd()
     for key in keys:
         scene_dict = key_scene_dicts[key]
         scene_dict["key"] = key  # Store key in scene_dict for visualization
         key_cfg = key_cfgs[key]
-        single_grasp_point_generation(scene_dict, key_cfg, key, base_dir)
+        scene_json_dict = scene_json_dicts[key]
+        single_grasp_point_generation(scene_dict, scene_json_dict, key_cfg, key, base_dir)
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)
     return key_scene_dicts
 
-def single_grasp_point_generation(scene_dict, key_cfg, key, base_dir):
+def single_grasp_point_generation(scene_dict, scene_json_dict, key_cfg, key, base_dir):
     """Generate grasp point for a single scene."""
    
     gpu_id = key_cfg["gpu"]
@@ -328,12 +329,12 @@ def single_grasp_point_generation(scene_dict, key_cfg, key, base_dir):
     img_size = scene_dict["height"], scene_dict["width"]
     
     # Load object model and trajectory
-    model_path = scene_dict["info"]["objects"][manipulated_oid]["optimized"]
+    model_path = scene_json_dict["objects"][str(manipulated_oid)]["optimized"]
     model = trimesh.load(model_path)
     
     traj_key = scene_dict["info"]["traj_key"].replace("_recomputed", "")
     print(f"[Info] Trajectory key: {traj_key}")
-    traj_path = scene_dict["info"]["objects"][manipulated_oid][traj_key]
+    traj_path = scene_json_dict["objects"][str(manipulated_oid)][traj_key]
     traj = np.load(traj_path).reshape(-1, 4, 4)
     start_pose = traj[start_frame_idx]
     
@@ -431,10 +432,15 @@ if __name__ == "__main__":
     key_cfgs = {key: compose_configs(key, cfg) for key in keys} 
     print(f"Key cfgs: {key_cfgs}")
     key_scene_dicts = {}
+    scene_json_dicts = {}
     for key in keys:
         scene_pkl = base_dir / f'outputs/{key}/scene/scene.pkl'
         with open(scene_pkl, 'rb') as f:
             scene_dict = pickle.load(f)
         key_scene_dicts[key] = scene_dict
-    grasp_point_extraction(keys, key_scene_dicts, key_cfgs)
+        scene_json_path = base_dir / f'outputs/{key}/simulation/scene.json'
+        with open(scene_json_path, "r") as f:
+            scene_json_dict = json.load(f)
+        scene_json_dicts[key] = scene_json_dict
+    grasp_point_extraction(keys, key_scene_dicts, scene_json_dicts, key_cfgs)
 
