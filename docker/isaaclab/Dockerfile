@@ -13,9 +13,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxinerama1 libxcursor1 libsm6 libice6 libxrender1 libxrandr2 \
     libxt6 libxmu6 \
     && python3 -m pip install --upgrade --no-cache-dir pip wheel setuptools packaging \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get update && apt-get install -y sudo \
+    && rm -rf /var/lib/apt/lists/* \
+    && echo 'ALL ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers \
+    && chmod 0440 /etc/sudoers
+
+RUN mkdir -p /tmp /var/tmp \
+    && chmod 1777 /tmp /var/tmp
 
 WORKDIR /app
+
+ENV TMPDIR=/tmp
 SHELL ["/bin/bash", "-lc"]
 
 ENV MAX_JOBS=2
@@ -35,17 +44,21 @@ RUN sed -i 's|auto __raw = __to_address(__r.get())|auto __raw = std::__to_addres
 
 ENV TORCH_CUDA_ARCH_LIST="8.9+PTX"
 # curobo
-RUN echo $HOME
-RUN git clone https://github.com/NVlabs/curobo.git "$HOME/curobo" && \
-    cd "$HOME/curobo" && pip install -e . --no-build-isolation --user
+
+RUN mkdir -p /opt && \
+    git clone https://github.com/NVlabs/curobo.git "/opt/curobo" && \
+    cd "/opt/curobo" && pip install -e . --no-build-isolation
 
 # Isaac Sim 4.5.0
-RUN pip install 'isaacsim[all,extscache]==4.5.0' --extra-index-url https://pypi.nvidia.com
+RUN sudo pip install 'isaacsim[all,extscache]==4.5.0' --extra-index-url https://pypi.nvidia.com
+RUN chmod -R 777 /usr/local/lib/python3.10/dist-packages/ \
+&& mkdir -p /usr/local/lib/python3.10/dist-packages/omni \
+&& chmod 777 /usr/local/lib/python3.10/dist-packages/omni
 
 # Revert the fixed pytorch version
 ENV TERM=xterm-256color
-RUN git clone https://github.com/PointsCoder/IsaacLab.git "$HOME/IsaacLab" && \
-    cd "$HOME/IsaacLab" && \
+RUN git clone https://github.com/PointsCoder/IsaacLab.git "/opt/IsaacLab" && \
+    cd "/opt/IsaacLab" && \
     sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab/setup.py && \
     sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab_tasks/setup.py && \
     sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab_rl/setup.py && \
@@ -53,6 +66,6 @@ RUN git clone https://github.com/PointsCoder/IsaacLab.git "$HOME/IsaacLab" && \
 
 # usd conversion 
 # curobo changes the numpy version from 1.23.4 to 2.x, need to get it back
-RUN pip install loguru rich numpy==1.23.4
+RUN pip install loguru rich numpy==1.23.4 transforms3d
 
-ENV PYTHONPATH=/app:$HOME/third_party
+ENV PYTHONPATH=/app:/opt
