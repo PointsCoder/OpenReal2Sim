@@ -18,6 +18,7 @@ services:
       - USER=dev
       - VSCODE_SERVER_DIR=/tmp/.vscode-server
       - NUMBA_CACHE_DIR=/tmp/numba_cache
+      - TORCH_EXTENSIONS_DIR=/tmp/.cache/torch_extensions
     working_dir: /app
     volumes:
       - /etc/passwd:/etc/passwd:ro
@@ -28,7 +29,8 @@ services:
       - ${HF_HOME:-~/.cache/huggingface}:/tmp/.cache/huggingface
       - ${HY3DGEN_MODELS:-~/.cache/hy3dgen}:/tmp/.cache/hy3dgen
       - ~/.cache/warp:/tmp/.cache/warp
-      - ~/.cache/torch_extensions:/tmp/.cache/torch_extensions
+      # Use container's own torch_extensions cache to avoid permission issues
+      # - ~/.cache/torch_extensions:/tmp/.cache/torch_extensions
       - ~/.cache/matplotlib:/tmp/.cache/matplotlib
     stdin_open: true
     user: "${HOST_UID}:${HOST_GID}"
@@ -50,11 +52,16 @@ services:
               capabilities: [ gpu ]
     working_dir: /app
     volumes:
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+      - ${HOME}:${HOME}
       - ../:/app
       - /tmp/.X11-unix:/tmp/.X11-unix:rw # forward X11 socket
       - ${XAUTHORITY:-$HOME/.Xauthority}:/home/isaac/.Xauthority:ro # X auth cookie
       - /dev:/dev # add: expose input/gpu devices if needed
     environment:
+      - HOME=/tmp
+      - USER=dev
       - DISPLAY=${DISPLAY} # add: pass host DISPLAY
       - XAUTHORITY=/home/isaac/.Xauthority # add: where the cookie is mounted in container
       - QT_X11_NO_MITSHM=1 # add: avoid MIT-SHM issues for GUI apps

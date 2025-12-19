@@ -168,7 +168,7 @@ run_stage() {
 
   case "${stage}" in
     usd_conversion)
-      python openreal2sim/simulation/isaaclab/sim_preprocess/usd_conversion.py --key "${key}" \
+      python openreal2sim/simulation/isaaclab/demo/sim_utils_demo/usd_conversion.py \
       ;;
     sim_heuristic_manip)
       echo "Setting CUDA_VISIBLE_DEVICES to ${CUDA_VISIBLE_DEVICES}"

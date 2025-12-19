@@ -32,7 +32,7 @@ class SimulationConfig:
     """Configuration for the simulation."""
 
     save_interval: int = 1
-    decimation: int = 3
+    decimation: int = 3  ## This is actually used for changing control frequency.
     physics_freq: int = 100
    
 
@@ -41,12 +41,12 @@ class HeuristicConfig:
     """Configuration for the heuristic manipulation stage."""
 
     num_envs: int = 1
-    num_trials: int = 4
-    grasps_use: int = 50
-    grasp_num: int = 1
+    num_trials: int = 4  # Number of rolls of rebasing the robot for all the grasp trials.
+    grasps_use: int = 50 # Number of grasps to use for each object.
+    grasp_num: int = 1 # Number of grasps to collect for each object.
     robot: str = "franka"
-    goal_offset: float = 0.03
-    grasp_delta: float = -0.003
+    goal_offset: float = 0.03 # We lift the object by this height at the beginning of every traj.
+    grasp_delta: float = -0.003 # negative means moving more shallow on the grasping approach axis.
 
 
 
