@@ -66,6 +66,6 @@ RUN git clone https://github.com/PointsCoder/IsaacLab.git "/opt/IsaacLab" && \
 
 # usd conversion 
 # curobo changes the numpy version from 1.23.4 to 2.x, need to get it back
-RUN pip install loguru rich numpy==1.23.4 transforms3d
+RUN pip install loguru rich numpy==1.23.4 transforms3d gradio
 
 ENV PYTHONPATH=/app:/opt
