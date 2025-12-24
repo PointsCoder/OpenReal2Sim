@@ -63,14 +63,9 @@ Each module can be run independently, but `motion_manager.py` provides a stage-a
 ### 4. Grasp Proposal Generation
 `modules/grasp_generation.py`
 
-- Samples dense surface points per object, runs **GraspNet** to produce grasp candidates, and optionally applies NMS + score truncation.
-- Saves raw `.npy` proposals & `.ply` visualizations under `outputs/<key>/grasps/`.
-- For the manipulated object, rescores grasps using the contact point/direction hints and writes both `grasps` and `rescored_grasps` paths into `scene.json`.
-- There are three strategies to rescore grasps:
-    - `default`: use the z-align strategy to rescore grasps.
-    - `point_only`: only use the contact point to rescore grasps.
-    - `point_and_direction`: use both the contact point and the approach direction to rescore grasps.
-
+- Samples dense surface points per object, runs **GraspGen** to produce grasp candidates, and optionally applies NMS + score truncation.
+- Saves raw `.npz` proposals & `.ply` visualizations under `outputs/<key>/grasps/`.
+- We have moved rescoring to the grasps to the simulator due to difference in sim pose and recon pose for objects.
 ---
 
 ## How to Use
@@ -79,8 +74,7 @@ Each module can be run independently, but `motion_manager.py` provides a stage-a
    - Run preprocess + reconstruction so that `outputs/<key>/scene/scene.pkl` and `simulation/scene.json` exist.
    - Ensure third-party weights are in place:
      - `third_party/WiLoR/pretrained_models` and `third_party/WiLoR/mano_data/MANO_RIGHT.pkl` 
-     - `third_party/Grounded-SAM-2/checkpoints`
-     - GraspNet checkpoints 
+     - GraspGen checkpoints 
 
 2. **All-in-one pipeline**
 
@@ -120,11 +114,11 @@ Per key, after running the pipeline you should find:
 - `outputs/<key>/scene/scene.pkl`
   - `motion.hand_kpts`: `[N,21,2]` MANO keypoints (image plane)
   - `motion.hand_global_orient`: rotation matrices per frame
-  - `motion.hand_masks`: binary hand silhouettes
+  - `motion.hand_masks`: binary hand silhouettes (bbox)
 - `outputs/<key>/simulation/scene.json`
   - `manipulated_oid`, `traj_key`, `start_frame_idx`, `task_type`, `start_related`, `end_related`, `gripper_closed`
   - `objects[oid].final_trajs`, 
-  - `objects[manipulated_oid].grasp_point`, `grasp_direction`, `grasps`, `rescored_grasps`
+  - `objects[manipulated_oid].grasp_point`, `grasp_direction`, `grasps`
 - `outputs/<key>/motion/scene_end.glb`: fused background + final manipulated mesh.
 - `outputs/<key>/grasps/*.npy`: raw GraspNet candidates per object.
 - `outputs/<key>/simulation/debug/grasp_point_visualization_*.png`: sanity-check renders.

@@ -131,7 +131,7 @@ def build_mask_array(
 
 
 
-def downsample_traj(trajectory, trans_threshold=0.05, rot_threshold=np.radians(20)):
+def downsample_traj(trajectory, trans_threshold=0.05, rot_threshold=np.radians(20), num_frames=7):
     """
     Downsample pose trajectory where each element is a 4x4 transformation matrix (SE3).
     Retains keyframes with sufficient translation or rotation from the previous kept frame.
@@ -156,32 +156,31 @@ def downsample_traj(trajectory, trans_threshold=0.05, rot_threshold=np.radians(2
         elif trans_dist > 0.1 * trans_threshold or angle > 0.1 * rot_threshold:
             downsampled_indices[-1] = len(trajectory) - 1
 
+    if len(downsampled_indices) > num_frames:
+        interval = len(downsampled_indices) // num_frames
+        downsampled_indices = downsampled_indices[::interval]
     return downsampled_indices
 
 def refine_first_frame(hand_masks, object_masks, first_frame):
     N = min(len(hand_masks), len(object_masks))
-    kernel = np.ones((10, 10), np.uint8)
     for i in range(first_frame, N):
         if hand_masks[i] is None:
             continue
         hand_mask = hand_masks[i].astype(np.uint8)
         obj_mask = object_masks[i].astype(np.uint8)
-        obj_mask_dilated = cv2.dilate(obj_mask, kernel, iterations=1)
-        overlap = (hand_mask & obj_mask_dilated).sum()
+        overlap = (hand_mask & obj_mask).sum()
         if overlap > 0:
             return i
     return first_frame
 
 def refine_end_frame(hand_masks, object_masks):
     N = min(len(hand_masks), len(object_masks))
-    kernel = np.ones((10, 10), np.uint8)
     for i in range(N-1, -1, -1):
         if hand_masks[i] is None:
             continue
         hand_mask = hand_masks[i].astype(np.uint8)
         obj_mask = object_masks[i].astype(np.uint8)
-        obj_mask_dilated = cv2.dilate(obj_mask, kernel, iterations=1)
-        overlap = (hand_mask & obj_mask_dilated).sum()
+        overlap = (hand_mask & obj_mask).sum()
         if overlap > 0:
             return i + 1
     return 0                 
@@ -220,6 +219,9 @@ def demo_motion_process(keys, key_scene_dicts, key_cfgs):
                 max_placement_oid = obj_id
             scene_json_dict["objects"][obj_id]["type"] = "static"  
             placement_distances[obj_id] = abs_distance
+
+        if key_cfg["manipulated_oid"] is not None:
+            max_placement_oid = key_cfg["manipulated_oid"]
         scene_json_dict["manipulated_oid"] = max_placement_oid
         scene_dict["info"]["manipulated_oid"] = max_placement_oid
         name = scene_json_dict["objects"][max_placement_oid]["name"]
@@ -245,6 +247,9 @@ def demo_motion_process(keys, key_scene_dicts, key_cfgs):
         else:
             if max_fd_distance > 0.05:
                 traj_key = 'hybrid_trajs_recomputed'
+      
+        if key_cfg["traj_key"] is not None:
+            traj_key = key_cfg["traj_key"]
         print(f"Traj key: {traj_key}")
         scene_json_dict["traj_key"] = traj_key
         scene_dict["info"]["traj_key"] = traj_key
@@ -273,7 +278,7 @@ def demo_motion_process(keys, key_scene_dicts, key_cfgs):
         
         trajs = manipulated_trajs[first_frame:end_frame]
 
-        downsampled_indices = downsample_traj(trajs, trans_threshold=0.03, rot_threshold=np.radians(20))
+        downsampled_indices = downsample_traj(trajs, trans_threshold=0.03, rot_threshold=np.radians(20), num_frames=key_cfg["num_frames"])
         clean_downsampled_indices = [0]
         for i in downsampled_indices[1:]:
             clean_downsampled_indices.append(i + first_frame)
