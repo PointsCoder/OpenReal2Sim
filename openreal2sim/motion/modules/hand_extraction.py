@@ -29,22 +29,18 @@ class WiLoRExtractor:
                  model_path: str,
                  cfg_path: str,
                  yolo_weights_path: str,
-                 sam_weights_path: str,
-                 sam_cfg_path: str,
                  device: str):
         self._wilor_model, self._wilor_cfg = load_wilor(model_path, cfg_path)
         self._wilor_model.eval()
         self._yolo_detector = YOLO(yolo_weights_path)
         self.device = torch.device(device)
-        self._sam_predictor = SAM2ImagePredictor(build_sam2(sam_cfg_path, sam_weights_path))
-        
+      
     def process(self, images: np.ndarray, batch_size: int = 16, rescale_factor: float = 1.0):
         boxes = []
         right = []
         masks = []
         self._wilor_model.to(self.device)
         self._yolo_detector.to(self.device)
-        self._sam_predictor.model.to(self.device)
         self._wilor_model.eval()
 
         all_global_orient = []
@@ -65,15 +61,19 @@ class WiLoRExtractor:
                     det = max(detections, key=lambda d: d.boxes.conf.cpu().detach().item())
                     Bbox = det.boxes.data.cpu().detach().squeeze().numpy()
                     cls_flag = det.boxes.cls.cpu().detach().squeeze().item()
-                    
-                    self._sam_predictor.set_image(batch)
-                    hand_masks, scores, logits = self._sam_predictor.predict(
-                        point_coords=None,
-                        point_labels=None,
-                        box=np.array([[Bbox[0], Bbox[1], Bbox[2], Bbox[3]]]),
-                        multimask_output=False
-                    )
-                    hand_masks = hand_masks[0]
+                      
+                    # Generate a mask using the bounding box coordinates (Bbox[:4])
+                    # Assumes 'batch' is an image of shape (H, W, C)
+                    H, W = batch.shape[:2]
+                    x1, y1, x2, y2 = map(int, Bbox[:4])
+                    mask = np.zeros((H, W), dtype=bool)
+                    # Clamp coordinates to image size
+                    x1 = max(0, min(x1, W - 1))
+                    x2 = max(0, min(x2, W - 1))
+                    y1 = max(0, min(y1, H - 1))
+                    y2 = max(0, min(y2, H - 1))
+                    mask[y1:y2, x1:x2] = True
+                    hand_masks = mask
                     hand_masks = hand_masks.astype(bool)
                     dataset = ViTDetDataset(self._wilor_cfg, batch, np.array([Bbox[:4]]), np.array([cls_flag]), rescale_factor=rescale_factor)
                     dataloader = torch.utils.data.DataLoader(dataset, batch_size=16, shuffle=False, num_workers=0)
@@ -105,8 +105,6 @@ class WiLoRExtractor:
 
 
 
-
-
     def project_full_img(self, points, cam_trans, focal_length, img_res):
         ''' we use simple K here. It works.'''
         if not isinstance(points, torch.Tensor):
@@ -132,23 +130,18 @@ class WiLoRExtractor:
 
 
 
-
-
-
 def hand_extraction(keys, key_scene_dicts, key_cfgs):
     base_dir = Path.cwd()
     model_path = base_dir / "third_party" / "WiLoR" / "pretrained_models" / "wilor_final.ckpt"
     cfg_path = base_dir / "third_party" / "WiLoR" / "pretrained_models" / "model_config.yaml"
     yolo_weights_path = base_dir / "third_party" / "WiLoR" / "pretrained_models" / "detector.pt"
-    sam_cfg_path = "configs/sam2.1/sam2.1_hiera_l.yaml"
-    sam_weights_path = "third_party/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt"
-    
+
     for key in keys:
         scene_dict = key_scene_dicts[key]
         config = key_cfgs[key]
         gpu_id = config['gpu']
         device = f"cuda:{gpu_id}"
-        wilor_extractor = WiLoRExtractor(model_path=model_path, cfg_path=cfg_path, yolo_weights_path=yolo_weights_path, sam_weights_path=sam_weights_path, sam_cfg_path=sam_cfg_path, device=device)
+        wilor_extractor = WiLoRExtractor(model_path=model_path, cfg_path=cfg_path, yolo_weights_path=yolo_weights_path, device=device)
         images = scene_dict["images"].astype(np.float32)
         print(f"[Info] Extracting hands for key: {key}")
         kpts, global_orient, masks, has_hand = wilor_extractor.process(images)

@@ -1,391 +1,214 @@
+# Source Generated with Decompyle++
+# File: grasp_utils.cpython-310.pyc (Python 3.10)
+
 import os
 import sys
 import numpy as np
 import time
 import torch
-from typing import List
-import open3d as o3d
-from graspnetAPI.grasp import GraspGroup
+from typing import List, Tuple, Optional
 from pathlib import Path
 base_dir = Path.cwd()
-from graspness_unofficial.models.graspnet import GraspNet, pred_decode
-from graspness_unofficial.dataset.graspnet_dataset import minkowski_collate_fn
-from graspness_unofficial.utils.collision_detector import ModelFreeCollisionDetector
-from graspness_unofficial.utils.data_utils import CameraInfo, create_point_cloud_from_depth_image, get_workspace_mask
-from scipy.spatial.transform import Rotation as R
-import trimesh
-grasp_cfgs = {
-    "save_files": False,
-    "checkpoint_path": base_dir / "third_party" / "graspness_unofficial" / "ckpt" / "minkuresunet_kinect.tar", #hardcode path
-    "seed_feat_dim": 512,
-    "camera": "kinect",
-    "num_point": 80000,
-    "batch_size": 1,
-    "voxel_size": 0.001, # 0.005
-    "collision_thresh": 0.00001,
-    "voxel_size_cd": 0.01, # 0.01
-    "infer": True,
-}
+sys.path.append(str(base_dir / 'third_party' / 'GraspGen'))
 
-def my_worker_init_fn(worker_id):
-    np.random.seed(np.random.get_state()[1][0] + worker_id)
-    pass
-
-class MyGraspNet():
-    def __init__(self):
-        cfgs = grasp_cfgs
-        self.cfgs = cfgs
-        self.net = GraspNet(seed_feat_dim=cfgs["seed_feat_dim"], is_training=False)
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.net.to(self.device)
-        # Load checkpoint
-        checkpoint = torch.load(cfgs["checkpoint_path"])
-        self.net.load_state_dict(checkpoint['model_state_dict'])
-        start_epoch = checkpoint['epoch']
-        print("-> loaded checkpoint %s (epoch: %d)" % (cfgs["checkpoint_path"], start_epoch))
-
-        self.net.eval()
-
-    def inference(self, pcs):
-
-        data_dict = {'point_clouds': pcs.astype(np.float32),
-                    'coors': pcs.astype(np.float32) / self.cfgs["voxel_size"],
-                    'feats': np.ones_like(pcs).astype(np.float32)}
-        batch_data = minkowski_collate_fn([data_dict])
-        tic = time.time()
-        for key in batch_data:
-            if 'list' in key:
-                for i in range(len(batch_data[key])):
-                    for j in range(len(batch_data[key][i])):
-                        batch_data[key][i][j] = batch_data[key][i][j].to(self.device)
+class MyGraspGen:
+    '''
+    Wrapper class for GraspGen that provides a simple interface for grasp generation.
+    Uses GraspGen for grasp generation, returning native GraspGen format (4x4 transforms + confidence).
+    '''
+    
+    def __init__(self, gripper_config=None, filter_collisions=False, collision_threshold=0.002, num_grasps_per_object=None):
+        '''
+        Initialize GraspGen sampler.
+        
+        Args:
+            gripper_config: Path to gripper configuration YAML file. If None, will try to find default.
+            filter_collisions: Whether to filter grasps based on collision detection
+            collision_threshold: Distance threshold for collision detection (in meters)
+            num_grasps_per_object: Number of grasps to generate per object. If None, uses value from config.
+        '''
+        from grasp_gen.grasp_server import GraspGenSampler, load_grasp_cfg
+        from grasp_gen.robot import get_gripper_info
+        
+        # Load grasp configuration
+        # Note: load_grasp_cfg expects a full GraspGen model config file, not just a gripper config
+        if gripper_config is None:
+            # Try to find default full model config (not just gripper config)
+            default_config_path = base_dir / 'third_party' / 'GraspGen' / 'GraspGenModels' / 'checkpoints' / 'graspgen_franka_panda.yml'
+            if default_config_path.exists():
+                gripper_config = str(default_config_path)
             else:
-                batch_data[key] = batch_data[key].to(self.device)
+                raise ValueError("gripper_config must be provided if no default config found")
+        
+        grasp_cfg = load_grasp_cfg(gripper_config)
+        
+        # Override num_grasps_per_object if provided
+        if num_grasps_per_object is not None:
+            grasp_cfg.diffusion.num_grasps_per_object = num_grasps_per_object
+        
+        # Initialize GraspGen sampler
+        self.grasp_sampler = GraspGenSampler(grasp_cfg)
+        
+        # Get gripper info for collision detection
+        gripper_name = grasp_cfg.data.gripper_name
+        gripper_info = get_gripper_info(gripper_name)
+        
+        # Store collision detection settings
+        self.filter_collisions = filter_collisions
+        self.collision_threshold = collision_threshold
+        # Always load collision mesh, but only use it if filter_collisions is True
+        self.gripper_collision_mesh = gripper_info.collision_mesh
 
-        # Forward pass
-        with torch.no_grad():
-            end_points = self.net(batch_data)
-            grasp_preds = pred_decode(end_points)
-
-        preds = grasp_preds[0].detach().cpu().numpy()
-        gg = GraspGroup(preds)
-
-        # collision detection
-        if self.cfgs["collision_thresh"] > 0:
-            cloud = data_dict['point_clouds']
-            mfcdetector = ModelFreeCollisionDetector(cloud, voxel_size=self.cfgs["voxel_size_cd"])
-            collision_mask = mfcdetector.detect(gg, approach_dist=0.05, collision_thresh=self.cfgs["collision_thresh"])
-            gg = gg[~collision_mask]
-
-        toc = time.time()
-        # print('inference time: %fs' % (toc - tic))
-        return gg
-
-def inference(cfgs, data_input):
-    batch_data = minkowski_collate_fn([data_input])
-    net = GraspNet(seed_feat_dim=cfgs["seed_feat_dim"], is_training=False)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    net.to(device)
-
-    # Load checkpoint
-    checkpoint = torch.load(cfgs["checkpoint_path"])
-    net.load_state_dict(checkpoint['model_state_dict'])
-    start_epoch = checkpoint['epoch']
-    print("-> loaded checkpoint %s (epoch: %d)" % (cfgs["checkpoint_path"], start_epoch))
-
-    net.eval()
-    tic = time.time()
-
-    for key in batch_data:
-        if 'list' in key:
-            for i in range(len(batch_data[key])):
-                for j in range(len(batch_data[key][i])):
-                    batch_data[key][i][j] = batch_data[key][i][j].to(device)
-        else:
-            batch_data[key] = batch_data[key].to(device)
-
-    # Forward pass
-    with torch.no_grad():
-        end_points = net(batch_data)
-        grasp_preds = pred_decode(end_points)
-
-    preds = grasp_preds[0].detach().cpu().numpy()
-    gg = GraspGroup(preds)
-    # collision detection
-    if cfgs["collision_thresh"] > 0:
-        cloud = data_input['point_clouds']
-        mfcdetector = ModelFreeCollisionDetector(cloud, voxel_size=cfgs["voxel_size_cd"])
-        collision_mask = mfcdetector.detect(gg, approach_dist=0.05, collision_thresh=cfgs["collision_thresh"])
-        gg = gg[~collision_mask]
-
-    toc = time.time()
-    # print('inference time: %fs' % (toc - tic))
-    return gg
-
-def pointcloud_to_grasp(cfgs, pcs):
-    data_dict = {'point_clouds': pcs.astype(np.float32),
-                'coors': pcs.astype(np.float32) / cfgs["voxel_size"],
-                'feats': np.ones_like(pcs).astype(np.float32)}
-    gg = inference(cfgs, data_dict)
-    return gg
-
-def vis_grasp(pcs, gg):
-    gg = gg.nms()
-    gg = gg.sort_by_score()
-    keep = 1
-    if gg.__len__() > keep:
-        gg = gg[:keep]
-    grippers = gg.to_open3d_geometry_list()
-    cloud = o3d.geometry.PointCloud()
-    cloud.points = o3d.utility.Vector3dVector(pcs.astype(np.float32))
-    o3d.visualization.draw_geometries([cloud, *grippers])
-
-def grasp_to_pointcloud(grippers, gripper_points=1000, gripper_color=[1, 0, 0]):
-    grippers_pcd = o3d.geometry.PointCloud()
-    for gripper in grippers:
-        g_pcd = gripper.sample_points_uniformly(gripper_points)
-        grippers_pcd += g_pcd
-    grippers_pcd.colors = o3d.utility.Vector3dVector(np.tile(np.array([gripper_color]), (len(grippers_pcd.points), 1)))
-    return grippers_pcd
+    
+    def inference(self, pcs, num_grasps=10000, grasp_threshold=-1, scene_mesh_path=None):
+        '''
+        Run grasp generation inference on point cloud.
+        
+        Args:
+            pcs: Point cloud array of shape (N, 3) - object point cloud
+            num_grasps: Number of grasps to generate
+            grasp_threshold: Threshold for valid grasps. If -1.0, returns top grasps.
+            scene_mesh_path: Optional path to scene mesh file for collision detection (if filter_collisions=True)
+        
+        Returns:
+            grasps: Array of shape (M, 4, 4) containing grasp poses as 4x4 transformation matrices
+            scores: Array of shape (M,) containing grasp confidence scores
+        '''
+        from grasp_gen.grasp_server import GraspGenSampler
+        topk_num_grasps = 10000 if grasp_threshold == -1 else -1
+        (grasps_tensor, grasp_conf_tensor) = GraspGenSampler.run_inference(pcs, self.grasp_sampler, grasp_threshold=grasp_threshold, num_grasps=num_grasps, topk_num_grasps=topk_num_grasps, remove_outliers=True)
+        if len(grasps_tensor) == 0:
+            return (np.array([]).reshape(0, 4, 4), np.array([]))
+        grasps_np = grasps_tensor.cpu().numpy()
+        grasp_conf_np = grasp_conf_tensor.cpu().numpy()
+        grasps_np[:, 3, 3] = 1
+        if self.filter_collisions and self.gripper_collision_mesh is not None:
+            if scene_mesh_path is not None and os.path.exists(scene_mesh_path):
+                import trimesh
+                from grasp_gen.dataset.eval_utils import check_collision
+                scene_mesh = trimesh.load(scene_mesh_path, force='mesh')
+                if isinstance(scene_mesh, trimesh.Scene):
+                    scene_mesh = scene_mesh.dump(concatenate=True)
+                collision_mask = check_collision(scene_mesh=scene_mesh, object_mesh=self.gripper_collision_mesh, transforms=grasps_np)
+                collision_free_mask = ~collision_mask
+                grasps_np = grasps_np[collision_free_mask]
+                grasp_conf_np = grasp_conf_np[collision_free_mask]
+                print(f'''[Collision] Using scene mesh: {scene_mesh_path}''')
+                print(f'''[Collision] Filtered to {len(grasps_np)}/{len(collision_mask)} collision-free grasps''')
+                return (grasps_np, grasp_conf_np)
+            if scene_mesh_path is not None:
+                print(f'''[WARN] Scene mesh not found: {scene_mesh_path}, falling back to point cloud collision detection''')
+            from grasp_gen.utils.point_cloud_utils import filter_colliding_grasps
+            collision_free_mask = filter_colliding_grasps(scene_pc=pcs, grasp_poses=grasps_np, gripper_collision_mesh=self.gripper_collision_mesh, collision_threshold=self.collision_threshold)
+            grasps_np = grasps_np[collision_free_mask]
+            grasp_conf_np = grasp_conf_np[collision_free_mask]
+            print(f'''[Collision] Using point cloud, filtered to {len(grasps_np)}/{len(collision_free_mask)} collision-free grasps''')
+        return (grasps_np, grasp_conf_np)
 
 
-def vis_save_grasp(points, gg, best_grasp, save_path, colors=None, grasp_position=None, place_position=None):
-    # visualize grasp pos, place pos, grasp poses, and pcd
-    cloud = o3d.geometry.PointCloud()
-    cloud.points = o3d.utility.Vector3dVector(points.astype(np.float32))
 
-    if colors is None:
-        cloud.colors = o3d.utility.Vector3dVector(np.tile(np.array([[0, 1, 0]]), (len(cloud.points), 1)))
-    elif isinstance(colors, np.ndarray):
-        cloud.colors = o3d.utility.Vector3dVector(colors.astype(np.float32))
-    elif isinstance(colors, list):
-        cloud.colors = o3d.utility.Vector3dVector(np.tile(np.array([colors]), (len(cloud.points), 1)))
-
-    if type(gg) == GraspGroup:
-        pcd_w_grasp = grasp_to_pointcloud(gg.to_open3d_geometry_list())
-    else:
-        pcd_w_grasp = grasp_to_pointcloud([gg.to_open3d_geometry()])
-
-    pcd_best_grasp = grasp_to_pointcloud([best_grasp.to_open3d_geometry()], gripper_color=[0, 0, 1])
-    pcd_w_grasp += pcd_best_grasp
-
-    if grasp_position is not None and place_position is not None:
-        pick_pcd = o3d.geometry.PointCloud()
-        place_pcd = o3d.geometry.PointCloud()
-        pick_pcd.points = o3d.utility.Vector3dVector(np.array(grasp_position).reshape(1,3).astype(np.float32))
-        place_pcd.points = o3d.utility.Vector3dVector(np.array(place_position).reshape(1,3).astype(np.float32))
-        pick_pcd.colors = place_pcd.colors = o3d.utility.Vector3dVector(np.array([[0,0,1]]).astype(np.float32))
-        pcd_w_grasp = pcd_w_grasp + pick_pcd + place_pcd
-
-    pcd_w_grasp += cloud
-
-    o3d.io.write_point_cloud(save_path, pcd_w_grasp)
-
-def get_pose_from_grasp(best_grasp):
-    grasp_position = best_grasp.translation
-    # convert rotation to isaacgym convention
-    delta_m = np.array([[0, 0, 1], [0, -1, 0], [1, 0, 0]])
-    rotation = np.dot(best_grasp.rotation_matrix, delta_m)
-    quaternion_grasp = R.from_matrix(rotation).as_quat()
-    quaternion_grasp = np.array([quaternion_grasp[3],quaternion_grasp[0],quaternion_grasp[1],quaternion_grasp[2]])
-    rotation_unit_vect = rotation[:,2]
-    # grasp_position -= 0.03 * rotation_unit_vect
-    return grasp_position, quaternion_grasp, rotation_unit_vect
-
-def get_best_grasp(gg, position, max_dis=0.05):
-    # get best grasp pose around the grasp position
-    best_grasp = None
-    for g in gg:
-        if np.linalg.norm(g.translation - position) < max_dis:
-            if best_grasp is None:
-                best_grasp = g
-            else:
-                if g.score > best_grasp.score:
-                    best_grasp = g
-    if best_grasp is None:
-        best_grasp = gg[0]
-    return best_grasp
-
-def get_best_grasp_z_aligned(gg):
-    # get best grasp pose that is facing the -z axis (for top-down grasping)
-    best_grasp = None
-    best_angle = np.inf
-
-    gravity_direction = np.array([0, 0, -1])  # -Z direction in world coordinates
-
-    for g in gg:
-
-        # approach vector is +X axis of the grasp frame, make it close to the -Z axis in the world frame
-        approach_vector = g.rotation_matrix[:, 0]
-        approach_vector /= np.linalg.norm(approach_vector)
-
-        # compute the angle between the approach vector and the gravity direction
-        angle = np.arccos(np.clip(np.dot(approach_vector, gravity_direction), -1.0, 1.0))
-
-        if angle < best_angle:
-            best_angle = angle
-            best_grasp = g
-        elif np.isclose(angle, best_angle) and g.score > best_grasp.score:
-            best_grasp = g
-
-    if best_grasp is None:
-        print("No best grasp found, falling back to the first grasp.")
-        best_grasp = gg[0]  # fallback
-
-    return best_grasp
-
-def get_best_grasp_z_aligned_and_y_aligned(gg,
-                                           desired_approach_dir=np.array([0, 0, -1]),
-                                           desired_width_dir=np.array([0, 1, 0]),
-                                           angle_tolerance=0.2):
-    """
-    Pick the grasp whose:
-      1) X-axis (approach) is closest to desired_approach_dir (default -Z),
-      2) Y-axis (gripper width) is closest to desired_width_dir (default +Y),
-      3) Score is highest if angles tie.
-
-    Grasp coordinate system:
-      - rotation_matrix[:, 0] → X-axis = Approach direction
-      - rotation_matrix[:, 1] → Y-axis = Gripper width direction
-      - rotation_matrix[:, 2] → Z-axis = Depth/thickness direction
-    """
-
-    best_grasp = None
-    # Track best angles and score
-    best_approach_angle = np.inf
-    best_width_angle = np.inf
-    best_score = -np.inf
-
-    # Normalize desired directions
-    desired_approach_dir = desired_approach_dir / np.linalg.norm(desired_approach_dir)
-    desired_width_dir = desired_width_dir / np.linalg.norm(desired_width_dir)
-
-    for g in gg:
-        # 1) Approach vector angle
-        approach_vec = g.rotation_matrix[:, 0]
-        approach_vec /= np.linalg.norm(approach_vec)
-        approach_angle = angle_between(approach_vec, desired_approach_dir)
-
-        # 2) Width vector angle
-        width_vec = g.rotation_matrix[:, 1]
-        width_vec /= np.linalg.norm(width_vec)
-        width_angle = angle_between(width_vec, desired_width_dir)
-
-        # 3) Compare to the "best" so far in a hierarchical manner
-        if approach_angle < best_approach_angle:
-            # Definitely better in terms of approach alignment => choose this
-            best_approach_angle = approach_angle
-            best_width_angle = width_angle
-            best_score = g.score
-            best_grasp = g
-        elif np.isclose(approach_angle, best_approach_angle, atol=angle_tolerance):
-            # Approach angles are essentially tied, compare width alignment
-            if width_angle < best_width_angle:
-                best_width_angle = width_angle
-                best_score = g.score
-                best_grasp = g
-            elif np.isclose(width_angle, best_width_angle, atol=angle_tolerance):
-                # Both angles tied, pick the higher score
-                if g.score > best_score:
-                    best_score = g.score
-                    best_grasp = g
-
-    if best_grasp is None and len(gg) > 0:
-        print("No valid grasp found using angle criteria. Falling back to the first grasp.")
-        best_grasp = gg[0]
-
-    return best_grasp
-
-
-def get_best_grasp_with_hints(gg: GraspGroup, point: List[float] = None, direction: List[float] = None):
-    """
-    Rescore all grasps using optional spatial and directional hints, then return a new
-    GraspGroup sorted by this custom score (best first). Does NOT mutate the original gg.
-
-    Scoring terms in [0, 1], combined by a weighted sum:
-      - dir_term: alignment between grasp approach (+X axis) and `direction`
-      - pt_term : proximity to `point` (RBF over distance)
-      - net_term: original network score normalized over gg
-
+def get_best_grasp_with_hints(grasps = None, scores = None, point = None, direction = (None, None)):
+    '''
+    Rescore all grasps using optional spatial and directional hints, then return sorted grasps.
+    
     Args:
-        gg: GraspGroup from graspnetAPI.
+        grasps: Array of shape (N, 4, 4) containing grasp poses
+        scores: Array of shape (N,) containing grasp confidence scores
         point: (3,) world point. If provided, grasps closer to this point are preferred.
         direction: (3,) world direction. If provided, grasps whose approach (+X) aligns
                    with this direction are preferred.
-
+    
     Returns:
-        GraspGroup: a *new* group sorted by the custom score (descending).
-                    The best guess is result[0].
-    """
-    # --- Early exits ---
-    if gg is None or len(gg) == 0:
-        return gg
-
-    # Internal weights (you can tweak if needed)
-    w_dir = 1.0
-    w_pt  = 1.0
-    w_net = 0
-
-    # If hints are missing, zero-out the corresponding weights
-    if point is None:
-        w_pt = 0.0
-    if direction is None or (np.asarray(direction).shape != (3,)):
-        w_dir = 0.0
-
-    # Length-scale for the point proximity (meters). Similar to your 0.05 window.
-    sigma = 0.05
-    sigma2 = max(sigma * sigma, 1e-12)
-
-    # --- Gather per-grasp attributes ---
-    translations = []
-    approach_axes = []  # grasp frame +X
-    net_scores    = []
-    for g in gg:
-        translations.append(g.translation.astype(np.float64))
-        # Normalize +X axis as approach direction
-        ax = g.rotation_matrix[:, 0].astype(np.float64)
-        n  = np.linalg.norm(ax)
-        approach_axes.append(ax / n if n > 0 else np.array([1.0, 0.0, 0.0], dtype=np.float64))
-        net_scores.append(float(g.score))
-
-    translations = np.vstack(translations)          # (N,3)
-    approach_axes = np.vstack(approach_axes)        # (N,3)
-    net_scores = np.asarray(net_scores, dtype=np.float64)  # (N,)
-
-    # --- Normalize original network scores to [0,1] ---
-    if np.isfinite(net_scores).all() and (net_scores.max() > net_scores.min()):
-        net_term = (net_scores - net_scores.min()) / (net_scores.max() - net_scores.min())
+        grasps_sorted: Sorted grasps array (best first)
+        scores_sorted: Sorted scores array
+    '''
+    if len(grasps) == 0:
+        return (grasps, scores)
+    N = len(grasps)
+    w_dir = 0.3 if direction is not None else 0
+    w_pt = 0.3 if point is not None else 0
+    w_net = 1
+    if scores.max() > scores.min():
+        net_term = (scores - scores.min()) / (scores.max() - scores.min())
     else:
-        net_term = np.zeros_like(net_scores)
-
-    # --- Direction alignment term (cosine mapped to [0,1]) ---
-    if w_dir > 0.0:
+        net_term = np.ones_like(scores)
+    translations = grasps[:, :3, 3]
+    rotations = grasps[:, :3, :3]
+    approach_axes = rotations[:, :, 0]
+    approach_axes = approach_axes / (np.linalg.norm(approach_axes, axis=1, keepdims=True) + 1e-12)
+    if w_dir > 0:
         d = np.asarray(direction, dtype=np.float64)
-        nd = np.linalg.norm(d)
-        if nd > 0:
-            d = d / nd
-            cosv = np.clip((approach_axes * d[None, :]).sum(axis=1), -1.0, 1.0)
-            dir_term = 0.5 * (cosv + 1.0)  # map [-1,1] -> [0,1]
-        else:
-            dir_term = np.zeros(len(gg), dtype=np.float64)
+        d = d / (np.linalg.norm(d) + 1e-12)
+        cosv = np.clip(np.sum(approach_axes * d[None, :], axis=1), -1, 1)
+        dir_term = 0.5 * (cosv + 1)
     else:
-        dir_term = np.zeros(len(gg), dtype=np.float64)
-
-    # --- Point proximity term (RBF over Euclidean distance) ---
-    if w_pt > 0.0:
+        dir_term = np.zeros(N, dtype=np.float64)
+    if w_pt > 0:
         p = np.asarray(point, dtype=np.float64).reshape(1, 3)
         dists = np.linalg.norm(translations - p, axis=1)
-        pt_term = np.exp(-0.5 * (dists * dists) / sigma2)  # in (0,1]
+        sigma = 0.05
+        sigma2 = max(sigma * sigma, 1e-12)
+        pt_term = np.exp(-0.5 * dists * dists / sigma2)
     else:
-        pt_term = np.zeros(len(gg), dtype=np.float64)
-
-    # --- Combine ---
-    total_score = w_dir * dir_term + w_pt * pt_term + w_net * net_term
-    gg.scores = total_score
-    gg.sort_by_score()  # Sort in-place by the new score (best first)
-    return gg
+        pt_term = np.zeros(N, dtype=np.float64)
+    total_scores = w_dir * dir_term + w_pt * pt_term + w_net * net_term
+    sorted_indices = np.argsort(total_scores)[::-1]
+    return (grasps[sorted_indices], total_scores[sorted_indices])
 
 
-def angle_between(v1, v2):
-    """Utility to compute the angle between two normalized vectors in [0, π]."""
-    dot_val = np.clip(np.dot(v1, v2), -1.0, 1.0)
-    return np.arccos(dot_val)
+def filter_grasps_by_score(grasps = None, scores = None, min_score = None):
+    '''Filter grasps by minimum score threshold.'''
+    mask = scores >= min_score
+    return (grasps[mask], scores[mask])
+
+
+def get_top_k_grasps(grasps = None, scores = None, k = None):
+    '''Get top k grasps by score.'''
+    if len(grasps) == 0:
+        return (grasps, scores)
+    sorted_indices = np.argsort(scores)[::-1]
+    top_k = min(k, len(grasps))
+    return (grasps[sorted_indices[:top_k]], scores[sorted_indices[:top_k]])
+
+
+def save_grasps_npz(grasps = None, scores = None, save_path = None, bite_points = None, bite_distance = None):
+    '''
+    Save grasps in NPZ format compatible with GraspGen.
+    
+    Args:
+        grasps: Array of shape (N, 4, 4) containing grasp poses
+        scores: Array of shape (N,) containing grasp confidence scores
+        save_path: Path to save the NPZ file
+        bite_points: Optional array of shape (N, 4, 3) containing bite points
+        bite_distances: Optional array of shape (N, 2) containing bite distances
+    '''
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    save_dict = {
+        'grasps': grasps.astype(np.float32),
+        'scores': scores.astype(np.float32)
+    }
+    if bite_distance is not None:
+        save_dict['bite_distance'] = bite_distance.astype(np.float32)
+    np.savez(str(save_path), **save_dict)
+    print(f'''[OK] Saved {len(grasps)} grasps to {save_path}''')
+
+
+def load_grasps_npz(load_path = None):
+    '''
+    Load grasps from NPZ file.
+    
+    Args:
+        load_path: Path to the NPZ file
+    
+    Returns:
+        grasps: Array of shape (N, 4, 4) containing grasp poses
+        scores: Array of shape (N,) containing grasp confidence scores
+        bite_points: Array of shape (N, 4, 3) containing bite points (if available)
+        bite_distances: Array of shape (N, 2) containing bite distances (if available)
+    '''
+    data = np.load(str(load_path))
+    grasps = data['grasps']
+    scores = data['scores']
+    bite_distances = data.get('bite_distances', None)
+    return (grasps, scores, bite_distances)
+
