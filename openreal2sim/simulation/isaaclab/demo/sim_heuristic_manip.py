@@ -57,7 +57,7 @@ class HeuristicManipulation(BaseSimulator):
       • Every attempt does reset → pre → grasp → close → lift → check;
       • Early stops when any env succeeds; then re-exec for logging.
     """
-    def __init__(self, sim, scene, sim_cfgs: dict, args, out_dir: Path, img_folder: str, data_dir: Path, num_trials: int, grasp_num: int, robot: str, goal_offset: float, save_interval: int, decimation: int = 1, grasps_use: int = 50):
+    def __init__(self, sim, scene, sim_cfgs: dict, args, out_dir: Path, img_folder: str, data_dir: Path, num_trials: int, grasp_num: int, robot: str, goal_offset: float, save_interval: int, decimation: int = 1, grasps_use: int = 50, grasp_delta: float = -0.003):
         robot_pose = torch.tensor(
             sim_cfgs["robot_cfg"]["robot_pose"],
             dtype=torch.float32,
@@ -82,7 +82,7 @@ class HeuristicManipulation(BaseSimulator):
         self.grasp_path = sim_cfgs["demo_cfg"]["grasp_path"]
         self.grasp_idx = sim_cfgs["demo_cfg"]["grasp_idx"]
         self.grasp_pre = sim_cfgs["demo_cfg"]["grasp_pre"]
-        self.grasp_delta = sim_cfgs["demo_cfg"]["grasp_delta"]
+        self.grasp_delta = grasp_delta
         self.task_type = sim_cfgs["demo_cfg"]["task_type"]
         self.robot_type = robot
         self.load_obj_goal_traj()
@@ -130,6 +130,7 @@ class HeuristicManipulation(BaseSimulator):
             print(f"new robot pose: {self.robot.data.root_state_w[:, :7]}")
             self.step()
             self.clear_data()
+            self.robot.update(self.sim_dt)
 
     def load_obj_goal_traj(self):
         """
@@ -326,13 +327,13 @@ class HeuristicManipulation(BaseSimulator):
     def _to_base(self, pos_w: np.ndarray | torch.Tensor, quat_w: np.ndarray | torch.Tensor):
         """World → robot base frame for all envs."""
         root = self.robot.data.root_state_w[:, 0:7]  # [B,7]
+        print(f"[INFO] root: {root}")
         p_w, q_w = self._ensure_batch_pose(pos_w, quat_w)
         pb, qb = subtract_frame_transforms(
             root[:, 0:3], root[:, 3:7], p_w, q_w
         )
         return pb, qb  # [B,3], [B,4]
 
-        # ---------- Batched execution & lift-check ----------
         # ---------- Batched execution & lift-check ----------
     def execute_and_lift_once_batch(self, info: dict, lift_height=0.12) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -673,74 +674,77 @@ class HeuristicManipulation(BaseSimulator):
         success = False
 
         current_object_state = self.object_prim.data.root_state_w[:, :7]
-        while self.trial_num < self.num_trials:
+     
+           
+        while self.grasp_round < len(idx_all) and self.trial_num < self.num_trials:
             if self.trial_num == self.num_trials -1 :
                 self.xy_derivative_threshold = 10000
                 self.angular_derivative_threshold = 10000
-            while self.grasp_round < len(idx_all) and self.trial_num < self.num_trials:
-                start = self.grasp_round
-                block = idx_all[start : start + B]
-                if len(block) < B:
-                    block = block + [block[-1]] * (B - len(block))
-                grasp_pos_w_batch, grasp_quat_w_batch = [], []
-                for idx in block:
-                    p_w, q_w = gg.retrieve_grasp_group(int(idx))
-                    grasp_pos_w_batch.append(p_w.astype(np.float32))
-                    grasp_quat_w_batch.append(q_w.astype(np.float32))
-                grasp_pos_w_batch  = np.stack(grasp_pos_w_batch,  axis=0)  # (B,3)
-                grasp_quat_w_batch = np.stack(grasp_quat_w_batch, axis=0)  # (B,4)
-                #grasp_pos_w_batch, grasp_quat_w_batch = self.refine_grasp_pose(grasp_pos_w_batch, grasp_quat_w_batch)
-                self.show_goal(grasp_pos_w_batch, grasp_quat_w_batch)
-                
-                # random disturbance along approach axis
-                pre_dist_batch = np.full((B,), pre_dist_const, dtype=np.float32)
-                delta_batch    = rng.normal(self.grasp_delta, self.std, size=(B,)).astype(np.float32)
+            if self.grasp_round == 0 and self.trial_num > 0:
+                self.reset(rechoose_robot_position=True)
+                self.test_mask = False
+            start = self.grasp_round
+            block = idx_all[start : start + B]
+            if len(block) < B:
+                block = block + [block[-1]] * (B - len(block))
+            grasp_pos_w_batch, grasp_quat_w_batch = [], []
+            for idx in block:
+                p_w, q_w = gg.retrieve_grasp_group(int(idx))
+                grasp_pos_w_batch.append(p_w.astype(np.float32))
+                grasp_quat_w_batch.append(q_w.astype(np.float32))
+            grasp_pos_w_batch  = np.stack(grasp_pos_w_batch,  axis=0)  # (B,3)
+            grasp_quat_w_batch = np.stack(grasp_quat_w_batch, axis=0)  # (B,4)
+            #grasp_pos_w_batch, grasp_quat_w_batch = self.refine_grasp_pose(grasp_pos_w_batch, grasp_quat_w_batch)
+            self.show_goal(grasp_pos_w_batch, grasp_quat_w_batch)
+            
+            # random disturbance along approach axis
+            pre_dist_batch = np.full((B,), pre_dist_const, dtype=np.float32)
+            delta_batch    = rng.normal(self.grasp_delta, self.std, size=(B,)).astype(np.float32)
 
-                info = self.build_grasp_info(grasp_pos_w_batch, grasp_quat_w_batch,
-                                            pre_dist_batch, delta_batch)
+            info = self.build_grasp_info(grasp_pos_w_batch, grasp_quat_w_batch,
+                                        pre_dist_batch, delta_batch)
 
-                ok_batch, score_batch = self.execute_and_lift_once_batch(info)
-                if not self.test_mask:
-                    if self.judge_robot_position_with_mask():
-                        print(f"[INFO] robot position is not good, resetting and trying again")
-                        self.reset(rechoose_robot_position=True)
-                        self.grasp_round = 0
-                        self.num_trials += 1
-                        continue
-                    else:
-                        print(f"[INFO] robot position is good, continuing")
-                        self.test_mask = True
-                if start + B > len(idx_all):
-                    ok_batch = ok_batch[:(len(idx_all) - start)]
-                    score_batch = score_batch[:(len(idx_all) - start)]
-                ok_cnt = int(ok_batch.sum())
-                print(f"[SEARCH] block[{start}:{start+B}] -> success {ok_cnt}/{B}")
-                self.grasp_round = start + B
-                if self.grasp_round >= len(idx_all):
-                    self.grasp_round = 0
-                    self.std = self.std + 0.003
-                    self.trial_num +=1
-                    print(f"[INFO] trial_num: {self.trial_num}")
-                    self.xy_derivative_threshold = self.xy_derivative_threshold + 0.03
-                    self.angular_derivative_threshold = self.angular_derivative_threshold + 10.0
+            ok_batch, score_batch = self.execute_and_lift_once_batch(info)
+            if not self.test_mask:
+                if self.judge_robot_position_with_mask():
+                    print(f"[INFO] robot position is not good, resetting and trying again")
                     self.reset(rechoose_robot_position=True)
-                    self.task_mask = False
-                
-                if ok_cnt > 0:
-                    for candidate in range(len(score_batch)):
-                        if score_batch[candidate] == np.max(score_batch):
-                            winner = candidate
-                            chosen_pose_w = (grasp_pos_w_batch[winner], grasp_quat_w_batch[winner])
-                            chosen_pre    = float(pre_dist_batch[winner])
-                            chosen_delta  = float(delta_batch[winner])
-                            success = True
-                            winners.append({
-                                "success": success,
-                                "chosen_pose_w": chosen_pose_w,
-                                "chosen_pre": chosen_pre,
-                                "chosen_delta": chosen_delta,
-                            })
-                    return winners
+                    self.grasp_round = 0
+                    self.num_trials += 1
+                    continue
+                else:
+                    print(f"[INFO] robot position is good, continuing")
+                    self.test_mask = True
+            if start + B > len(idx_all):
+                ok_batch = ok_batch[:(len(idx_all) - start)]
+                score_batch = score_batch[:(len(idx_all) - start)]
+            ok_cnt = int(ok_batch.sum())
+            print(f"[SEARCH] block[{start}:{start+B}] -> success {ok_cnt}/{B}")
+            self.grasp_round = start + B
+            if self.grasp_round > len(idx_all):
+                self.grasp_round = 0
+                self.std = self.std + 0.003
+                self.trial_num +=1
+                print(f"[INFO] trial_num: {self.trial_num}")
+                self.xy_derivative_threshold = self.xy_derivative_threshold + 0.03
+                self.angular_derivative_threshold = self.angular_derivative_threshold + 10.0
+            
+            
+            if ok_cnt > 0:
+                for candidate in range(len(score_batch)):
+                    if score_batch[candidate] == np.max(score_batch):
+                        winner = candidate
+                        chosen_pose_w = (grasp_pos_w_batch[winner], grasp_quat_w_batch[winner])
+                        chosen_pre    = float(pre_dist_batch[winner])
+                        chosen_delta  = float(delta_batch[winner])
+                        success = True
+                        winners.append({
+                            "success": success,
+                            "chosen_pose_w": chosen_pose_w,
+                            "chosen_pre": chosen_pre,
+                            "chosen_delta": chosen_delta,
+                        })
+                return winners
           
 
         if not success:
@@ -789,6 +793,7 @@ class HeuristicManipulation(BaseSimulator):
         cur_4x4_mat = np.eye(4, dtype=np.float32)
         cur_4x4_mat[:3, :3] = transforms3d.quaternions.quat2mat(current_object_pose[0, 3:7])
         cur_4x4_mat[:3, 3] = current_object_pose[0, :3] - self.scene.env_origins.cpu().numpy()[0]
+        print(f"[INFO] cur_4x4_mat: {cur_4x4_mat}")
         self.wait(gripper_open=True, steps=10)
 
         # read grasp proposals
@@ -804,7 +809,7 @@ class HeuristicManipulation(BaseSimulator):
             print(f"[ERR] no grasp proposals found: {npy_path}")
             return []
         success_num = 0
-
+        rescore_flag = False
         assert self.grasp_idx < 0 or self.grasp_num == 1, "[ERR] grasp_idx and grasp_num cannot be set together"
         while success_num < self.grasp_num and self.trial_num < self.num_trials:
             if success_num > 0 and self.grasp_idx >= 0:
@@ -825,7 +830,9 @@ class HeuristicManipulation(BaseSimulator):
                 rets = [ret]
             
             else:
-                gg = gg.rescore(direction_hint=[0, 0, -1], reorder_num=10)
+                if not rescore_flag:
+                    gg = gg.rescore(direction_hint=[0, 0, -1], reorder_num=10)
+                    rescore_flag = True
                 rets = self.grasp_trials(gg[:self.grasps_use])
 
             print("[INFO] Re-exec all envs with the winning grasp, then follow object goals.")
@@ -1164,6 +1171,7 @@ def sim_heuristic_manip(key: str, args_cli: argparse.Namespace, config_path: Opt
     num_trials = args_cli.num_trials if hasattr(args_cli, "num_trials") and args_cli.num_trials is not None else heuristic_cfg.num_trials
     grasp_num = args_cli.grasp_num if hasattr(args_cli, "grasp_num") and args_cli.grasp_num is not None else heuristic_cfg.grasp_num
     robot = args_cli.robot if hasattr(args_cli, "robot") and args_cli.robot is not None else heuristic_cfg.robot
+    grasp_delta = args_cli.grasp_delta if hasattr(args_cli, "grasp_delta") and args_cli.grasp_delta is not None else heuristic_cfg.grasp_delta
     goal_offset = heuristic_cfg.goal_offset
     save_interval =  simulation_cfg.save_interval
     physics_freq =  simulation_cfg.physics_freq
@@ -1183,7 +1191,7 @@ def sim_heuristic_manip(key: str, args_cli: argparse.Namespace, config_path: Opt
     my_sim = HeuristicManipulation(
         sim, scene, sim_cfgs=sim_cfgs,
         args=args_cli, out_dir=out_dir, img_folder=local_img_folder,
-        data_dir = data_dir, num_trials = num_trials, grasp_num = grasp_num, robot = robot, goal_offset = goal_offset, save_interval = save_interval, decimation=decimation, grasps_use = grasps_use)
+        data_dir = data_dir, num_trials = num_trials, grasp_num = grasp_num, robot = robot, goal_offset = goal_offset, save_interval = save_interval, decimation=decimation, grasps_use = grasps_use, grasp_delta = grasp_delta)
 
     robot_pose = torch.tensor(sim_cfgs["robot_cfg"]["robot_pose"], dtype=torch.float32, device=my_sim.sim.device)  # [7], pos(3)+quat(wxyz)(4)
     my_sim.set_robot_pose(robot_pose)

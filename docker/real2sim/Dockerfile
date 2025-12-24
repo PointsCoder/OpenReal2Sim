@@ -7,11 +7,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # System deps for building native extensions (xformers) + basics
 # -------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-dev python3-pip python3-venv python-is-python3 \
-    build-essential cmake ninja-build pkg-config libopenblas-dev \
-    git curl wget ffmpeg bash libspatialindex-dev \
-    && python3 -m pip install --upgrade --no-cache-dir pip wheel setuptools packaging \
-    && rm -rf /var/lib/apt/lists/*
+python3 python3-dev python3-pip python3-venv python-is-python3 \
+build-essential cmake ninja-build pkg-config libopenblas-dev \
+git curl wget ffmpeg bash libspatialindex-dev \
+&& python3 -m pip install --upgrade --no-cache-dir pip wheel setuptools packaging \
+&& rm -rf /var/lib/apt/lists/*
+
 
 WORKDIR /app
 SHELL ["/bin/bash", "-lc"]
@@ -46,9 +47,6 @@ RUN pip install --no-cache-dir torch-scatter \
 COPY docker/real2sim/requirements.docker.txt         /tmp/requirements.docker.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.docker.txt
 
-# Install chumpy separately (setup.py needs pip module, ensure build deps are available)
-RUN pip install --no-build-isolation --no-cache-dir "git+https://github.com/mattloper/chumpy"
-
 
 # -------------------------------------------------------------------------
 # Third-Party compiled Python deps
@@ -66,7 +64,7 @@ RUN cd /app/third_party/Hunyuan3D-2/hy3dgen/texgen/differentiable_renderer && py
 # FoundationPose
 RUN apt-get update && apt-get install -y libboost-dev libboost-system-dev libboost-program-options-dev
 COPY third_party/FoundationPose /app/third_party/FoundationPose
-RUN python -m pip install --no-build-isolation --no-cache-dir git+https://github.com/NVlabs/nvdiffrast.git
+RUN python -m pip install --no-build-isolation --no-cache-dir git+https://github.com/NVlabs/nvdiffrast.git@abb07ca0358f3a21c3942b50c54aa1eacd329af9
 RUN python -m pip install --no-cache-dir kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu118.html
 # RUN pip install "git+https://github.com/facebookresearch/pytorch3d.git"
 RUN PIP_NO_BUILD_ISOLATION=1 pip install --no-build-isolation --no-cache-dir \
@@ -85,18 +83,25 @@ RUN cd / && wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.t
     cmake .. &&\
     make install
 
-RUN cd /
-COPY third_party/graspnetAPI /app/third_party/graspnetAPI
-RUN cd /app/third_party/graspnetAPI && pip install -e .
+COPY third_party/GraspGen /app/third_party/GraspGen
+RUN cd /app/third_party/GraspGen && pip install -e .
+RUN cd /app/third_party/GraspGen/pointnet2_ops && pip install --no-build-isolation .
 
-COPY third_party/graspness_unofficial /app/third_party/graspness_unofficial
-RUN cd /app/third_party/graspness_unofficial/pointnet2 && python -m pip install --no-cache-dir -v --no-build-isolation .
-RUN cd /app/third_party/graspness_unofficial/knn && python -m pip install --no-cache-dir -v --no-build-isolation .
+RUN pip install --no-build-isolation --no-cache-dir "git+https://github.com/mattloper/chumpy"
 
-COPY third_party/MinkowskiEngine /app/third_party/MinkowskiEngine
-RUN cd /app/third_party/MinkowskiEngine && python setup.py install --blas=openblas --force_cuda
-
+EXPOSE 5000
 # -------------------------------------------------------------------------
 # Runtime env
 # -------------------------------------------------------------------------
-ENV PYTHONPATH=/app:/app/third_party:/app/third_party/graspness_unofficial/pointnet2:
+ENV PYTHONPATH=/app
+
+# -------------------------------------------------------------------------
+# Create cache directories with proper permissions for torch extensions
+# -------------------------------------------------------------------------
+RUN mkdir -p /tmp/.cache/torch_extensions && \
+    chmod -R 777 /tmp/.cache
+
+# Set cache environment variables to use /tmp paths
+ENV TORCH_EXTENSIONS_DIR=/tmp/.cache/torch_extensions
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+ENV HF_HOME=/app/.cache/huggingface

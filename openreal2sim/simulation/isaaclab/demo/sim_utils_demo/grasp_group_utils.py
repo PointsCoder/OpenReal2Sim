@@ -261,11 +261,7 @@ class GraspGroup:
             dir_term = 0.5 * (cosv + 1.0)
         
         original_scores = self._scores[:N].astype(np.float64)
-        if original_scores.max() > original_scores.min():
-            net_term = (original_scores - original_scores.min()) / (original_scores.max() - original_scores.min())
-        else:
-            net_term = np.ones_like(original_scores)
-        
+      
         w_dist = 0.5 if (use_point_hint and distance_scores is not None) else 0.0
         w_dir = 0.2 if (direction_hint is not None and dir_term is not None) else 0.0
         w_net = 1.0 - w_dist - w_dir
@@ -276,7 +272,7 @@ class GraspGroup:
         if w_dir > 0:
             new_scores += w_dir * dir_term
         if w_net > 0:
-            new_scores += w_net * net_term
+            new_scores += w_net * original_scores
         
         self._scores[:N] = new_scores.astype(np.float32)
         

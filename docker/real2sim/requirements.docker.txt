@@ -75,7 +75,6 @@ trimesh
 # 10) WiLoR
 pyrender
 pytorch-lightning
-scikit-image
 smplx==0.1.28
 yacs
 xtcocotools
@@ -86,3 +85,9 @@ pyrootutils
 webdataset
 ultralytics==8.1.34
 # Note: chumpy installed separately in Dockerfile due to build isolation issues
+
+#11) GraspGen
+PyOpenGL==3.1.5  
+tensordict  
+scene-synthesizer[recommend]
+flask
