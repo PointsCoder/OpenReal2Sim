@@ -14,7 +14,7 @@ The following configurations are available:
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
-from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 ##
 # Configuration
@@ -22,7 +22,7 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
 FRANKA_FR3_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=ISAACLAB_NUCLEUS_DIR.replace("http://", "https://").replace("IsaacLab", "Robots/Franka/FR3/fr3.usd"),
+        usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Franka/FR3/fr3.usd",
         activate_contact_sensors=False,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
