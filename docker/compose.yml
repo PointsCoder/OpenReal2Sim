@@ -12,12 +12,14 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [ gpu ]
+              capabilities: [gpu]
     environment:
       - HOME=/tmp
       - USER=dev
       - VSCODE_SERVER_DIR=/tmp/.vscode-server
       - NUMBA_CACHE_DIR=/tmp/numba_cache
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/tmp/.cache/huggingface
     working_dir: /app
     volumes:
       - /etc/passwd:/etc/passwd:ro
@@ -31,7 +33,8 @@ services:
       - ~/.cache/torch_extensions:/tmp/.cache/torch_extensions
       - ~/.cache/matplotlib:/tmp/.cache/matplotlib
     stdin_open: true
-    user: "${HOST_UID}:${HOST_GID}"
+    # Use root for installation, or override with --user "${HOST_UID}:${HOST_GID}" for development
+    user: root
     tty: true
     command: bash
 
@@ -47,7 +50,7 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [ gpu ]
+              capabilities: [gpu]
     working_dir: /app
     volumes:
       - ../:/app
@@ -75,6 +78,39 @@ services:
 
     runtime: nvidia
     network_mode: "host"
+  sam3d:
+    build:
+      context: ../third_party/sam-3d-objects
+      dockerfile: ../../docker/sam3d/Dockerfile
+    image: sam3d:dev
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - HOME=${HOME}
+      - USER=${USER}
+      - TMPDIR=/tmp
+      - VSCODE_SERVER_DIR=/tmp/.vscode-server
+      - NUMBA_CACHE_DIR=/tmp/numba_cache
+      - LIDRA_SKIP_INIT=true
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=${HOME}/.cache/huggingface
+    working_dir: /app
+    volumes:
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+      - ${HOME}:${HOME}
+      - ../:/app
+      - ${TORCH_HOME:-~/.cache/torch}:/tmp/.cache/torch
+      - ${HF_HOME:-~/.cache/huggingface}:/tmp/.cache/huggingface
+    stdin_open: true
+    user: "${HOST_UID}:${HOST_GID}"
+    tty: true
+    command: ["micromamba", "run", "-n", "sam3d-objects", "bash"]
 
   mujoco:
     build:

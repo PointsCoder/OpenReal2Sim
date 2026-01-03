@@ -41,6 +41,48 @@ def download_with_gdown(file_id, destination):
     )
     print("Download complete.")
 
+def download_sam3d_checkpoints(destination_dir):
+    """Downloads SAM 3D Objects checkpoints from HuggingFace (requires auth)."""
+    import shutil
+    
+    # Check for HF token
+    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    
+    if not hf_token:
+        # Check if token file exists (from huggingface-cli login)
+        token_path = os.path.join(
+            os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), 
+            "token"
+        )
+        if not os.path.exists(token_path):
+            print("WARNING: No HF_TOKEN found. SAM 3D Objects requires authentication.")
+            print("Either set HF_TOKEN env var or run: huggingface-cli login")
+            print("Skipping SAM 3D Objects checkpoint download.")
+            return False
+    
+    print(f"Downloading SAM 3D Objects checkpoints to {destination_dir}...")
+    
+    # Download to temp location first (matching setup.md behavior)
+    temp_dir = destination_dir + "-download"
+    snapshot_download(
+        repo_id="facebook/sam-3d-objects",
+        repo_type="model",
+        local_dir=temp_dir,
+        token=hf_token,  # Will use cached token if None
+    )
+    
+    # Move checkpoints subfolder to final location (setup.md lines 46-47)
+    src = os.path.join(temp_dir, "checkpoints")
+    if os.path.exists(src):
+        os.makedirs(destination_dir, exist_ok=True)
+        for item in os.listdir(src):
+            shutil.move(os.path.join(src, item), os.path.join(destination_dir, item))
+    
+    # Cleanup temp download
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    print("SAM 3D Objects checkpoints downloaded successfully.")
+    return True
+
 def main():
     """Main function to set up all dependencies."""
     # Ensure we are in the correct base directory
@@ -122,7 +164,7 @@ def main():
     # TODO: MANO params need to be downloaded after registering on certain website. This needs to be done manually.
 
     # --- Grasp Generation Checkpoints ---
-    print("\n--- [9/9] Downloading Grasp Generation checkpoints ---")
+    print("\n--- [9/10] Downloading Grasp Generation checkpoints ---")
     ckpt_dir = os.path.join(base_dir, "third_party/graspness_unofficial/ckpt")
     os.makedirs(ckpt_dir, exist_ok=True)
     download_with_gdown(
@@ -133,6 +175,11 @@ def main():
         "1RfdpEM2y0x98rV28d7B2Dg8LLFKnBkfL",
         os.path.join(ckpt_dir, "minkuresunet_realsense.tar")
     )
+
+    # --- SAM 3D Objects Checkpoints (requires HF auth) ---
+    print("\n--- [10/10] Downloading SAM 3D Objects checkpoints ---")
+    sam3d_ckpt_dir = os.path.join(base_dir, "third_party/sam-3d-objects/checkpoints/hf")
+    download_sam3d_checkpoints(sam3d_ckpt_dir)
 
     print("\n\n--- All dependencies set up successfully! ---")
 

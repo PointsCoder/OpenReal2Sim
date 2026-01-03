@@ -28,3 +28,7 @@
 [submodule "third_party/WiLoR"] # for hand extraction [motion]
 	path = third_party/WiLoR
 	url = git@github.com:DynamoDuan/WiLoR.git
+[submodule "third_party/sam-3d-objects"]
+	path = third_party/sam-3d-objects
+	url = https://github.com/licesma/sam-3d-objects.git
+	branch = main
