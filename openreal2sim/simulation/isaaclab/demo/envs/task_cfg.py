@@ -54,7 +54,7 @@ class TrajectoryCfg:
     pregrasp_pose: Optional[List[float]] = None  ### This is eef in world frame.   quat
     grasp_pose: Optional[List[float]] = None  ### This is eef in world frame. quat
     robot_type: Optional[RobotType] = None
-    init_manip_object_com: Optional[List[float]] = None # com in world frame
+   
 
 
 

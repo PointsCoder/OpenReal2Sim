@@ -230,6 +230,8 @@ class HeuristicManipulation(BaseSimulator):
             joint_pos, success = self.move_to(ee_pos_b, ee_quat_b, gripper_open=False)
             if self.count % self.save_interval == 0:
                 self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
+                action_index = np.ones((B, 1)) * self.get_current_frame_count()
+                self.save_dict["action_indices"].append(action_index)
 
         is_success, rechoose_base_flag = self.is_success() #& self.goal_is_success()
         success_ids = torch.where(is_success)[0]
@@ -288,6 +290,9 @@ class HeuristicManipulation(BaseSimulator):
                 print('[INFO] goal pose', obj_goal_all[:, t], 'current obj pose', self.object_prim.data.root_state_w[:, :3])
                 print('[INFO]current ee obj trans diff', self.object_prim.data.root_state_w[:, :3] - self.robot.data.root_state_w[:, :3])
                 self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
+                action_index = np.ones((B, 1)) * self.get_current_frame_count()
+                self.save_dict["action_indices"].append(action_index)
+            
             is_success = self.holding_is_success(position_threshold = 0.10)
             print('[INFO] last obj goal', obj_goal_all[:, -1])
             print('[INFO] last obj pos', self.object_prim.data.root_state_w[:, :3])
@@ -721,7 +726,7 @@ class HeuristicManipulation(BaseSimulator):
             ok_cnt = int(ok_batch.sum())
             print(f"[SEARCH] block[{start}:{start+B}] -> success {ok_cnt}/{B}")
             self.grasp_round = start + B
-            if self.grasp_round > len(idx_all):
+            if self.grasp_round >= len(idx_all):
                 self.grasp_round = 0
                 self.std = self.std + 0.003
                 self.trial_num +=1
@@ -888,16 +893,20 @@ class HeuristicManipulation(BaseSimulator):
                 jp, success = self.move_to(info_all["pre_p_b"], info_all["pre_q_b"], gripper_open=True)
                 if torch.any(success==False): return []
                 self.save_dict["actions"].append(np.concatenate([info_all["pre_p_b"].cpu().numpy(), info_all["pre_q_b"].cpu().numpy(), np.zeros((B, 1))], axis=1))
+                action_index = np.ones((B, 1)) * self.get_current_frame_count()
+                self.save_dict["action_indices"].append(action_index)
                 jp = self.wait(gripper_open=True, steps=50)
 
                 jp, success = self.move_to(info_all["p_b"], info_all["q_b"], gripper_open=True)
                 if torch.any(success==False): return []
                 self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.zeros((B, 1))], axis=1))
-
+                action_index = np.ones((B, 1)) * self.get_current_frame_count()
+                self.save_dict["action_indices"].append(action_index)
                 # close gripper
                 jp = self.wait(gripper_open=False, steps=50)
                 self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.ones((B, 1))], axis=1))
-
+                action_index = np.ones((B, 1)) * self.get_current_frame_count()
+                self.save_dict["action_indices"].append(action_index)
                 # object goal following
                 print(f"[INFO] lifting up by {self.goal_offset[2]} meters")
                 self.lift_up(height=self.goal_offset[2], gripper_open=False, steps=8)
@@ -1064,7 +1073,7 @@ class HeuristicManipulation(BaseSimulator):
         
             trajectory_cfg_list = []
             final_gripper_close = self.final_gripper_closed
-            init_manip_object_com = self.init_manip_object_com.tolist()
+        
             for i in range(len(self.pregrasp_poses)):
                 if task_cfg.task_type == TaskType.TARGETTED_PICK_PLACE:
                     success_metric = SuccessMetric(
@@ -1108,7 +1117,6 @@ class HeuristicManipulation(BaseSimulator):
                     pregrasp_pose = self.pregrasp_poses[i],
                     grasp_pose = self.grasp_poses[i],
                     robot_type = robot_type,
-                    init_manip_object_com = init_manip_object_com, 
                 )
                 trajectory_cfg_list.append(trajectory_cfg)
             add_reference_trajectory(task_cfg, trajectory_cfg_list, base_folder)
