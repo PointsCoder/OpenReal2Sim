@@ -1291,7 +1291,15 @@ class BaseSimulator:
                 cam_grp.attrs["encoding"] = "jpeg"
                 cam_grp.attrs["channels"] = 3
                 cam_grp.attrs["original_shape"] = rgb_frames.shape
-              
+
+                # Save robot mask
+                if "robot_mask" in stacked:
+                    robot_mask_frames = stacked["robot_mask"][:, env_idx]  # (T, H, W)
+                    cam_grp.create_dataset(
+                        "robot_mask",
+                        data=robot_mask_frames.astype(np.uint8),
+                        compression="lzf"
+                    )
 
                 joint_grp = f.create_group("joint_action")
                 if "joint_pos" in stacked:
