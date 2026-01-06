@@ -71,7 +71,7 @@ Every time you want to run a script inside the repo, follow these steps:
 
 #### Run the real2sim container
    ```bash
-   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run isaaclab --publish 8000:5000 openreal2sim
+   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run --publish 8000:5000 openreal2sim
    ```
 
 **Inside the docker container**, run the following script to download pretrained checkpoints and compile c++/cuda extensions:
