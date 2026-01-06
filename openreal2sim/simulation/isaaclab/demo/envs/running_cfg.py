@@ -21,6 +21,7 @@ class RandomizerConfig:
     fix_robot_pose: bool = True
     fix_other_objects: bool = True    
     use_no_interpolation: bool = False
+    fix_everything: bool = False
 
     def to_kwargs(self) -> Dict[str, float | int]:
         """Return a shallow dict representation that can be splatted into the randomizer."""
@@ -31,7 +32,7 @@ class RandomizerConfig:
 class SimulationConfig:
     """Configuration for the simulation."""
 
-    save_interval: int = 1
+    save_interval: int = 1 ### Please set this strictly to 1. 
     decimation: int = 3  ## This is actually used for changing control frequency.
     physics_freq: int = 100
    
@@ -42,11 +43,11 @@ class HeuristicConfig:
 
     num_envs: int = 1
     num_trials: int = 4  # Number of rolls of rebasing the robot for all the grasp trials.
-    grasps_use: int = 50 # Number of grasps to use for each object.
+    grasps_use: int = 3 # Number of grasps to use for each object.
     grasp_num: int = 1 # Number of grasps to collect for each object.
     robot: str = "franka"
     goal_offset: float = 0.03 # We lift the object by this height at the beginning of every traj.
-    grasp_delta: float = -0.003 # negative means moving more shallow on the grasping approach axis.
+    grasp_delta: float = 0.01 # negative means moving more shallow on the grasping approach axis.
 
 
 
@@ -60,6 +61,17 @@ class RandomizeRolloutConfig:
 
 
 @dataclass(frozen=True)
+class DirectRenderConfig:
+    """Configuration for the direct render stage."""
+
+    num_envs: int = 1
+    goal_offset: float = 0.03
+    total_num: int = 60
+    grasp_delta: float = -0.005
+    gripper_close_width: float = 0.003
+    require_gravity_final: bool = True
+
+@dataclass(frozen=True)
 class RunningConfig:
     """Top-level container bundling all per-scene tunables."""
 
@@ -67,7 +79,8 @@ class RunningConfig:
     rollout: RandomizeRolloutConfig = RandomizeRolloutConfig()
     heuristic: HeuristicConfig = HeuristicConfig()
     simulation: SimulationConfig = SimulationConfig()
-
+    direct_render: DirectRenderConfig = DirectRenderConfig()
+    
 DEFAULT_RUNNING_CONFIG = RunningConfig()
 
 # Users can override the defaults per-scene key by adding entries here.
@@ -94,3 +107,7 @@ def get_heuristic_config(key: str) -> HeuristicConfig:
 def get_simulation_config(key: str) -> SimulationConfig:
     """Return simulation config for a scene key."""
     return RUNNING_CONFIGS.get(key, DEFAULT_RUNNING_CONFIG).simulation
+
+def get_direct_render_config(key: str) -> DirectRenderConfig:
+    """Return direct render config for a scene key."""
+    return RUNNING_CONFIGS.get(key, DEFAULT_RUNNING_CONFIG).direct_render

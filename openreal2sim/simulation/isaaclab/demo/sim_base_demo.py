@@ -257,7 +257,7 @@ class BaseSimulator:
         self.demo_id = 0
         self.save_dict = {
             "rgb": [], "depth": [], "segmask": [], "robot_mask": [], "object_mask": [],
-            "joint_pos": [], "joint_vel": [], "actions": [],
+            "joint_pos": [], "joint_vel": [], "actions": [], "action_indices": [],
             "gripper_pos": [], "gripper_cmd": [], "ee_pose_cam": [],
             "composed_rgb": [], "joint_pos_des": [], "ee_pose_l": [], # composed rgb image with background and foreground
         }
@@ -1225,7 +1225,8 @@ class BaseSimulator:
             self.export_batch_data_to_hdf5(hdf5_names, video_paths)
            
        
-
+    def get_current_frame_count(self) -> int:
+        return len(self.save_dict["rgb"])
 
     def export_batch_data_to_hdf5(self, hdf5_names: List[str], video_paths: List[str]) -> int:
         """Export buffered trajectories to RoboTwin-style HDF5 episodes."""
@@ -1290,7 +1291,15 @@ class BaseSimulator:
                 cam_grp.attrs["encoding"] = "jpeg"
                 cam_grp.attrs["channels"] = 3
                 cam_grp.attrs["original_shape"] = rgb_frames.shape
-              
+
+                # Save robot mask
+                if "robot_mask" in stacked:
+                    robot_mask_frames = stacked["robot_mask"][:, env_idx]  # (T, H, W)
+                    cam_grp.create_dataset(
+                        "robot_mask",
+                        data=robot_mask_frames.astype(np.uint8),
+                        compression="lzf"
+                    )
 
                 joint_grp = f.create_group("joint_action")
                 if "joint_pos" in stacked:
@@ -1305,7 +1314,7 @@ class BaseSimulator:
                     joint_grp.create_dataset(
                         "gripper_cmd", data=stacked["gripper_cmd"][:, env_idx].astype(np.float32)
                     )
-                if "joint_pos_des" in stacked:
+                if "joint_pos_des" in stacked and len(stacked["joint_pos_des"]) > 0:
                     joint_grp.create_dataset(
                         "joint_pos_des", data=stacked["joint_pos_des"][:, env_idx].astype(np.float32)
                     )
@@ -1323,9 +1332,14 @@ class BaseSimulator:
                         )
 
                 if "actions" in stacked:
-                    f.create_dataset(
+                    action_grp = f.create_group("action")
+                    action_grp.create_dataset(
                         "actions", data=stacked["actions"][:, env_idx].astype(np.float32)
                     )
+                    action_grp.create_dataset(
+                        "action_indices", data=stacked["action_indices"][:, env_idx].astype(np.int32)
+                    )
+                    
                 ee_grp = f.create_group("ee_pose")
                 if "ee_pose_cam" in stacked:
                     ee_grp.create_dataset(
@@ -1348,7 +1362,7 @@ class BaseSimulator:
                 frame_count = stacked["rgb"].shape[0]
                 meta_grp = f.create_group("meta")
                 meta_grp.attrs["env_index"] = int(env_idx)
-                meta_grp.attrs["frame_dt"] = float(self.task_dt)  # Use task_dt since data is recorded at task step frequency
+                meta_grp.attrs["frame_dt"] = float(self.sim_dt * self.decimation * self.save_interval)  # Use task_dt since data is recorded at task step frequency
                 meta_grp.attrs["frame_count"] = int(frame_count)
                 meta_grp.attrs["source"] = "OpenReal2Sim"
                 meta_grp.attrs["episode_name"] = episode_name

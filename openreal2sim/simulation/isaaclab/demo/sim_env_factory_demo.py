@@ -83,6 +83,21 @@ DEFAULT_OBJ_PHYSICS = {
     },
 }
 
+DEFAULT_NO_COLLISION_BG_PHYSICS = {
+    "mass_props": {"mass": 100.0},
+    "rigid_props": {"disable_gravity": True, "kinematic_enabled": True},
+    "collision_props": {
+        "collision_enabled": False,
+    },
+}
+
+DEFAULT_NO_COLLISION_OBJ_PHYSICS = {
+    "mass_props": {"mass": 0.5},
+    "rigid_props": {"disable_gravity": True, "kinematic_enabled": False},
+    "collision_props": {
+        "collision_enabled": False,
+    },
+}
 
 def _deep_update(dst: dict, src: dict | None) -> dict:
     """Recursive dict update without touching the original."""
@@ -145,7 +160,7 @@ def create_robot():
 # --------------------------------------------------------------------------------------
 # Dynamic InteractiveSceneCfg builder
 # --------------------------------------------------------------------------------------
-def build_tabletop_scene_cfg():
+def build_tabletop_scene_cfg(has_collision: bool = True):
     """
     Auto-generate a multi-object InteractiveSceneCfg subclass:
       - background, camera, robot
@@ -164,10 +179,26 @@ def build_tabletop_scene_cfg():
         spawn=sim_utils.DomeLightCfg(intensity=4000.0, color=(1.0, 1.0, 1.0)),
     )
 
-    _bg = _deep_update(DEFAULT_BG_PHYSICS, C.bg_physics)
+    if has_collision:
+        BG_PHYSICS = DEFAULT_BG_PHYSICS
+        OBJ_PHYSICS = DEFAULT_OBJ_PHYSICS
+    else:
+        BG_PHYSICS = DEFAULT_NO_COLLISION_BG_PHYSICS
+        OBJ_PHYSICS = DEFAULT_NO_COLLISION_OBJ_PHYSICS
+
+    _bg = _deep_update(BG_PHYSICS, C.bg_physics)
     _objs = [
-        _deep_update(DEFAULT_OBJ_PHYSICS, obj_physics) for obj_physics in C.obj_physics
+        _deep_update(OBJ_PHYSICS, obj_physics) for obj_physics in C.obj_physics
     ]
+
+    _bg["collision_props"]["collision_enabled"] = BG_PHYSICS["collision_props"]["collision_enabled"]
+    for _obj in _objs:
+        _obj["collision_props"]["collision_enabled"] = OBJ_PHYSICS["collision_props"]["collision_enabled"]
+    
+    # Force disable_gravity to match default (prevent override from external configs)
+    _bg["rigid_props"]["disable_gravity"] = BG_PHYSICS["rigid_props"]["disable_gravity"]
+    for _obj in _objs:
+        _obj["rigid_props"]["disable_gravity"] = OBJ_PHYSICS["rigid_props"]["disable_gravity"]
 
     bg_mass_cfg = schemas_cfg.MassPropertiesCfg(**_bg["mass_props"])
     bg_rigid_cfg = schemas_cfg.RigidBodyPropertiesCfg(**_bg["rigid_props"])
@@ -468,6 +499,7 @@ def make_env(
     bg_simplify: bool = False,
     physics_freq: int = 100,
     decimation: int = 1,
+    has_collision: bool = True,
 ) -> Tuple["ManagerBasedRLEnv", "ManagerBasedRLEnvCfg"]:
     """
     Public entry to construct a ManagerBasedRLEnv from outputs/<key>/simulation/scene.json.
@@ -480,11 +512,10 @@ def make_env(
     init_scene_from_scene_dict(
         scene,
         cfgs=cfgs,
-        use_ground_plane=bg_simplify,
-    )
+        use_ground_plane=bg_simplify)
 
     # Build scene & env cfg
-    SceneCfg = build_tabletop_scene_cfg()
+    SceneCfg = build_tabletop_scene_cfg(has_collision=has_collision)
     ManipEnvCfg = _build_manip_env_cfg(SceneCfg, num_envs=num_envs, env_spacing=2.5)
     env_cfg = ManipEnvCfg()
     env_cfg.sim.device = device

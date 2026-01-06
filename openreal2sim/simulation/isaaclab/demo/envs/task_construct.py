@@ -141,7 +141,10 @@ def serialize_task_cfg(task_cfg):
 
 
 def add_reference_trajectory(task_cfg: TaskCfg, reference_trajectory: List[TrajectoryCfg], base_folder: Path):
-    task_cfg.reference_trajectory = task_cfg.reference_trajectory + reference_trajectory
+    if task_cfg.reference_trajectory is None:
+        task_cfg.reference_trajectory = reference_trajectory
+    else:
+        task_cfg.reference_trajectory = task_cfg.reference_trajectory + reference_trajectory
     json_path = base_folder / "task.json"
     with open(json_path, "w") as f:
         json.dump(serialize_task_cfg(task_cfg), f)

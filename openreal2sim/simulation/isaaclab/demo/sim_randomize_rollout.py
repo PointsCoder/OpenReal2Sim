@@ -130,11 +130,6 @@ def compute_poses_from_traj_cfg(traj_cfg_list):
   
     return robot_poses_list, object_poses_dict, object_trajectory_list, final_gripper_state_list, pregrasp_pose_list, grasp_pose_list, end_pose_list
 
-def get_initial_com_pose(traj_cfg):
-    if traj_cfg.init_manip_object_com is not None:
-        return traj_cfg.init_manip_object_com
-    else:
-        return None
 
 
 # ────────────────────────────Heuristic Manipulation ────────────────────────────
@@ -400,9 +395,11 @@ class RandomizeExecution(BaseSimulator):
                  continue
             joint_pos, success = res
 
-            if self.count % self.save_interval == 0:
-                self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
 
+            self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
+            action_index = np.ones((B, 1)) * self.get_current_frame_count()
+            self.save_dict["action_indices"].append(action_index)
+                
         is_grasp_success = self.is_grasp_success()
         is_success = self.is_success()
 
@@ -483,6 +480,8 @@ class RandomizeExecution(BaseSimulator):
             print(obj_goal_all[:,t])
             print(self.object_prim.data.root_state_w[:, :7])
             self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
+            action_index = np.ones((B, 1)) * self.get_current_frame_count()
+            self.save_dict["action_indices"].append(action_index)
         is_grasp_success = self.is_grasp_success()
         # print('[INFO] last obj goal', obj_goal_all[:, -1])
         # print('[INFO] last obj pos', self.object_prim.data.root_state_w[:, :3])
@@ -847,6 +846,9 @@ class RandomizeExecution(BaseSimulator):
         jp, success = res
         if torch.all(success==False): return []
         self.save_dict["actions"].append(np.concatenate([info_all["pre_p_b"].cpu().numpy(), info_all["pre_q_b"].cpu().numpy(), np.zeros((B, 1))], axis=1))
+        action_index = np.ones((B, 1)) * self.get_current_frame_count()
+        self.save_dict["action_indices"].append(action_index)
+
         jp = self.wait(gripper_open=True, steps=3, record = self.record)
         print("[INFO] move_to(grasp)")
         res = self.move_to(info_all["p_b"], info_all["q_b"], gripper_open=True, record = self.record)
@@ -856,10 +858,14 @@ class RandomizeExecution(BaseSimulator):
         jp, success = res
         if torch.all(success==False): return []
         self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.zeros((B, 1))], axis=1))
+        action_index = np.ones((B, 1)) * self.get_current_frame_count()
+        self.save_dict["action_indices"].append(action_index)
 
         # close gripper
         jp = self.wait(gripper_open=False, steps=50, record = self.record)
         self.save_dict["actions"].append(np.concatenate([info_all["p_b"].cpu().numpy(), info_all["q_b"].cpu().numpy(), np.ones((B, 1))], axis=1))
+        action_index = np.ones((B, 1)) * self.get_current_frame_count()
+        self.save_dict["action_indices"].append(action_index)
 
         # Debug: Check robot state before lift_up
         self.robot.update(dt=self.sim.get_physics_dt())
