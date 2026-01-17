@@ -345,6 +345,14 @@ def single_grasp_point_generation(scene_dict, scene_json_dict, key_cfg, key, bas
     rendered_image, mask_img, depth = render_pytorch3d_rgbd(model, K, T_c2w, img_size, device=device)
     
     # Find contact point from hand keypoints
+    if scene_dict["motion"]["hand_kpts"][i] is None:
+        valid_indices = [idx for idx, kpts in enumerate(scene_dict["motion"]["hand_kpts"]) if kpts is not None]
+        if not valid_indices:
+            print(f"[Error] No hand detected in any frame for key {key}")
+            return None
+        i = min(valid_indices, key=lambda idx: abs(idx - start_frame_idx))
+        print(f"[Warning] Hand not detected at start_frame_idx {start_frame_idx}, using nearest frame {i}")
+
     kpts_2d = scene_dict["motion"]["hand_kpts"][i][[4, 8, 12, 16, 20]]
     direction = scene_dict["motion"]["hand_global_orient"][i]
     direction = direction.reshape(3, 3)

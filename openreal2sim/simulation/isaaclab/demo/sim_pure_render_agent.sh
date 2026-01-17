@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd /app && pwd)"
 
 # Default parameters
-gpu_id="1"
+gpu_id="7"
 CONFIG_PATH="${ROOT_DIR}/config/config.yaml"
 declare -a PIPELINE=()
 START_IDX=""

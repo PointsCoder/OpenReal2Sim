@@ -18,6 +18,10 @@ file_path = Path(__file__).resolve()
 import imageio 
 
 sys.path.append(str(file_path.parent))
+
+# Force unbuffered stdout for real-time logging
+import functools
+print = functools.partial(print, flush=True)
 sys.path.append(str(file_path.parent.parent))
 from envs.task_cfg import TaskCfg, TaskType, SuccessMetric, SuccessMetricType, TrajectoryCfg
 from envs.task_construct import construct_task_config, add_reference_trajectory, load_task_cfg, add_generated_trajectories
@@ -787,7 +791,56 @@ class RandomizeExecution(BaseSimulator):
             "pre_p_b": pre_pb,  "pre_q_b": pre_qb,
             "p_b": pb,      "q_b": qb,
         }
-    
+
+    def get_bad_visual_envs(self, ratio_threshold: float = 0.65) -> list[int]:
+        """
+        Identify envs where robot position is bad (occludes object).
+        Returns list of env_ids that are 'bad'.
+        """
+        if "robot_mask" not in self.save_dict or "object_mask" not in self.save_dict or "segmask" not in self.save_dict:
+             print("[WARN] specific masks not found in save_dict, skipping visual check")
+             return []
+
+        robot_mask = self.save_dict["robot_mask"]
+        object_mask = self.save_dict["object_mask"]
+        seg_mask = self.save_dict["segmask"]
+        
+        # Helper to process mask shapes
+        def process_mask(mask):
+            arr = np.array(mask)
+            if arr.ndim == 5: arr = arr.squeeze(-1)
+            elif arr.ndim == 3: arr = arr[np.newaxis, ...]
+            return arr
+
+        seg_mask_array = process_mask(seg_mask)
+        robot_mask_array = process_mask(robot_mask)
+        object_mask_array = process_mask(object_mask)
+
+        if seg_mask_array.ndim != 4 or robot_mask_array.ndim != 4 or object_mask_array.ndim != 4:
+            print(f"[ERROR] Unexpected mask shapes. Skipping visual check.")
+            return []
+
+        T, B, H, W = seg_mask_array.shape
+        bad_envs = set()
+
+        for t in range(T):
+            for b in range(B):
+                if b in bad_envs: continue
+                
+                mask = robot_mask_array[t, b] 
+                mask_ratio = np.sum(mask) / (H * W)
+                
+                obj_mask = object_mask_array[t, b]
+                object_mask_ratio = np.sum(obj_mask) / (H * W)
+                
+                sg_mask = seg_mask_array[t, b]
+                seg_mask_ratio = np.sum(sg_mask) / (H * W)
+
+                # Condition: Object is occluded (small visible area) AND robot is visible (large area)
+                if object_mask_ratio < 0.005 and mask_ratio > ratio_threshold and seg_mask_ratio > 0:
+                    bad_envs.add(b)
+        
+        return list(bad_envs)
 
     def inference(self) -> list[int]:
         """
@@ -886,6 +939,17 @@ class RandomizeExecution(BaseSimulator):
         #jp = self.follow_object_goals(jp, sample_step=1, visualize=True)
         jp, is_success = self.follow_object_goals(jp, sample_step=1, visualize=True)
 
+        if self.record:
+            bad_envs = self.get_bad_visual_envs()
+            if bad_envs:
+                print(f"[INFO] Rejected envs due to occlusion: {bad_envs}")
+                # is_success is a list or numpy array
+                for b in bad_envs:
+                    try:
+                        is_success[b] = False
+                    except IndexError:
+                        pass
+        
         is_success = is_success #& self.is_success()
         # Arrange the output: we want to collect only the successful env ids as a list.
         is_success = torch.tensor(is_success, dtype=torch.bool, device=self.sim.device)
@@ -895,7 +959,7 @@ class RandomizeExecution(BaseSimulator):
         if self.record:
             import time
             t_save_start = time.time()
-            self.save_data(ignore_keys=["segmask", "depth"], env_ids=success_env_ids, export_hdf5=True)
+            self.save_data(ignore_keys=["segmask", "depth"], env_ids=success_env_ids, export_hdf5=True, formal=True)
             print(f"[TIMING] save_data took {time.time() - t_save_start:.2f}s")
         
         return success_env_ids
@@ -914,6 +978,20 @@ class RandomizeExecution(BaseSimulator):
         print(f"[TIMING] run_batch_trajectory total: {time.time() - t_start:.2f}s")
         
         return result
+
+    def from_self_to_sim_cfg(self, key: str) -> None:
+        """Export simulation configuration to JSON file."""
+        sim_info = {}
+        sim_info["physics_freq"] = 1 / self.sim.get_physics_dt()
+        sim_info["decimation"] = self.decimation
+        sim_info["save_interval"] = self.save_interval
+        BASE_DIR = Path.cwd()
+        task_folder = BASE_DIR / "tasks" / key
+        task_folder.mkdir(parents=True, exist_ok=True)
+        task_file = task_folder / "sim_cfg.json"
+        with open(task_file, "w") as f:
+            json.dump(sim_info, f)
+        print(f"[INFO] Saved simulation config to {task_file}")
     
 
 
@@ -965,7 +1043,11 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
         
         # Use randomizer config from running_cfg
         randomizer_kwargs = randomizer_cfg.to_kwargs()
-        random_task_cfg_list = randomizer.generate_randomized_scene_cfg(**randomizer_kwargs)
+        try:
+            random_task_cfg_list = randomizer.generate_randomized_scene_cfg(**randomizer_kwargs)
+        except Exception as e:
+            print(f"[ERROR] Failed to generate randomized scene config for key '{key}': {e}")
+            continue
 
         args_cli.key = key
         sim_cfgs = load_sim_parameters(BASE_DIR, key)
@@ -984,11 +1066,20 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
         my_sim.task_cfg = task_cfg
         
         import time
+        batch_count = 0
         while len(success_trajectory_config_list) < total_require_traj_num:
+            if batch_count >= 20:
+                 print(f"[WARN] Reached max batch limit (20). Stopping execution.")
+                 break
+            batch_count += 1
             iteration_start = time.time()
             
             traj_cfg_list = random_task_cfg_list[current_timestep: current_timestep + num_envs]
             current_timestep += num_envs
+            
+            if len(traj_cfg_list) == 0:
+                print(f"[WARN] No more randomized configs available. Stopping at {len(success_trajectory_config_list)}/{total_require_traj_num} successes.")
+                break
            
             success_env_ids = my_sim.run_batch_trajectory(traj_cfg_list)
             
@@ -1000,6 +1091,14 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
             
             print(f"[INFO] success_trajectory_config_list: {len(success_trajectory_config_list)}/{total_require_traj_num}")
             print(f"[TIMING] Full iteration took {time.time() - iteration_start:.2f}s\n")
+        
+        if len(success_trajectory_config_list) == 0:
+            print("[ERR] No successful trajectories generated!")
+            env.close()
+            sys.exit(1)
+
+        # Export simulation configuration
+        my_sim.from_self_to_sim_cfg(key)
         
         # Close env only once at the end
         print("[INFO] Closing environment...")

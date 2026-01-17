@@ -79,6 +79,9 @@ class Randomizer(TaskCfg):
         # Step 4: Generate robot_pose_randomize_num random robot poses
         # robot_pose format: [x, y, z, w, x, y, z] (position + quaternion wxyz)
         ## FIXME: hacking
+        if not self.task_cfg.reference_trajectory:
+            raise ValueError("Reference trajectory is empty. Cannot generate randomized scene config.")
+            
         ref_traj = self.task_cfg.reference_trajectory[-1]
         assert ref_traj is not None, "Reference trajectory is not found"
         ref_robot_pose = np.array(ref_traj.robot_pose)

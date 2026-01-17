@@ -16,6 +16,11 @@ import h5py
 import sys
 file_path = Path(__file__).resolve()
 sys.path.append(str(file_path.parent))
+
+# Force unbuffered stdout for real-time logging
+import functools
+print = functools.partial(print, flush=True)
+
 sys.path.append(str(file_path.parent.parent))
 from envs.task_cfg import CameraInfo, TaskCfg, TrajectoryCfg
 from sim_env_factory_demo import get_prim_name_from_oid
@@ -1222,13 +1227,13 @@ class BaseSimulator:
         
         
         if export_hdf5:
-            self.export_batch_data_to_hdf5(hdf5_names, video_paths)
+            self.export_batch_data_to_hdf5(hdf5_names, video_paths, env_ids)
            
        
     def get_current_frame_count(self) -> int:
         return len(self.save_dict["rgb"])
 
-    def export_batch_data_to_hdf5(self, hdf5_names: List[str], video_paths: List[str]) -> int:
+    def export_batch_data_to_hdf5(self, hdf5_names: List[str], video_paths: List[str], env_ids: List[int]) -> int:
         """Export buffered trajectories to RoboTwin-style HDF5 episodes."""
         if self.data_dir is not None:
             target_root = self.data_dir
@@ -1248,7 +1253,7 @@ class BaseSimulator:
       
         camera_params = self._get_camera_parameters()
 
-        for env_idx, (episode_name, video_path) in enumerate(zip(episode_names, video_paths)):
+        for list_idx, (episode_name, video_path, env_id) in enumerate(zip(episode_names, video_paths, env_ids)):
             hdf5_path = data_dir / f"{episode_name}.hdf5"
             hdf5_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1263,7 +1268,8 @@ class BaseSimulator:
                     cam_grp.attrs["resolution"] = resolution
 
                 # Use frames from memory instead of re-reading video (much faster!)
-                rgb_frames = stacked["composed_rgb"][:, env_idx]  # (T, H, W, 3)
+                # IMPORTANT: Use env_id (actual environment index) for data indexing, not list_idx
+                rgb_frames = stacked["composed_rgb"][:, env_id]  # (T, H, W, 3)
                 
                 # Encode frames using JPEG compression with parallel processing
                 encode_data = []
@@ -1294,7 +1300,7 @@ class BaseSimulator:
 
                 # Save robot mask
                 if "robot_mask" in stacked:
-                    robot_mask_frames = stacked["robot_mask"][:, env_idx]  # (T, H, W)
+                    robot_mask_frames = stacked["robot_mask"][:, env_id]  # (T, H, W)
                     cam_grp.create_dataset(
                         "robot_mask",
                         data=robot_mask_frames.astype(np.uint8),
@@ -1304,19 +1310,19 @@ class BaseSimulator:
                 joint_grp = f.create_group("joint_action")
                 if "joint_pos" in stacked:
                     joint_grp.create_dataset(
-                        "joint_pos", data=stacked["joint_pos"][:, env_idx].astype(np.float32)
+                        "joint_pos", data=stacked["joint_pos"][:, env_id].astype(np.float32)
                     )
                 if "joint_vel" in stacked:
                     joint_grp.create_dataset(
-                        "joint_vel", data=stacked["joint_vel"][:, env_idx].astype(np.float32)
+                        "joint_vel", data=stacked["joint_vel"][:, env_id].astype(np.float32)
                     )
                 if "gripper_cmd" in stacked:
                     joint_grp.create_dataset(
-                        "gripper_cmd", data=stacked["gripper_cmd"][:, env_idx].astype(np.float32)
+                        "gripper_cmd", data=stacked["gripper_cmd"][:, env_id].astype(np.float32)
                     )
                 if "joint_pos_des" in stacked and len(stacked["joint_pos_des"]) > 0:
                     joint_grp.create_dataset(
-                        "joint_pos_des", data=stacked["joint_pos_des"][:, env_idx].astype(np.float32)
+                        "joint_pos_des", data=stacked["joint_pos_des"][:, env_id].astype(np.float32)
                     )
                 if len(joint_grp.keys()) == 0:
                     del f["joint_action"]
@@ -1324,36 +1330,37 @@ class BaseSimulator:
                 if "gripper_pos" in stacked:
                     endpose_grp = f.create_group("endpose")
                     endpose_grp.create_dataset(
-                        "gripper_pos", data=stacked["gripper_pos"][:, env_idx].astype(np.float32)
+                        "gripper_pos", data=stacked["gripper_pos"][:, env_id].astype(np.float32)
                     )
                     if "gripper_cmd" in stacked:
                         endpose_grp.create_dataset(
-                            "gripper_cmd", data=stacked["gripper_cmd"][:, env_idx].astype(np.float32)
+                            "gripper_cmd", data=stacked["gripper_cmd"][:, env_id].astype(np.float32)
                         )
 
                 if "actions" in stacked:
                     action_grp = f.create_group("action")
                     action_grp.create_dataset(
-                        "actions", data=stacked["actions"][:, env_idx].astype(np.float32)
+                        "actions", data=stacked["actions"][:, env_id].astype(np.float32)
                     )
                     action_grp.create_dataset(
-                        "action_indices", data=stacked["action_indices"][:, env_idx].astype(np.int32)
+                        "action_indices", data=stacked["action_indices"][:, env_id].astype(np.int32)
                     )
                     
                 ee_grp = f.create_group("ee_pose")
                 if "ee_pose_cam" in stacked:
                     ee_grp.create_dataset(
-                        "ee_pose_cam", data=stacked["ee_pose_cam"][:, env_idx].astype(np.float32)
+                        "ee_pose_cam", data=stacked["ee_pose_cam"][:, env_id].astype(np.float32)
                     )
                 if "ee_pose_l" in stacked:
                     ee_grp.create_dataset(
-                        "ee_pose_l", data=stacked["ee_pose_l"][:, env_idx].astype(np.float32)
+                        "ee_pose_l", data=stacked["ee_pose_l"][:, env_id].astype(np.float32)
                     )
                 extras_grp = f.create_group("extras")
                 if self.task_cfg is not None:
                     extras_grp.create_dataset("task_desc", data=self.task_cfg.task_desc)
                 if self.traj_cfg_list is not None:
-                    traj_i = self.traj_cfg_list[env_idx]
+                    # Use env_id to get the correct trajectory config for this environment
+                    traj_i = self.traj_cfg_list[env_id]
                     traj_grp = extras_grp.create_group("traj")
                     traj_grp.create_dataset("robot_pose", data=traj_i.robot_pose)
                     traj_grp.create_dataset("pregrasp_pose", data=traj_i.pregrasp_pose)
@@ -1361,7 +1368,7 @@ class BaseSimulator:
 
                 frame_count = stacked["rgb"].shape[0]
                 meta_grp = f.create_group("meta")
-                meta_grp.attrs["env_index"] = int(env_idx)
+                meta_grp.attrs["env_index"] = int(env_id)
                 meta_grp.attrs["frame_dt"] = float(self.sim_dt * self.decimation * self.save_interval)  # Use task_dt since data is recorded at task step frequency
                 meta_grp.attrs["frame_count"] = int(frame_count)
                 meta_grp.attrs["source"] = "OpenReal2Sim"

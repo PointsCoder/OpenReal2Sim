@@ -15,6 +15,11 @@ from isaaclab.app import AppLauncher
 import sys
 file_path = Path(__file__).resolve()
 sys.path.append(str(file_path.parent))
+
+# Force unbuffered stdout for real-time logging
+import functools
+print = functools.partial(print, flush=True)
+
 sys.path.append(str(file_path.parent.parent))
 from envs.task_cfg import TaskCfg, TaskType, SuccessMetric, SuccessMetricType, TrajectoryCfg, RobotType
 from envs.task_construct import construct_task_config, add_reference_trajectory, load_task_cfg, get_task_cfg
@@ -715,7 +720,7 @@ class HeuristicManipulation(BaseSimulator):
                     print(f"[INFO] robot position is not good, resetting and trying again")
                     self.reset(rechoose_robot_position=True)
                     self.grasp_round = 0
-                    self.num_trials += 1
+                    self.trial_num += 1
                     continue
                 else:
                     print(f"[INFO] robot position is good, continuing")
@@ -937,7 +942,7 @@ class HeuristicManipulation(BaseSimulator):
                 if self.judge_robot_position_with_mask() or rechoose_base_flag:
                     print(f"[INFO] robot position is not good, continuing")
                     self.reset(rechoose_robot_position=True)
-                    self.num_trials += 1
+                    self.trial_num += 1
                     self.grasp_round = 0
                     self.test_mask = False
                     continue
@@ -1209,7 +1214,17 @@ def sim_heuristic_manip(key: str, args_cli: argparse.Namespace, config_path: Opt
     my_sim.task_cfg = task_cfg
     success_num = my_sim.inference()
     print(f"[INFO] success_num: {success_num}")
-    my_sim.from_data_to_task_cfg(key, already_exist=True)
+    
+    if success_num == 0:
+        print("[ERR] No successful grasps found!")
+        env.close()
+        sys.exit(1)
+
+    saved_cfg = my_sim.from_data_to_task_cfg(key, already_exist=True)
+    if saved_cfg is None:
+        print(f"[ERR] Failed to save reference trajectory to task config for key '{key}'!")
+        env.close()
+        sys.exit(1)
     env.close()
     return True 
 

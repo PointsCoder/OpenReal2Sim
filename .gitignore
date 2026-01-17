@@ -1,6 +1,8 @@
 # Project
 data/
-outputs/
+outputs
+logs/
+h5py/
 .gradio/
 third_party/IsaacLab
 
@@ -211,3 +213,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# custom
+pipeline_log_*.csv
+copy_matching_folders.sh
+keys.txt
+tasks/
