@@ -1116,8 +1116,14 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
 
 def main():
     base_dir = Path.cwd()
-    cfg = yaml.safe_load((base_dir / "config" / "config.yaml").open("r"))
-    keys = cfg["keys"]
+    if hasattr(args_cli, "key") and args_cli.key is not None:
+        keys = [args_cli.key]
+        print(f"[INFO] Processing single key via CLI: {keys[0]}")
+    else:
+        cfg = yaml.safe_load((base_dir / "config" / "config.yaml").open("r"))
+        keys = cfg["keys"]
+        print(f"[INFO] Processing all {len(keys)} keys from config.")
+
     sim_randomize_rollout(keys, args_cli)
   
 
