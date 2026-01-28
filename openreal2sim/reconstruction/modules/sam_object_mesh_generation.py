@@ -157,6 +157,7 @@ def run_sam3d_container(sam_3d_dir: Path):
         "--gpus", "all",
         "-e", f"CUDA_VISIBLE_DEVICES={gpu_id}",
         "-v", f"{host_project_root}:/app",
+        "-v", f"{host_project_root}/third_party/sam-3d-objects/sam3d_objects:/opt/sam3d/sam3d_objects",
         "-w", "/app",
         "sam3d:dev",
         "micromamba", "run", "-n", "sam3d-objects",
