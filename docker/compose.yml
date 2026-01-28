@@ -114,6 +114,7 @@ services:
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
       - ../:/app
+      - ../third_party/sam-3d-objects/sam3d_objects:/opt/sam3d/sam3d_objects
       - ${TORCH_HOME:-~/.cache/torch}:/tmp/.cache/torch
       - ${HF_HOME:-~/.cache/huggingface}:/tmp/.cache/huggingface
     stdin_open: true
