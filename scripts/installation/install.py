@@ -29,40 +29,15 @@ def download_file(url, destination):
 
 
 def download_sam3d_checkpoints(destination_dir):
-    """Downloads SAM 3D Objects checkpoints from HuggingFace (requires auth)."""
-    import shutil
-    
-    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-    
-    if not hf_token:
-        token_path = os.path.join(
-            os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), 
-            "token"
-        )
-        if not os.path.exists(token_path):
-            print("WARNING: No HF_TOKEN found. SAM 3D Objects requires authentication.")
-            print("Either set HF_TOKEN env var or run: huggingface-cli login")
-            print("Skipping SAM 3D Objects checkpoint download.")
-            return False
-    
+    """Downloads SAM 3D Objects checkpoints from public HuggingFace repo."""
     print(f"Downloading SAM 3D Objects checkpoints to {destination_dir}...")
     
-    temp_dir = destination_dir + "-download"
     snapshot_download(
-        repo_id="facebook/sam-3d-objects",
+        repo_id="licesma/sam-3d-objects-weights",
         repo_type="model",
-        local_dir=temp_dir,
-        token=hf_token,  # Will use cached token if None
+        local_dir=destination_dir,
     )
     
-    src = os.path.join(temp_dir, "checkpoints")
-    if os.path.exists(src):
-        os.makedirs(destination_dir, exist_ok=True)
-        for item in os.listdir(src):
-            shutil.move(os.path.join(src, item), os.path.join(destination_dir, item))
-    
-    # Cleanup temp download
-    shutil.rmtree(temp_dir, ignore_errors=True)
     print("SAM 3D Objects checkpoints downloaded successfully.")
     return True
 
@@ -166,7 +141,7 @@ def main():
     
      # --- SAM 3D Objects Checkpoints (requires HF auth) ---
     print("\n--- [11/11] Downloading SAM 3D Objects checkpoints ---")
-    sam3d_ckpt_dir = os.path.join(base_dir, "third_party/sam-3d-objects/checkpoints/hf")
+    sam3d_ckpt_dir = os.path.join(base_dir, "third_party/sam-3d-objects/checkpoints")
     download_sam3d_checkpoints(sam3d_ckpt_dir)
 
     print("\n\n--- All dependencies set up successfully! ---")
