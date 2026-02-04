@@ -14,6 +14,7 @@ import sys
 from isaaclab.app import AppLauncher
 from typing import Optional, List
 import copy
+from timing_utils import Timer, print_timing_summary, timed, ENABLE_DETAILED_TIMING
 file_path = Path(__file__).resolve()
 import imageio 
 
@@ -173,6 +174,7 @@ class RandomizeExecution(BaseSimulator):
        
     
 
+    @timed("RandomizeExecution.reset")
     def reset(self, env_ids=None):
         super().reset(env_ids)
         device = self.object_prim.device
@@ -242,11 +244,13 @@ class RandomizeExecution(BaseSimulator):
 
         self.clear_data()
 
+    @timed("RandomizeExecution.compute_components")
     def compute_components(self):
         self.robot_poses_list, self.object_poses_dict, self.object_trajectory_list, self.final_gripper_state_list, self.pregrasp_pose_list, self.grasp_pose_list, self.end_pose_list = compute_poses_from_traj_cfg(self.traj_cfg_list)
        
 
 
+    @timed("RandomizeExecution.compute_object_goal_traj")
     def compute_object_goal_traj(self):
         B = self.scene.num_envs
         # obj_state = self.object_prim.data.root_com_state_w[:, :7]  # [B,7], pos(3)+quat(wxyz)(4)
@@ -287,6 +291,7 @@ class RandomizeExecution(BaseSimulator):
         #print(f"self.obj_goal_traj_w shape: {self.obj_goal_traj_w.shape}")
 
 
+    @timed("RandomizeExecution.lift_up")
     def lift_up(self, height=0.12, gripper_open=False, steps=8):
         """
         Lift up by a certain height (m) from current EE pose.
@@ -328,6 +333,7 @@ class RandomizeExecution(BaseSimulator):
         jp = self.wait(gripper_open=gripper_open, steps=steps)
         return jp
 
+    @timed("RandomizeExecution.follow_object_goals")
     def follow_object_goals(self, start_joint_pos, sample_step=1, recalibrate_interval = 3, visualize=True):
         """
         follow precompute object absolute trajectory: self.obj_goal_traj_w:
@@ -418,6 +424,7 @@ class RandomizeExecution(BaseSimulator):
         return joint_pos, is_success
 
 
+    @timed("RandomizeExecution.follow_object_centers")
     def follow_object_centers(self, start_joint_pos, sample_step=1, recalibrate_interval = 3, visualize=True):
         B = self.scene.num_envs
         obj_goal_all = self.obj_goal_traj_w  # [B, T, 4, 4]
@@ -498,6 +505,7 @@ class RandomizeExecution(BaseSimulator):
         return joint_pos, is_grasp_success
 
 
+    @timed("RandomizeExecution.refine_grasp_pose")
     def refine_grasp_pose(self, init_root_pose, grasp_pose, pregrasp_pose):
         """
         Refine grasp and pregrasp poses based on the difference between 
@@ -603,6 +611,7 @@ class RandomizeExecution(BaseSimulator):
     #     return is_success.cpu().numpy()
 
     
+    @timed("RandomizeExecution.is_success")
     def is_success(self, position_threshold: float = 0.10, gripper_threshold: float = 0.10, holding_threshold: float = 0.02) -> torch.Tensor:
         """
         Verify if the manipulation task succeeded by checking:
@@ -718,6 +727,7 @@ class RandomizeExecution(BaseSimulator):
         return success_mask
 
 
+    @timed("RandomizeExecution.is_grasp_success")
     def is_grasp_success(self):
         ee_w  = self.robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
         obj_w = self.object_prim.data.root_com_pos_w[:, 0:3]
@@ -726,6 +736,7 @@ class RandomizeExecution(BaseSimulator):
         return (dist < 0.15).cpu().numpy()
 
 
+    @timed("RandomizeExecution.viz_object_goals")
     def viz_object_goals(self, sample_step=1, hold_steps=20):
         self.reset()
         self.wait(gripper_open=True, steps=10, record = False)
@@ -754,6 +765,7 @@ class RandomizeExecution(BaseSimulator):
                 self.step()
 
     # ---------- Helpers ----------
+    @timed("RandomizeExecution._to_base")
     def _to_base(self, pos_w: np.ndarray | torch.Tensor, quat_w: np.ndarray | torch.Tensor):
         """World → robot base frame for all envs."""
         root = self.robot.data.root_state_w[:, 0:7]  # [B,7]
@@ -764,6 +776,7 @@ class RandomizeExecution(BaseSimulator):
         return pb, qb  # [B,3], [B,4]
 
     # ---------- Batched execution & lift-check ----------
+    @timed("RandomizeExecution.build_grasp_info")
     def build_grasp_info(
         self,
         grasp_pos_w_batch: np.ndarray,   # (B,3)  GraspNet proposal in world frame
@@ -792,6 +805,7 @@ class RandomizeExecution(BaseSimulator):
             "p_b": pb,      "q_b": qb,
         }
 
+    @timed("RandomizeExecution.get_bad_visual_envs")
     def get_bad_visual_envs(self, ratio_threshold: float = 0.65) -> list[int]:
         """
         Identify envs where robot position is bad (occludes object).
@@ -842,6 +856,7 @@ class RandomizeExecution(BaseSimulator):
         
         return list(bad_envs)
 
+    @timed("RandomizeExecution.inference")
     def inference(self) -> list[int]:
         """
         Main function of the heuristic manipulation policy.
@@ -959,11 +974,12 @@ class RandomizeExecution(BaseSimulator):
         if self.record:
             import time
             t_save_start = time.time()
-            self.save_data(ignore_keys=["segmask", "depth"], env_ids=success_env_ids, export_hdf5=True, formal=True)
+            self.save_data(ignore_keys=["segmask", "depth"], env_ids=success_env_ids, export_hdf5=True, save_other_things=False, formal=True)
             print(f"[TIMING] save_data took {time.time() - t_save_start:.2f}s")
         
         return success_env_ids
 
+    @timed("RandomizeExecution.run_batch_trajectory")
     def run_batch_trajectory(self, traj_cfg_list: List[TrajectoryCfg]):
         import time
         t_start = time.time()
@@ -979,6 +995,7 @@ class RandomizeExecution(BaseSimulator):
         
         return result
 
+    @timed("RandomizeExecution.from_self_to_sim_cfg")
     def from_self_to_sim_cfg(self, key: str) -> None:
         """Export simulation configuration to JSON file."""
         sim_info = {}
@@ -1102,6 +1119,7 @@ def sim_randomize_rollout(keys: list[str], args_cli: argparse.Namespace):
         
         # Close env only once at the end
         print("[INFO] Closing environment...")
+        print_timing_summary()
         env.close()
 
         # for timestep in range(len(success_trajectory_config_list),10):

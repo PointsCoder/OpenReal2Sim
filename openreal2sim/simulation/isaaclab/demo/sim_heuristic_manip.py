@@ -13,6 +13,7 @@ import torch
 import yaml
 from isaaclab.app import AppLauncher
 import sys
+from timing_utils import Timer, timed, print_timing_summary, ENABLE_DETAILED_TIMING
 file_path = Path(__file__).resolve()
 sys.path.append(str(file_path.parent))
 
@@ -106,6 +107,7 @@ class HeuristicManipulation(BaseSimulator):
         self.grasps_use = grasps_use
     
 
+    @timed("HeuristicManipulation.reset")
     def reset(self, env_ids=None, rechoose_robot_position=False):
         super().reset(env_ids)
         if rechoose_robot_position:
@@ -137,6 +139,7 @@ class HeuristicManipulation(BaseSimulator):
             self.clear_data()
             self.robot.update(self.sim_dt)
 
+    @timed("HeuristicManipulation.load_obj_goal_traj")
     def load_obj_goal_traj(self):
         """
         Load the relative trajectory Δ_w (T,4,4) and precompute the absolute
@@ -184,6 +187,7 @@ class HeuristicManipulation(BaseSimulator):
 
         self.obj_goal_traj_w = obj_goal  # [B, T, 4, 4]
 
+    @timed("HeuristicManipulation.follow_object_goals")
     def follow_object_goals(self, start_joint_pos, sample_step=1, recalibrate_interval = 1, visualize=True):
         """
         follow precompute object absolute trajectory: self.obj_goal_traj_w:
@@ -345,6 +349,7 @@ class HeuristicManipulation(BaseSimulator):
         return pb, qb  # [B,3], [B,4]
 
         # ---------- Batched execution & lift-check ----------
+    @timed("HeuristicManipulation.execute_and_lift_once_batch")
     def execute_and_lift_once_batch(self, info: dict, lift_height=0.12) -> tuple[np.ndarray, np.ndarray]:
         """
         Reset → pre → grasp → close → lift → hold; return (success[B], score[B]).
@@ -661,6 +666,7 @@ class HeuristicManipulation(BaseSimulator):
         }
 
   
+    @timed("HeuristicManipulation.grasp_trials")
     def grasp_trials(self, gg):
         B = self.scene.num_envs
         print(f"[INFO] len(gg): {len(gg)}")
@@ -789,6 +795,7 @@ class HeuristicManipulation(BaseSimulator):
             jp = self.wait(gripper_open=g_b, steps=3)
         return True
 
+    @timed("HeuristicManipulation.inference")
     def inference(self) -> list[int]:
         """
         Main function of the heuristic manipulation policy.
@@ -990,6 +997,17 @@ class HeuristicManipulation(BaseSimulator):
         Judge if robot position is good by checking if object (excluding robot) occupies too much of the image.
         Uses current camera instance segmentation to extract object-only mask.
         """
+        # Early return if save_dict lists are empty
+        if "segmask" not in self.save_dict or len(self.save_dict["segmask"]) == 0:
+            print("[WARN] judge_robot_position_with_mask: No segmask data, returning False")
+            return False
+        if "robot_mask" not in self.save_dict or len(self.save_dict["robot_mask"]) == 0:
+            print("[WARN] judge_robot_position_with_mask: No robot_mask data, returning False")
+            return False
+        if "object_mask" not in self.save_dict or len(self.save_dict["object_mask"]) == 0:
+            print("[WARN] judge_robot_position_with_mask: No object_mask data, returning False")
+            return False
+            
         robot_mask = self.save_dict["robot_mask"]
         object_mask = self.save_dict["object_mask"]
         seg_mask = self.save_dict["segmask"]
@@ -1225,6 +1243,7 @@ def sim_heuristic_manip(key: str, args_cli: argparse.Namespace, config_path: Opt
         print(f"[ERR] Failed to save reference trajectory to task config for key '{key}'!")
         env.close()
         sys.exit(1)
+    print_timing_summary()
     env.close()
     return True 
 

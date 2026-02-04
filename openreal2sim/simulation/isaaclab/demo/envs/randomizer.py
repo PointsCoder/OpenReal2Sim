@@ -6,6 +6,10 @@ from .task_cfg import TaskCfg, TaskType, SuccessMetric, SuccessMetricType, Traje
 
 import torch
 import transforms3d
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from timing_utils import Timer, timed, ENABLE_DETAILED_TIMING
 
 def pose_to_mat(pos, quat):
     if torch.is_tensor(pos):  pos  = pos.cpu().numpy()
@@ -28,6 +32,7 @@ class Randomizer(TaskCfg):
         self.task_cfg = task_cfg
 
     
+    @timed("Randomizer.generate_randomized_scene_cfg")
     def generate_randomized_scene_cfg(self, grid_dist: float, grid_num: int, angle_random_range: float, angle_random_num: int, traj_randomize_num:int, scene_randomize_num: int, robot_pose_randomize_range, robot_pose_randomize_angle, robot_pose_randomize_num, fix_end_pose: bool = False, fix_other_objects: bool = False, fix_robot_pose: bool = False, use_no_interpolation: bool = False, fix_everything: bool = False):
         # Step 1: Generate candidate transforms
       

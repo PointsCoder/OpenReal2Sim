@@ -14,6 +14,7 @@ import imageio
 import cv2
 import h5py
 import sys
+from timing_utils import Timer, timed, ENABLE_DETAILED_TIMING
 file_path = Path(__file__).resolve()
 sys.path.append(str(file_path.parent))
 
@@ -149,6 +150,8 @@ class BaseSimulator:
         self._all_env_ids = torch.arange(
             self.num_envs, device=sim.device, dtype=torch.long
         )
+        # Additional timing instrumentation attributes
+        self._motion_planning_stats = {"count": 0, "total_time": 0.0, "failures": 0}
 
         self.cam_dict = cam_dict
         self.out_dir: Path = out_dir
@@ -266,6 +269,9 @@ class BaseSimulator:
             "gripper_pos": [], "gripper_cmd": [], "ee_pose_cam": [],
             "composed_rgb": [], "joint_pos_des": [], "ee_pose_l": [], # composed rgb image with background and foreground
         }
+        # Keys to skip when recording data (optimization - skip large unused arrays)
+        # Default: skip depth (not used in HDF5 export for most workflows)
+        self.skip_record_keys = {"depth"}
 
         # visualization
         self.selected_object_id = 0
@@ -299,6 +305,7 @@ class BaseSimulator:
             self.prepare_curobo()
             print("curobo motion planning ready.")
         
+    @timed("BaseSimulator._update_object_prim")
     def _update_object_prim(self):
         """Update object_prim based on selected_object_id. Called after selected_object_id is set."""
         if self._selected_object_id is None:
@@ -314,6 +321,7 @@ class BaseSimulator:
                 if f"object_" in key and key != prim_name:
                     self.other_object_prims.append(self.scene[key])
     # -------- Curobo Motion Planning ----------
+    @timed("BaseSimulator.prepare_curobo")
     def prepare_curobo(self):
 
         setup_curobo_logger("error")
@@ -337,6 +345,7 @@ class BaseSimulator:
         )
 
     # ---------- Helpers ----------
+    @timed("BaseSimulator._ensure_batch_pose")
     def _ensure_batch_pose(self, p, q):
         """Ensure position [B,3], quaternion [B,4] on device."""
         B = self.scene.num_envs
@@ -348,6 +357,7 @@ class BaseSimulator:
             q = q.view(1, -1).repeat(B, 1)
         return p.contiguous(), q.contiguous()
 
+    @timed("BaseSimulator._traj_to_BT7")
     def _traj_to_BT7(self, traj):
         """Normalize various curobo traj.position shapes to [B, T, 7]."""
         B = self.scene.num_envs
@@ -369,6 +379,7 @@ class BaseSimulator:
         return flat.view(B, T, 7).contiguous()
 
     # ---------- Planning / Execution (Single) ----------
+    @timed("BaseSimulator.reinitialize_motion_gen")
     def reinitialize_motion_gen(self):
         """
         Reinitialize the motion generation object.
@@ -412,6 +423,7 @@ class BaseSimulator:
             return False
 
   
+    @timed("BaseSimulator.motion_planning_single")
     def motion_planning_single(
         self, position, quaternion, max_attempts=1, use_graph=True, max_retries=1
     ):
@@ -515,6 +527,7 @@ class BaseSimulator:
     # ---------- Planning / Execution (Batched) ----------
    
 
+    @timed("BaseSimulator.motion_planning_batch")
     def motion_planning_batch(
         self, position, quaternion, max_attempts=1, allow_graph=False, max_retries=1
     ):
@@ -676,6 +689,7 @@ class BaseSimulator:
 
 
 
+    @timed("BaseSimulator.motion_planning")
     def motion_planning(self, position, quaternion, max_attempts=1):
         if self.scene.num_envs == 1:
             return self.motion_planning_single(
@@ -686,6 +700,7 @@ class BaseSimulator:
                 position, quaternion, max_attempts=max_attempts, allow_graph=False
             )
 
+    @timed("BaseSimulator.move_to_motion_planning")
     def move_to_motion_planning(
         self,
         position: torch.Tensor,
@@ -729,6 +744,7 @@ class BaseSimulator:
         return last, success
 
     # ---------- Visualization ----------
+    @timed("BaseSimulator.show_goal")
     def show_goal(self, pos, quat):
         """
         show a pose with visual marker(s).
@@ -760,6 +776,7 @@ class BaseSimulator:
         else:
             self.goal_vis_list[0].visualize(pos_t, quat_t)
 
+    @timed("BaseSimulator.set_robot_pose")
     def set_robot_pose(self, robot_pose: torch.Tensor):
         if robot_pose.ndim == 1:
             self.robot_pose = (
@@ -773,6 +790,7 @@ class BaseSimulator:
 
 
     # ---------- Environment Step ----------
+    @timed("BaseSimulator.step")
     def step(self):
         self.scene.write_data_to_sim()
         self.sim.step()
@@ -786,6 +804,7 @@ class BaseSimulator:
         self.scene.update(self.sim_dt)
 
     # ---------- Apply actions to robot joints ----------
+    @timed("BaseSimulator.apply_actions")
     def apply_actions(self, joint_pos_des, gripper_open: bool = True):
         # joint_pos_des: [B, n_joints]
         # Set joint targets (this happens at task step frequency)
@@ -811,6 +830,7 @@ class BaseSimulator:
 
 
     # ---------- EE control ----------
+    @timed("BaseSimulator.move_to")
     def move_to(
         self,
         position: torch.Tensor,
@@ -827,6 +847,7 @@ class BaseSimulator:
                 position, quaternion, gripper_open=gripper_open)
             
 
+    @timed("BaseSimulator.move_to_ik")
     def move_to_ik(
         self,
         position: torch.Tensor,
@@ -908,6 +929,7 @@ class BaseSimulator:
         return joint_pos_des
 
     # ---------- Robot Waiting ----------
+    @timed("BaseSimulator.wait")
     def wait(self, gripper_open, steps: int, record: bool = True):
         joint_pos_des = self.robot.data.joint_pos[
             :, self.robot_entity_cfg.joint_ids
@@ -920,6 +942,7 @@ class BaseSimulator:
         return joint_pos_des
 
     # ---------- Reset Envs ----------
+    @timed("BaseSimulator.reset")
     def reset(self, env_ids=None):
         """
         Reset all envs or only those in env_ids.
@@ -1011,6 +1034,7 @@ class BaseSimulator:
 
 
     # ---------- Get Observations ----------
+    @timed("BaseSimulator.get_observation")
     def get_observation(self, gripper_open) -> Dict[str, torch.Tensor]:
         # camera outputs (already batched)
         rgb = self.camera.data.output["rgb"]  # [B,H,W,3]
@@ -1097,20 +1121,33 @@ class BaseSimulator:
         }
 
     # ---------- Task Completion Verifier ----------
+    @timed("BaseSimulator.is_success")
     def is_success(self) -> bool:
         raise NotImplementedError(
             "BaseSimulator.is_success() should be implemented in subclass."
         )
 
     # ---------- Data Recording & Saving & Clearing ----------
-    def record_data(self, obs: Dict[str, torch.Tensor]):
+    @timed("BaseSimulator.record_data")
+    def record_data(self, obs: Dict[str, torch.Tensor], skip_keys: set = None):
+        """Record observation data. Use skip_keys to skip recording certain keys for speed."""
+        if skip_keys is None:
+            skip_keys = set()
         # task_step_count increments at task step frequency (every decimation physics steps)
         if self.task_step_count % self.save_interval == 0:
+            # Always record essential data
             self.save_dict["rgb"].append(obs["rgb"].cpu().numpy())  # [B,H,W,3]
-            self.save_dict["depth"].append(obs["depth"].cpu().numpy())  # [B,H,W]
-            self.save_dict["segmask"].append(obs["fg_mask"].cpu().numpy())  # [B,H,W]
-            self.save_dict["robot_mask"].append(obs["robot_mask"].cpu().numpy())  # [B,H,W]
-            self.save_dict["object_mask"].append(obs["object_mask"].cpu().numpy())  # [B,H,W]
+            self.save_dict["segmask"].append(obs["fg_mask"].cpu().numpy())  # [B,H,W] - needed for compositing
+            
+            # Skip large arrays if not needed (depth, object_mask not used in HDF5)
+            if "depth" not in skip_keys:
+                self.save_dict["depth"].append(obs["depth"].cpu().numpy())  # [B,H,W]
+            if "robot_mask" not in skip_keys:
+                self.save_dict["robot_mask"].append(obs["robot_mask"].cpu().numpy())  # [B,H,W]
+            if "object_mask" not in skip_keys:
+                self.save_dict["object_mask"].append(obs["object_mask"].cpu().numpy())  # [B,H,W]
+            
+            # Small arrays - always record
             self.save_dict["joint_pos"].append(obs["joint_pos"].cpu().numpy())  # [B,nJ]
             self.save_dict["gripper_pos"].append(obs["gripper_pos"].cpu().numpy())  # [B,3]
             self.save_dict["gripper_cmd"].append(obs["gripper_cmd"].cpu().numpy())  # [B,1]
@@ -1118,32 +1155,79 @@ class BaseSimulator:
             self.save_dict["ee_pose_cam"].append(obs["ee_pose_cam"].cpu().numpy())
             self.save_dict["ee_pose_l"].append(obs["ee_pose_l"].cpu().numpy())
 
+    @timed("BaseSimulator.clear_data")
     def clear_data(self):
+        import gc
+        import torch
         for key in self.save_dict.keys():
             self.save_dict[key] = []
+        # Force garbage collection to release large numpy arrays
+        gc.collect()
+        # Clear CUDA memory cache to prevent GPU OOM
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
  
+    @timed("BaseSimulator._env_dir")
     def _env_dir(self, base: Path, b: int) -> Path:
         d = base / f"env_{b:03d}"
         d.mkdir(parents=True, exist_ok=True)
         return d
     
+    @timed("BaseSimulator._get_next_demo_dir")
     def _get_next_demo_dir(self, base: Path) -> Path:
         already_existing_num = len(list(base.iterdir()))
         return base / f"demo_{already_existing_num:03d}.mp4"
 
+    @timed("BaseSimulator.save_data")
     def save_data(self, ignore_keys: List[str] = [], env_ids: Optional[List[int]] = None, export_hdf5: bool = False, save_other_things: bool = True, formal = True):
-        self.save_dict["joint_pos_des"] = np.array(self.joint_pos_des_list) # Size: T, B, 7
-        stacked = {k: np.array(v) for k, v in self.save_dict.items()}
+        import time as _time
+        import gc
+        _t0 = _time.time()
+        
+        # Handle env_ids early and return if empty
         if env_ids is None:
             env_ids = self._all_env_ids.cpu().numpy()
+        if len(env_ids) == 0:
+            print(f"[INFO]: save_data called with empty env_ids, skipping")
+            if export_hdf5:
+                self.export_batch_data_to_hdf5([], [], [])
+            return
+        
+        # Early return if no RGB data was recorded
+        if "rgb" not in self.save_dict or len(self.save_dict["rgb"]) == 0:
+            print("[WARN] No RGB data to save, skipping save_data")
+            if export_hdf5:
+                self.export_batch_data_to_hdf5([], [], [])
+            return
+        
+        _t1 = _time.time()
+        self.save_dict["joint_pos_des"] = np.array(self.joint_pos_des_list) # Size: T, B, 7
+        
+        # Stack only small arrays - these are cheap
+        stacked = {}
+        small_keys = ["joint_pos_des", "gripper_open", "ee_pose_l", "action", "joint_pos", "joint_vel", 
+                      "gripper_pos", "gripper_cmd", "ee_pose_cam", "actions", "action_indices", "robot_mask"]
+        for k in small_keys:
+            if k in self.save_dict:
+                v = self.save_dict[k]
+                if len(v) > 0:
+                    if isinstance(v[0], np.ndarray):
+                        stacked[k] = np.stack(v, axis=0)
+                    else:
+                        stacked[k] = np.array(v)
+        
+        _t2 = _time.time()
+        print(f"[TIMING] save_data small array stacking took {_t2 - _t1:.2f}s")
+        
+        # Get frame count from rgb list (don't stack yet!)
+        T = len(self.save_dict["rgb"])
+        B_total = self.save_dict["rgb"][0].shape[0] if T > 0 else 0
+        
         if formal:
             video_dir = self.out_dir / self.img_folder / "videos"
         else:
             video_dir = self.out_dir / self.img_folder / "videos_debug"
         video_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Pre-allocate composed_rgb array (no deep copy needed)
-        self.save_dict["composed_rgb"] = np.empty_like(stacked["rgb"])
         
         # Load background image once
         bg_rgb_path = self.task_cfg.background_cfg.background_rgb_path
@@ -1153,88 +1237,170 @@ class BaseSimulator:
         video_paths = []
         fps = 1 / (self.sim_dt * self.decimation * self.save_interval)
         
+        _t_loop_start = _time.time()
+        _t_save_other_total = 0.0
+        _t_compose_total = 0.0
+        _t_video_total = 0.0
+        
+        # For HDF5, we need composed frames - build incrementally if needed
+        composed_for_hdf5 = {} if export_hdf5 else None
+        
         for b in env_ids:
+            _t_env_start = _time.time()
             demo_path = self._get_next_demo_dir(video_dir)
             hdf5_names.append(demo_path.stem)
+            
             if save_other_things:
+                _t_other_start = _time.time()
                 if formal:
-                    demo_dir = self.out_dir / self.img_folder/ "demos"
+                    demo_dir = self.out_dir / self.img_folder / "demos"
                 else:
-                    demo_dir = self.out_dir / self.img_folder/ "demos_debug"
+                    demo_dir = self.out_dir / self.img_folder / "demos_debug"
                 demo_dir.mkdir(parents=True, exist_ok=True)
                 
                 demo_dir = self._get_next_demo_dir(demo_dir).with_suffix('')
                 env_dir = self._env_dir(demo_dir, b)
-
                 env_dir.mkdir(parents=True, exist_ok=True)
 
+                # Save sim_video.mp4 (raw RGB) - streaming frame by frame
+                video_path = env_dir / "sim_video.mp4"
+                writer = imageio.get_writer(video_path, fps=fps, codec='libx264', quality=8, macro_block_size=None)
+                for frame_data in self.save_dict["rgb"]:
+                    writer.append_data(frame_data[b])
+                writer.close()
+                
+                # Save mask_video.mp4 - streaming
+                if "segmask" in self.save_dict and len(self.save_dict["segmask"]) > 0:
+                    video_path = env_dir / "mask_video.mp4"
+                    writer = imageio.get_writer(video_path, fps=fps, codec='libx264', quality=8, macro_block_size=None)
+                    for frame_data in self.save_dict["segmask"]:
+                        mask_frame = (frame_data[b].astype(np.uint8) * 255)
+                        writer.append_data(mask_frame)
+                    writer.close()
+                
+                # Save depth_video.mp4 - streaming (only if not ignored)
+                if "depth" not in ignore_keys and "depth" in self.save_dict and len(self.save_dict["depth"]) > 0:
+                    # First pass: find max depth for normalization
+                    max_depth = 0.0
+                    for frame_data in self.save_dict["depth"]:
+                        depth_frame = frame_data[b]
+                        flat = depth_frame[depth_frame > 0]
+                        if flat.size > 0:
+                            max_depth = max(max_depth, np.percentile(flat, 99))
+                    if max_depth == 0:
+                        max_depth = 1.0
+                    
+                    video_path = env_dir / "depth_video.mp4"
+                    writer = imageio.get_writer(video_path, fps=fps, codec='libx264', quality=8, macro_block_size=None)
+                    depth_frames_for_npy = []
+                    for frame_data in self.save_dict["depth"]:
+                        depth_frame = frame_data[b]
+                        depth_frames_for_npy.append(depth_frame)
+                        depth_norm = np.clip(depth_frame / max_depth * 255.0, 0, 255).astype(np.uint8)
+                        writer.append_data(depth_norm)
+                    writer.close()
+                    np.save(env_dir / "depth.npy", np.stack(depth_frames_for_npy, axis=0))
+                
+                # Save small stacked arrays
                 for key, arr in stacked.items():
-                    if key in ignore_keys:  # skip the keys for storage
+                    if key in ignore_keys or key in ["rgb", "segmask", "depth", "composed_rgb"]:
                         continue
-                    if key == "rgb":
-                        video_path = env_dir / "sim_video.mp4"
-                        # Use ffmpeg with faster codec
-                        writer = imageio.get_writer(
-                            video_path, fps=fps, codec='libx264', quality=8, macro_block_size=None
-                        )
-                        for frame in arr[:, b]:
-                            writer.append_data(frame)
-                        writer.close()                     
-                    elif key == "segmask":
-                        video_path = env_dir / "mask_video.mp4"
-                        writer = imageio.get_writer(
-                            video_path, fps=fps, codec='libx264', quality=8, macro_block_size=None
-                        )
-                        # Vectorize mask conversion
-                        mask_frames = (arr[:, b].astype(np.uint8) * 255)
-                        for frame in mask_frames:
-                            writer.append_data(frame)
-                        writer.close()
-                    elif key == "depth":
-                        depth_seq = arr[:, b]
-                        flat = depth_seq[depth_seq > 0]
-                        max_depth = np.percentile(flat, 99) if flat.size > 0 else 1.0
-                        # Vectorized depth normalization
-                        depth_norm = np.clip(depth_seq / max_depth * 255.0, 0, 255).astype(np.uint8)
-                        video_path = env_dir / "depth_video.mp4"
-                        writer = imageio.get_writer(
-                            video_path, fps=fps, codec='libx264', quality=8, macro_block_size=None
-                        )
-                        for frame in depth_norm:
-                            writer.append_data(frame)
-                        writer.close()
-                        np.save(env_dir / f"{key}.npy", depth_seq)
-                    elif key != "composed_rgb" and len(arr.shape) >= 2:
+                    if len(arr.shape) >= 2 and arr.shape[1] > b:
                         np.save(env_dir / f"{key}.npy", arr[:, b])
-            # Batch compose all frames for this environment
-            rgb_env = stacked["rgb"][:, b]  # [T, H, W, 3]
-            mask_env = stacked["segmask"][:, b]  # [T, H, W]
+                
+                _t_save_other_total += _time.time() - _t_other_start
             
-            # Compose frames in batch
-            composed_frames = []
-            for t in range(rgb_env.shape[0]):
-                composed = self.convert_real(mask_env[t], bg_rgb, rgb_env[t])
-                self.save_dict["composed_rgb"][t, b] = composed
-                composed_frames.append(composed)
+            # Streaming compose and write composed video - no large array allocation!
+            _t_compose_start = _time.time()
             
-            # Write video with faster codec
+            # Log once for debugging
+            if b == env_ids[0]:
+                print(f"[DEBUG_V2] Streaming compose: T={T} frames, env={b}")
+            
             writer = imageio.get_writer(demo_path, fps=fps, codec='libx264', quality=8, macro_block_size=None)
-            for frame in composed_frames:
-                writer.append_data(frame)
+            
+            # If HDF5 export needed, collect composed frames
+            composed_frames_for_env = [] if export_hdf5 else None
+            
+            for t in range(T):
+                rgb_frame = self.save_dict["rgb"][t][b]  # [H, W, 3]
+                mask_frame = self.save_dict["segmask"][t][b]  # [H, W] or [H, W, 1]
+                
+                # Add channel dim if needed
+                if mask_frame.ndim == 2:
+                    mask_3d = mask_frame[..., np.newaxis]  # [H, W, 1]
+                else:
+                    mask_3d = mask_frame
+                
+                # Compose single frame - very fast, minimal memory
+                composed_frame = np.where(mask_3d, rgb_frame, bg_rgb)
+                writer.append_data(composed_frame)
+                
+                if composed_frames_for_env is not None:
+                    composed_frames_for_env.append(composed_frame)
+            
             writer.close()
             video_paths.append(str(demo_path))
+            
+            _t_compose_total += _time.time() - _t_compose_start
+            
+            # Store for HDF5 if needed
+            if export_hdf5 and composed_frames_for_env:
+                composed_for_hdf5[b] = np.stack(composed_frames_for_env, axis=0)  # [T, H, W, 3]
+            
             print(f"[INFO]: Demonstration is saved at: {demo_path}")
         
+        _t_loop_end = _time.time()
+        print(f"[TIMING] save_data loop took {_t_loop_end - _t_loop_start:.2f}s (save_other:{_t_save_other_total:.2f}s, compose:{_t_compose_total:.2f}s)")
         
         if export_hdf5:
-            self.export_batch_data_to_hdf5(hdf5_names, video_paths, env_ids)
+            # Build stacked arrays for HDF5 export - stack from lists
+            print(f"[DEBUG] Preparing data for HDF5 export: {len(env_ids)} envs")
+            _t_hdf5_prep_start = _time.time()
+            
+            # Stack rgb and segmask now (needed for HDF5)
+            stacked["rgb"] = np.stack(self.save_dict["rgb"], axis=0)  # [T, B, H, W, 3]
+            stacked["segmask"] = np.stack(self.save_dict["segmask"], axis=0)  # [T, B, H, W] or [T, B, H, W, 1]
+            
+            # Build composed_rgb from our collected frames
+            T, B_full = stacked["rgb"].shape[0], stacked["rgb"].shape[1]
+            H, W, C = stacked["rgb"].shape[2:]
+            composed_rgb = np.zeros((T, B_full, H, W, C), dtype=stacked["rgb"].dtype)
+            for b in env_ids:
+                if b in composed_for_hdf5:
+                    composed_rgb[:, b] = composed_for_hdf5[b]
+            stacked["composed_rgb"] = composed_rgb
+            
+            print(f"[TIMING] HDF5 data prep took {_time.time() - _t_hdf5_prep_start:.2f}s")
+            self.export_batch_data_to_hdf5(hdf5_names, video_paths, env_ids, stacked=stacked)
+        
+        # Explicitly release and force GC
+        if export_hdf5:
+            del stacked
+            del composed_for_hdf5
+        gc.collect()
            
        
+    @timed("BaseSimulator.get_current_frame_count")
     def get_current_frame_count(self) -> int:
         return len(self.save_dict["rgb"])
 
-    def export_batch_data_to_hdf5(self, hdf5_names: List[str], video_paths: List[str], env_ids: List[int]) -> int:
-        """Export buffered trajectories to RoboTwin-style HDF5 episodes."""
+    @timed("BaseSimulator.export_batch_data_to_hdf5")
+    def export_batch_data_to_hdf5(self, hdf5_names: List[str], video_paths: List[str], env_ids: List[int], stacked: Optional[Dict[str, np.ndarray]] = None) -> int:
+        """Export buffered trajectories to RoboTwin-style HDF5 episodes.
+        
+        Args:
+            stacked: Optional pre-stacked data dict. If None, will stack from save_dict (expensive).
+        """
+        import time
+        t_start = time.time()
+        
+        # Early return if nothing to export
+        num_envs = len(hdf5_names)
+        if num_envs == 0:
+            print(f"[INFO]: Exported 0 HDF5 episodes (nothing to export)")
+            return 0
+            
         if self.data_dir is not None:
             target_root = self.data_dir
         else:
@@ -1242,9 +1408,12 @@ class BaseSimulator:
         data_dir = Path(target_root) 
         data_dir.mkdir(parents=True, exist_ok=True)
 
-    
-        num_envs = len(hdf5_names)
-        stacked = {k: np.array(v) for k, v in self.save_dict.items()}
+        # Use pre-stacked data if provided, otherwise stack (expensive!)
+        if stacked is None:
+            print(f"[WARN]: export_batch_data_to_hdf5 called without pre-stacked data, stacking now (slow!)")
+            t_stack = time.time()
+            stacked = {k: np.array(v) for k, v in self.save_dict.items()}
+            print(f"[TIMING] Stacking took {time.time() - t_stack:.2f}s")
        
         episode_names = []
         for idx, name in enumerate(hdf5_names):
@@ -1271,19 +1440,23 @@ class BaseSimulator:
                 # IMPORTANT: Use env_id (actual environment index) for data indexing, not list_idx
                 rgb_frames = stacked["composed_rgb"][:, env_id]  # (T, H, W, 3)
                 
-                # Encode frames using JPEG compression with parallel processing
-                encode_data = []
-                max_len = 0
+                # Parallel JPEG encoding using ThreadPoolExecutor
+                from concurrent.futures import ThreadPoolExecutor
+                import os
                 
-                # Batch encode for better performance
-                for i in range(len(rgb_frames)):
-                    # Use quality=85 for good balance of size/quality
-                    success, encoded_image = cv2.imencode(".jpg", rgb_frames[i], [cv2.IMWRITE_JPEG_QUALITY, 85])
+                def encode_frame(frame):
+                    """Encode a single frame to JPEG."""
+                    success, encoded_image = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     if not success:
-                        raise RuntimeError(f"Failed to encode frame {i}")
-                    jpeg_data = encoded_image.tobytes()
-                    encode_data.append(jpeg_data)
-                    max_len = max(max_len, len(jpeg_data))
+                        raise RuntimeError("Failed to encode frame")
+                    return encoded_image.tobytes()
+                
+                # Use 8 threads for parallel encoding (adjust based on CPU cores)
+                num_workers = min(8, os.cpu_count() or 4)
+                with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                    encode_data = list(executor.map(encode_frame, rgb_frames))
+                
+                max_len = max(len(d) for d in encode_data) if encode_data else 0
                 
                 # Pad all encoded frames to the same length
                 padded_data = [jpeg_data.ljust(max_len, b"\0") for jpeg_data in encode_data]
@@ -1375,11 +1548,12 @@ class BaseSimulator:
                 meta_grp.attrs["episode_name"] = episode_name
                 meta_grp.create_dataset("frame_indices", data=np.arange(frame_count, dtype=np.int32))
 
-        print(f"[INFO]: Exported {num_envs} HDF5 episodes to {data_dir}")
+        print(f"[INFO]: Exported {num_envs} HDF5 episodes to {data_dir} in {time.time() - t_start:.2f}s")
         return num_envs
 
 
 
+    @timed("BaseSimulator.add_text_to_image")
     def add_text_to_image(self, image, env_idx=0, time_step=0):
         """
         Add text overlay to image showing count, joint positions, and gripper command.
@@ -1465,12 +1639,14 @@ class BaseSimulator:
         
         return image
         
+    @timed("BaseSimulator.convert_real")
     def convert_real(self,segmask, bg_rgb, fg_rgb):
         segmask_2d = segmask[..., 0]
         composed = bg_rgb.copy()
         composed[segmask_2d] = fg_rgb[segmask_2d]
         return composed
 
+    @timed("BaseSimulator._quat_to_rot")
     def _quat_to_rot(self, quat: Sequence[float]) -> np.ndarray:
         w, x, y, z = quat
         rot = np.array(
@@ -1483,6 +1659,7 @@ class BaseSimulator:
         )
         return rot
 
+    @timed("BaseSimulator._get_camera_parameters")
     def _get_camera_parameters(self) -> Optional[Tuple[np.ndarray, np.ndarray, Tuple[int, int]]]:
         if self.task_cfg is None:
             return None

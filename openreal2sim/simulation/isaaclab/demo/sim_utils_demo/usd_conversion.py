@@ -31,6 +31,9 @@ import contextlib
 import os
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from timing_utils import Timer, timed, print_timing_summary, ENABLE_DETAILED_TIMING
 
 import carb
 import isaacsim.core.utils.stage as stage_utils
@@ -120,6 +123,7 @@ args = None  # type: ignore
 ########################################################
 ## Converters and USD post-processing (unchanged)
 ########################################################
+@timed("usd_conversion.convert_obj_to_usd")
 def convert_obj_to_usd(obj_path, usd_path):
     log.info(f"Converting {obj_path}")
 
@@ -381,6 +385,7 @@ def count_rigid_api(usd_path):
 ########################################################
 ## Per-key conversion (batch)
 ########################################################
+@timed("usd_conversion.run_conversion_for_key")
 def run_conversion_for_key(key: str):
     global args
 
@@ -410,6 +415,7 @@ def run_conversion_for_key(key: str):
     log.info(f"[{key}] converting {len(args.input)} assets...")
     run_conversion(scene_dict)
 
+@timed("usd_conversion.run_conversion")
 def run_conversion(scene_dict: dict):
     """This is the body of your original `main()` but parameterized and reused per key."""
     if isinstance(args.input, list) and isinstance(args.output, list):
@@ -591,4 +597,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    print_timing_summary()
     simulation_app.close()

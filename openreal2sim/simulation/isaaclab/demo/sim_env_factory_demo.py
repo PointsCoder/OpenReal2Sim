@@ -12,6 +12,10 @@ from typing import Tuple, Optional, List, Dict
 
 import numpy as np
 import transforms3d
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+from timing_utils import Timer, timed, ENABLE_DETAILED_TIMING
 
 # Isaac Lab core
 from isaaclab.utils import configclass
@@ -160,6 +164,7 @@ def create_robot():
 # --------------------------------------------------------------------------------------
 # Dynamic InteractiveSceneCfg builder
 # --------------------------------------------------------------------------------------
+@timed("sim_env_factory.build_tabletop_scene_cfg")
 def build_tabletop_scene_cfg(has_collision: bool = True):
     """
     Auto-generate a multi-object InteractiveSceneCfg subclass:
@@ -286,6 +291,7 @@ def build_tabletop_scene_cfg(has_collision: bool = True):
 # --------------------------------------------------------------------------------------
 # Build cam_dict & init directly from a raw scene dict
 # --------------------------------------------------------------------------------------
+@timed("sim_env_factory.init_scene_from_scene_dict")
 def init_scene_from_scene_dict(
     scene: dict,
     cfgs: dict,
@@ -492,6 +498,7 @@ def get_oid_from_prim_name(prim_name: str) -> str:
     return oid
 
 
+@timed("sim_env_factory.make_env")
 def make_env(
     cfgs: dict,
     num_envs: int = 1,

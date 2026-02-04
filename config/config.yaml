@@ -1,266 +1,107 @@
 keys:
-  # - video_00005
-  # - video_00125
-  # - video_00139
-  # - video_00302
-  # - video_00304
-  # - video_00307
-  # - video_00308
-  # - video_00320 (Issue in motion step)
-  # - video_00325
-  # - video_00327
-  # - video_00335 (Same issue as 320)
-  # - video_00340
-  # - video_00352
-  # - video_00353
-  # - video_00354
-  # - video_00366
-  # - video_00386
-  # - video_00388
-  # - video_00389
-  # - video_00391
-  # - video_00392
-  # - video_00401 (loading failure, can rerun)
-  - video_00409
-  # - video_00410
-  - video_00411
-  - video_00415
-  - video_00449
-  - video_00454
-  - video_00455
-  - video_00456
-  - video_00463
-  - video_00467
-  - video_00475
-  - video_00476
-  - video_00477
-  - video_00478
-  - video_00485
-  # - video_00487
-  - video_00488
-  - video_00501
-  - video_00505
-  - video_00506
-  - video_00508
-  - video_00509
-  - video_00514
-  - video_00516
-  - video_00521
-  - video_00524
-  - video_00527
-  - video_00528
-  - video_00529
-  - video_00531
-  - video_00532
-  - video_00533
-  - video_00534
-  - video_00535
-  - video_00536
-  - video_00537
-  - video_00538
-  - video_00539
-  - video_00540
-  - video_00541
-  - video_00542
-  - video_00544
-  - video_00545
-  - video_00546
-  - video_00551
-  - video_00552
-  - video_00553
-  - video_00554
-  - video_00555
-  - video_00556
-  - video_00557
-  - video_00558
-  - video_00559
-  - video_00560
-  - video_00581
-  - video_00582
-  - video_00583
-  - video_00584
-  - video_00585
-  - video_00586
-  - video_00588
-  - video_00592
-  - video_00593
-  - video_00594
-  - video_00595
-  - video_00596
-  - video_00597
-  - video_00598
-  - video_00599
-  - video_00600
-  - video_00613
-  - video_00615
-  - video_00617
-  - video_00619
-  - video_00621
-  - video_00622
-  - video_00623
-  - video_00624
-  - video_00625
-  - video_00627
-  - video_00630
-  - video_00631
-  - video_00632
-  # - video_00633
-  # - video_00634
-  # - video_00636
-  # - video_00638
-  # - video_00645
-  # - video_00649
-  # - video_00651
-  # - video_00652
-  # - video_00655
-  # - video_00657
-  # - video_00674
-  # - video_00676
-  # - video_00679
-  # - video_00680
-  # - video_00681
-  # - video_00682
-  # - video_00683
-  # - video_00684
-  # - video_00685
-  # - video_00686
-  # - video_00687
-  # - video_00689
-  # - video_00690
-  # - video_00691
-  # - video_00692
-  # - video_00693
-  # - video_00696
-  # - video_00697
-  # - video_00698
-  # - video_00699
-  # - video_00706
-  # - video_00733
-  # - video_00735
-  # - video_00736
-  # - video_00737
-  # - video_00749
-  # - video_00754
-  # - video_00755
-  # - video_00758
-  # - video_00759
-  # - video_00760
-  # - video_00761
-  # - video_00762
-  # - video_00763
-  # - video_00764
-  # - video_00765
-  # - video_00766
-  # - video_00767
-  # - video_00773
-  # - video_00774
-  # - video_00781
-  # - video_00782
-  # - video_00783
-  # - video_00784
-  # - video_00786
-  # - video_00792
-  # - video_00796
-  # - video_00797
-  # - video_00798
-  # - video_00799
-  # - video_00800
-  # - video_00808
-  # - video_00809
-  # - video_00812
-  # - video_00813
-  # - video_00814
-  # - video_00815
-  # - video_00819
-  # - video_00845
-  # - video_00848
-  # - video_00849
-  # - video_00850
-  # - video_00851
-  # - video_00852
-  # - video_00853
-  # - video_00854
-  # - video_00855
-  # - video_00856
-  # - video_00857
-  # - video_00861
-  # - video_00862
-  # - video_00863
-  # - video_00864
-  # - video_00865
-  # - video_00866
-  # - video_00867
-  # - video_00868
-  # - video_00871
-  # - video_00872
-  # - video_00873
-  # - video_00874
-  # - video_00875
-  # - video_00876
-  # - video_00877
-  # - video_00878
-  # - video_00881
-  # - video_00887
-  # - video_00888
-  # - video_00895
-  # - video_00901
-  # - video_00902
-  # - video_00909
-  # - video_00911
-  # - video_00912
-  # - video_00913
-  # - video_00914
-  # - video_00915
-  # - video_00916
-  # - video_00917
-  # - video_00918
-  # - video_00919
-  # - video_00922
-  # - video_00923
-  # - video_00924
-  # - video_00925
-  # - video_00926
-  # - video_00927
-  # - video_00928
-  # - video_00929
-  # - video_00931
-  # - video_00932
-  # - video_00933
-  # - video_00935
-  # - video_00936
-  # - video_00937
-  # - video_00938
-  # - video_00939
-  # - video_00940
-  # - video_00942
-  # - video_00943
-  # - video_00944
-  # - video_00947
-  # - video_00948
-  # - video_00949
-  # - video_00952
-  # - video_00953
-  # - video_00957
-  # - video_00958
-  # - video_00961
-  # - video_00962
-  # - video_00963
-  # - video_00965
-  # - video_00967
-  # - video_00969
-  # - video_00970
-  # - video_00971
-  # - video_00972
-  # - video_00976
-  # - video_00984
-  # - video_00986
-  # - video_00988
-  # - video_00989
-  # - video_00991
-  # - video_00992
-  # - video_00995
-  # - video_00997
-  # - video_00998
+# - video_00409
+# - video_00411
+# - video_00415
+# - video_00449
+# - video_00454
+# - video_00455
+# - video_00456
+# - video_00463
+- video_00467
+# - video_00475
+# - video_00476
+# - video_00477
+# - video_00478
+# - video_00485
+# - video_00488
+# - video_00501
+# - video_00505
+# - video_00506
+# - video_00508
+# - video_00509
+# - video_00514
+# - video_00516
+# - video_00521
+# - video_00524
+# - video_00527
+# - video_00528
+# - video_00529
+# - video_00531
+# - video_00532
+# - video_00533
+# - video_00534
+# - video_00535
+# - video_00536
+# - video_00537
+# - video_00538
+# - video_00539
+# - video_00540
+# - video_00541
+# - video_00542
+# - video_00544
+# - video_00545
+# - video_00546
+# - video_00551
+# - video_00552
+# - video_00553
+# - video_00554
+# - video_00555
+# - video_00556
+# - video_00557
+# - video_00558
+# - video_00559
+# - video_00560
+# - video_00581
+# - video_00582
+# - video_00583
+# - video_00584
+# - video_00585
+# - video_00586
+# - video_00588
+# - video_00592
+# - video_00593
+# - video_00594
+# - video_00595
+# - video_00596
+# - video_00597
+# - video_00598
+# - video_00599
+# - video_00600
+# - video_00613
+# - video_00615
+# - video_00617
+# - video_00619
+# - video_00621
+# - video_00622
+# - video_00623
+# - video_00624
+# - video_00625
+# - video_00627
+# - video_00630
+# - video_00631
+# - video_00632
+# - video_00005
+# - video_00125
+# - video_00139
+# - video_00633
+# - video_00634
+# - video_00636
+# - video_00638
+# - video_00645
+# - video_00649
+# - video_00651
+# - video_00652
+# - video_00655
+# - video_00657
+# - video_00674
+# - video_00676
+# - video_00903
+# - scene_00157
+# - scene_00435
+# - video_00208
+# - video_00073
+# - video_00648
+# - video_00127
 
 # global settings, can be overridden by local settings
 global:

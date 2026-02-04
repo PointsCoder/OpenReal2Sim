@@ -59,9 +59,6 @@ RUN chmod -R 777 /usr/local/lib/python3.10/dist-packages/ \
 ENV TERM=xterm-256color
 RUN git clone https://github.com/PointsCoder/IsaacLab.git "/opt/IsaacLab" && \
     cd "/opt/IsaacLab" && \
-    sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab/setup.py && \
-    sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab_tasks/setup.py && \
-    sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab_rl/setup.py && \
     ./isaaclab.sh --install
 
 # usd conversion 

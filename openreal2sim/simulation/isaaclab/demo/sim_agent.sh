@@ -8,11 +8,32 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd /app && pwd)"
 
 # Default parameters
-gpu_id="1"
+gpu_id="0"  # Will be dynamically selected
 CONFIG_PATH="${ROOT_DIR}/config/config.yaml"
 declare -a PIPELINE=()
 START_IDX=""
 END_IDX=""
+
+# Function to select GPU with most free memory
+select_best_gpu() {
+  # Query nvidia-smi for GPU memory free (in MiB)
+  # Format: gpu_id,memory_free_mib
+  local best_gpu="0"
+  local max_free="0"
+  
+  while IFS=',' read -r gpu_idx mem_free; do
+    # Remove any whitespace
+    gpu_idx=$(echo "$gpu_idx" | tr -d ' ')
+    mem_free=$(echo "$mem_free" | tr -d ' MiB')
+    
+    if [[ -n "$mem_free" && "$mem_free" -gt "$max_free" ]]; then
+      max_free="$mem_free"
+      best_gpu="$gpu_idx"
+    fi
+  done < <(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null)
+  
+  echo "$best_gpu"
+}
 
 # Logging directory
 LOG_DIR="${ROOT_DIR}/logs"
@@ -174,6 +195,12 @@ for key in "${KEYS[@]}"; do
   echo "# Processing key: ${key}"
   echo "# Log file: ${KEY_LOG}"
   echo "########################################################"
+  
+  # Dynamically select the GPU with most free memory
+  gpu_id=$(select_best_gpu)
+  export CUDA_VISIBLE_DEVICES="${gpu_id}"
+  echo "# Selected GPU: ${gpu_id} (most free memory)"
+  echo "########################################################"
   echo ""
   
   # Clear/create the key log file
@@ -193,7 +220,8 @@ for key in "${KEYS[@]}"; do
     echo "Started: $(date)" >> "${KEY_LOG}"
     echo "========================================" >> "${KEY_LOG}"
     
-    export CUDA_VISIBLE_DEVICES="${gpu_id}"
+    # Let Isaac Sim auto-select an available GPU (don't restrict with CUDA_VISIBLE_DEVICES)
+    # export CUDA_VISIBLE_DEVICES=\"${gpu_id}\"
     stage_exit_code=0
     
     case "${stage}" in
@@ -231,6 +259,11 @@ for key in "${KEYS[@]}"; do
     else
       echo "[✓] Stage '${stage}' completed for key '${key}'"
       echo "[✓] SUCCESS: ${stage}" >> "${KEY_LOG}"
+      
+      # Clean up CUDA state between stages to avoid "CUDA bad state" errors
+      echo "[INFO] Cleaning up CUDA state..." >> "${KEY_LOG}"
+      python3 -c "import torch; torch.cuda.empty_cache(); torch.cuda.synchronize() if torch.cuda.is_available() else None" 2>/dev/null || true
+      sleep 2  # Give the GPU driver time to clean up
     fi
   done
   
