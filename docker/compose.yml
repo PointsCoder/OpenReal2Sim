@@ -20,7 +20,7 @@ services:
       - NUMBA_CACHE_DIR=/tmp/numba_cache
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=/tmp/.cache/huggingface
-      - HOST_PROJECT_ROOT=${PWD} # For Docker-in-Docker to mount correct host path
+      - HOST_PROJECT_ROOT=${PWD} 
       - TORCH_EXTENSIONS_DIR=/tmp/.cache/torch_extensions
     working_dir: /app
     volumes:
@@ -32,13 +32,10 @@ services:
       - ${HF_HOME:-~/.cache/huggingface}:/tmp/.cache/huggingface
       - ${HY3DGEN_MODELS:-~/.cache/hy3dgen}:/tmp/.cache/hy3dgen
       - ~/.cache/warp:/tmp/.cache/warp
-      # Use container's own torch_extensions cache to avoid permission issues
-      # - ~/.cache/torch_extensions:/tmp/.cache/torch_extensions
       - ~/.cache/matplotlib:/tmp/.cache/matplotlib
-      - /var/run/docker.sock:/var/run/docker.sock # Docker-in-Docker for calling sam3d container
+      - /var/run/docker.sock:/var/run/docker.sock 
     stdin_open: true
-    # Use root for installation, or override with --user "${HOST_UID}:${HOST_GID}" for development
-    user: root
+    user: "${HOST_UID}:${HOST_GID}"
     tty: true
     command: bash
 
