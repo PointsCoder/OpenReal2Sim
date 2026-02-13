@@ -105,3 +105,10 @@ RUN mkdir -p /tmp/.cache/torch_extensions && \
 ENV TORCH_EXTENSIONS_DIR=/tmp/.cache/torch_extensions
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 ENV HF_HOME=/app/.cache/huggingface
+
+# -------------------------------------------------------------------------
+# Install Docker CLI for Docker-in-Docker support
+# -------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    docker.io \
+    && rm -rf /var/lib/apt/lists/*
