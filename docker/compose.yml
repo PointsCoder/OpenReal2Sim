@@ -20,7 +20,7 @@ services:
       - NUMBA_CACHE_DIR=/tmp/numba_cache
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=/tmp/.cache/huggingface
-      - HOST_PROJECT_ROOT=${PWD} 
+      - HOST_PROJECT_ROOT=${PWD}
       - TORCH_EXTENSIONS_DIR=/tmp/.cache/torch_extensions
     working_dir: /app
     volumes:
@@ -33,9 +33,11 @@ services:
       - ${HY3DGEN_MODELS:-~/.cache/hy3dgen}:/tmp/.cache/hy3dgen
       - ~/.cache/warp:/tmp/.cache/warp
       - ~/.cache/matplotlib:/tmp/.cache/matplotlib
-      - /var/run/docker.sock:/var/run/docker.sock 
+      - /var/run/docker.sock:/var/run/docker.sock
     stdin_open: true
     user: "${HOST_UID}:${HOST_GID}"
+    group_add:
+      - "${DOCKER_GID:-999}"
     tty: true
     command: bash
 
