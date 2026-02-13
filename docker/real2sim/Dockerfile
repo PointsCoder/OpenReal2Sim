@@ -7,12 +7,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # System deps for building native extensions (xformers) + basics
 # -------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
-python3 python3-dev python3-pip python3-venv python-is-python3 \
-build-essential cmake ninja-build pkg-config libopenblas-dev \
-git curl wget ffmpeg bash libspatialindex-dev \
-&& python3 -m pip install --upgrade --no-cache-dir pip wheel setuptools packaging \
-&& rm -rf /var/lib/apt/lists/*
-
+    python3 python3-dev python3-pip python3-venv python-is-python3 \
+    build-essential cmake ninja-build pkg-config libopenblas-dev \
+    git curl wget ffmpeg bash libspatialindex-dev \
+    docker.io \
+    && python3 -m pip install --upgrade --no-cache-dir pip wheel setuptools packaging \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 SHELL ["/bin/bash", "-lc"]
@@ -47,6 +47,9 @@ RUN pip install --no-cache-dir torch-scatter \
 COPY docker/real2sim/requirements.docker.txt         /tmp/requirements.docker.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.docker.txt
 
+# gdown for Google Drive downloads
+RUN pip install --no-cache-dir gdown
+
 
 # -------------------------------------------------------------------------
 # Third-Party compiled Python deps
@@ -56,10 +59,29 @@ RUN pip install --no-cache-dir -r /tmp/requirements.docker.txt
 COPY third_party/mega-sam /app/third_party/mega-sam
 RUN cd /app/third_party/mega-sam/base && python setup.py install
 
+# Grounded-SAM-2 CUDA extension
+COPY third_party/Grounded-SAM-2 /app/third_party/Grounded-SAM-2
+RUN cd /app/third_party/Grounded-SAM-2 && python build_cuda.py build_ext --inplace
+
 # Hunyuan3D
 COPY third_party/Hunyuan3D-2 /app/third_party/Hunyuan3D-2
 RUN cd /app/third_party/Hunyuan3D-2/hy3dgen/texgen/custom_rasterizer && python setup.py install
 RUN cd /app/third_party/Hunyuan3D-2/hy3dgen/texgen/differentiable_renderer && python setup.py install
+
+# pybind11 (needed for FoundationPose C++ extension)
+RUN cd / && git clone https://github.com/pybind/pybind11 &&\
+    cd pybind11 && git checkout v2.10.0 &&\
+    mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DPYBIND11_INSTALL=ON -DPYBIND11_TEST=OFF &&\
+    make -j6 && make install
+
+# Eigen3 (needed for FoundationPose C++ extension)
+RUN cd / && wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz &&\
+    tar xvzf ./eigen-3.4.0.tar.gz &&\
+    cd eigen-3.4.0 &&\
+    mkdir build &&\
+    cd build &&\
+    cmake .. &&\
+    make install
 
 # FoundationPose
 RUN apt-get update && apt-get install -y libboost-dev libboost-system-dev libboost-program-options-dev
@@ -70,18 +92,16 @@ RUN python -m pip install --no-cache-dir kaolin==0.18.0 -f https://nvidia-kaolin
 RUN PIP_NO_BUILD_ISOLATION=1 pip install --no-build-isolation --no-cache-dir \
     "git+https://github.com/facebookresearch/pytorch3d.git"
 
-RUN cd / && git clone https://github.com/pybind/pybind11 &&\
-    cd pybind11 && git checkout v2.10.0 &&\
-    mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DPYBIND11_INSTALL=ON -DPYBIND11_TEST=OFF &&\
-    make -j6 && make install
+# FoundationPose C++ extension
+RUN cd /app/third_party/FoundationPose/mycpp && \
+    rm -rf build && mkdir build && cd build && \
+    cmake .. -DPYTHON_EXECUTABLE=$(which python) && \
+    make -j11
 
-RUN cd / && wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz &&\
-    tar xvzf ./eigen-3.4.0.tar.gz &&\
-    cd eigen-3.4.0 &&\
-    mkdir build &&\
-    cd build &&\
-    cmake .. &&\
-    make install
+# FoundationPose bundlesdf CUDA extension
+RUN cd /app/third_party/FoundationPose/bundlesdf/mycuda && \
+    rm -rf build *.egg-info && \
+    pip install --no-build-isolation .
 
 COPY third_party/GraspGen /app/third_party/GraspGen
 RUN cd /app/third_party/GraspGen && pip install -e .
@@ -106,9 +126,3 @@ ENV TORCH_EXTENSIONS_DIR=/tmp/.cache/torch_extensions
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 ENV HF_HOME=/app/.cache/huggingface
 
-# -------------------------------------------------------------------------
-# Install Docker CLI for Docker-in-Docker support
-# -------------------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    docker.io \
-    && rm -rf /var/lib/apt/lists/*
