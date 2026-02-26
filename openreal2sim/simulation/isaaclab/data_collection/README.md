@@ -1,0 +1,2 @@
+sim_base is reimplemented in this to support some modifications and logical changes that differ from the original sim_manip file
+ply_to_depth.py is just an extra helper file (can be used in future if we decide to move to depth based background replacement)
