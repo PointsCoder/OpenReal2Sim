@@ -193,6 +193,8 @@ def demo_motion_process(keys, key_scene_dicts, key_cfgs):
         scene_json_dict_path = base_dir / f"outputs/{key}/simulation/scene.json"
         with open(scene_json_dict_path, "r") as f:
             scene_json_dict = json.load(f)
+        if "info" not in scene_dict:
+            scene_dict["info"] = scene_json_dict.copy()
         recompute_all_traj(scene_json_dict, scene_dict)
         key_cfg = key_cfgs[key]
         max_placement_oid = None

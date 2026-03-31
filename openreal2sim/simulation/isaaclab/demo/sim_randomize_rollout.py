@@ -41,6 +41,9 @@ args_cli.headless = True # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
+if "cuda" in args_cli.device:
+    torch.cuda.set_device(args_cli.device)
+
 from sim_utils_demo.transform_utils import pose_to_mat, mat_to_pose, grasp_approach_axis_batch
 from sim_utils_demo.sim_utils import load_sim_parameters
 # ─────────── Runtime imports ───────────

@@ -22,5 +22,8 @@ def compose_configs(key_name: str, config: dict) -> dict:
     for param in default_config.keys():
         value = local_config.get(param, global_config.get(param, default_config[param]))
         ret_key_config[param] = value
+    import os
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        ret_key_config["gpu"] = "0"
     print(f"[Info] Config for {key_name}: {ret_key_config}")
     return ret_key_config

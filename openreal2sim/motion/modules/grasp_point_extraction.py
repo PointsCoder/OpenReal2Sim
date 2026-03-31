@@ -309,10 +309,11 @@ def single_grasp_point_generation(scene_dict, scene_json_dict, key_cfg, key, bas
     start_frame_idx = scene_dict["info"]["start_frame_idx"]
     i = start_frame_idx
     manipulated_oid = int(scene_dict["info"]["manipulated_oid"])
+    oid_key = str(manipulated_oid) if str(manipulated_oid) in scene_dict["info"]["objects"] else manipulated_oid
     if not scene_dict["motion"]["has_hand"]:
         print(f"[Warning] No hand detected, skipping grasp point extraction")
-        scene_dict["info"]["objects"][manipulated_oid]["grasp_point"] = None
-        scene_dict["info"]["objects"][manipulated_oid]["grasp_direction"] = None
+        scene_dict["info"]["objects"][oid_key]["grasp_point"] = None
+        scene_dict["info"]["objects"][oid_key]["grasp_direction"] = None
         scene_json_path = base_dir / f"outputs/{key}/simulation/scene.json"
         with open(scene_json_path, "r") as f:
             scene_json = json.load(f)
@@ -416,8 +417,8 @@ def single_grasp_point_generation(scene_dict, scene_json_dict, key_cfg, key, bas
     point_world = point_world / point_world[3]
     winner_point_to_obj = np.linalg.inv(start_pose) @ point_world 
     winner_point_to_obj = winner_point_to_obj[:3] / winner_point_to_obj[3]
-    scene_dict["info"]["objects"][manipulated_oid]["grasp_point"] = winner_point_to_obj.tolist()
-    scene_dict["info"]["objects"][manipulated_oid]["grasp_direction"] = direction_world.tolist()
+    scene_dict["info"]["objects"][oid_key]["grasp_point"] = winner_point_to_obj.tolist()
+    scene_dict["info"]["objects"][oid_key]["grasp_direction"] = direction_world.tolist()
 
     scene_json_path = base_dir / f"outputs/{key}/simulation/scene.json"
     with open(scene_json_path, "r") as f:

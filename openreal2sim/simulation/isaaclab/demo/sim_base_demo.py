@@ -323,6 +323,11 @@ class BaseSimulator:
     # -------- Curobo Motion Planning ----------
     @timed("BaseSimulator.prepare_curobo")
     def prepare_curobo(self):
+        import torch
+        import warp as wp
+        torch.cuda.set_device(self.sim.device)
+        wp.config.device = self.sim.device
+        wp.init()
 
         setup_curobo_logger("error")
         # tensor_args = TensorDeviceType()

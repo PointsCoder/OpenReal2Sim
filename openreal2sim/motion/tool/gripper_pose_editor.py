@@ -18,6 +18,7 @@ import numpy as np
 import trimesh
 import trimesh.transformations as tra
 import open3d as o3d
+import shutil
 from flask import Flask, render_template, request, jsonify, send_from_directory
 import sys
 
@@ -592,6 +593,309 @@ def api_delete_grasp():
         traceback_str = traceback.format_exc()
         print(f"Error deleting grasp: {error_msg}")
         print(traceback_str)
+        return jsonify({'error': error_msg, 'traceback': traceback_str}), 500
+
+
+@app.route('/api/rescale_scene', methods=['POST'])
+def api_rescale_scene():
+    """Scale the entire scene in physical units and update the data."""
+    global scene_data, gripper_mesh, gripper_pose, scene_transform
+    
+    try:
+        data = request.json
+        scene_key = data.get('key')
+        scale = float(data.get('scale', 1.0))
+        
+        if not scene_key:
+            return jsonify({'error': 'Scene key is required'}), 400
+        
+        if scale <= 0:
+            return jsonify({'error': 'Scale must be positive'}), 400
+            
+        base = Path.cwd()
+        sim_dir = base / 'outputs' / scene_key / 'simulation'
+        scene_json_path = sim_dir / 'scene.json'
+        
+        if not scene_json_path.exists():
+            return jsonify({'error': 'Scene JSON not found'}), 404
+            
+        # Optional: backup scene.json before modifying
+        import time
+        backup_path = sim_dir / f'scene.json.backup_{int(time.time())}'
+        shutil.copy(str(scene_json_path), str(backup_path))
+            
+        with open(scene_json_path, 'r') as f:
+            scene_config = json.load(f)
+            
+        # Helper sequence scaling
+        def scale_pt(pt):
+            return [x * scale for x in pt]
+            
+        if 'groundplane_in_cam' in scene_config:
+            scene_config['groundplane_in_cam']['point'] = scale_pt(scene_config['groundplane_in_cam']['point'])
+        if 'groundplane_in_sim' in scene_config:
+            scene_config['groundplane_in_sim']['point'] = scale_pt(scene_config['groundplane_in_sim']['point'])
+        
+        if 'camera' in scene_config:
+            if 'camera_position' in scene_config['camera']:
+                scene_config['camera']['camera_position'] = scale_pt(scene_config['camera']['camera_position'])
+            if 'camera_opencv_to_world' in scene_config['camera']:
+                mat = scene_config['camera']['camera_opencv_to_world']
+                mat[0][3] *= scale
+                mat[1][3] *= scale
+                mat[2][3] *= scale
+                scene_config['camera']['camera_opencv_to_world'] = mat
+                
+        if 'aabb' in scene_config:
+            scene_config['aabb']['scene_min'] = scale_pt(scene_config['aabb']['scene_min'])
+            scene_config['aabb']['scene_max'] = scale_pt(scene_config['aabb']['scene_max'])
+            
+        def fix_path(p):
+            if p and p.startswith('/app/'):
+                return p.replace('/app/', str(base) + '/')
+            elif p and not Path(p).is_absolute():
+                return str(sim_dir / p)
+            return p
+            
+        # Scale meshes
+        # 1. Background
+        bg_data = scene_config.get('background', {})
+        for key in ['registered', 'original', 'optimized']:
+            if key in bg_data:
+                mesh_path = fix_path(bg_data[key])
+                if Path(mesh_path).exists():
+                    mesh = trimesh.load(mesh_path, force='mesh')
+                    if isinstance(mesh, trimesh.Scene):
+                        mesh = mesh.dump(concatenate=True)
+                    mesh.apply_scale(scale)
+                    mesh.export(mesh_path)
+
+        # 2. Scene mesh
+        scene_mesh_data = scene_config.get('scene_mesh', {})
+        for key in ['registered', 'original', 'optimized']:
+            if key in scene_mesh_data:
+                mesh_path = fix_path(scene_mesh_data[key])
+                if Path(mesh_path).exists():
+                    mesh = trimesh.load(mesh_path, force='mesh')
+                    if isinstance(mesh, trimesh.Scene):
+                        mesh = mesh.dump(concatenate=True)
+                    mesh.apply_scale(scale)
+                    mesh.export(mesh_path)
+                    
+        # 3. Objects
+        for obj_id, obj_data in scene_config.get('objects', {}).items():
+            if 'object_center' in obj_data:
+                obj_data['object_center'] = scale_pt(obj_data['object_center'])
+            if 'object_min' in obj_data:
+                obj_data['object_min'] = scale_pt(obj_data['object_min'])
+            if 'object_max' in obj_data:
+                obj_data['object_max'] = scale_pt(obj_data['object_max'])
+                
+            for key in ['registered', 'original', 'optimized']:
+                if key in obj_data:
+                    mesh_path = fix_path(obj_data[key])
+                    if Path(mesh_path).exists():
+                        mesh = trimesh.load(mesh_path, force='mesh')
+                        if isinstance(mesh, trimesh.Scene):
+                            mesh = mesh.dump(concatenate=True)
+                        mesh.apply_scale(scale)
+                        mesh.export(mesh_path)
+                        
+            # Scale trajectories
+            for traj_key in ['fdpose_trajs', 'simple_trajs', 'hybrid_trajs']:
+                if traj_key in obj_data:
+                    traj_path = fix_path(obj_data[traj_key])
+                    if Path(traj_path).exists():
+                        try:
+                            trajs = np.load(traj_path) # usually [N, 4, 4]
+                            if len(trajs.shape) == 3 and trajs.shape[1] == 4 and trajs.shape[2] == 4:
+                                trajs[:, :3, 3] *= scale
+                                np.save(traj_path, trajs)
+                        except Exception as e:
+                            print(f"Failed to scale traj {traj_path}: {e}")
+                            
+        # Write updated scene.json
+        with open(scene_json_path, 'w') as f:
+            json.dump(scene_config, f, indent=2)
+            
+        # Re-load the scene
+        scene_data = load_scene_glb(scene_key)
+        
+        # Reset transforms
+        gripper_pose = np.eye(4, dtype=np.float32)
+        scene_transform = np.eye(4, dtype=np.float32)
+        
+        return jsonify({
+            'success': True,
+            'message': 'Scene physical scale successfully updated'
+        })
+        
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        traceback_str = traceback.format_exc()
+        print(f"Error rescaling scene: {error_msg}")
+        return jsonify({'error': error_msg, 'traceback': traceback_str}), 500
+
+
+@app.route('/api/drop_object_to_ground', methods=['POST'])
+def api_drop_object_to_ground():
+    """Drop the manipulated object to the ground plane."""
+    global scene_data, gripper_mesh, gripper_pose, scene_transform
+    
+    try:
+        data = request.json
+        scene_key = data.get('key')
+        manipulated_oid = data.get('manipulated_oid')
+        
+        if not scene_key:
+            return jsonify({'error': 'Scene key is required'}), 400
+        if not manipulated_oid:
+            return jsonify({'error': 'Manipulated object ID is required'}), 400
+            
+        base = Path.cwd()
+        sim_dir = base / 'outputs' / scene_key / 'simulation'
+        scene_json_path = sim_dir / 'scene.json'
+        
+        if not scene_json_path.exists():
+            return jsonify({'error': 'Scene JSON not found'}), 404
+            
+        with open(scene_json_path, 'r') as f:
+            scene_config = json.load(f)
+            
+        if 'groundplane_in_sim' not in scene_config:
+            return jsonify({'error': 'groundplane_in_sim not found in scene.json, cannot calculate surface level.'}), 400
+            
+        target_z = scene_config['groundplane_in_sim']['point'][2]
+        
+        # Find object in scene config
+        obj_key = str(manipulated_oid)
+        if obj_key not in scene_config.get('objects', {}):
+            # Try finding by oid inside the inner dict
+            for k, v in scene_config.get('objects', {}).items():
+                if str(v.get('oid')) == str(manipulated_oid):
+                    obj_key = k
+                    break
+        
+        if obj_key not in scene_config.get('objects', {}):
+            return jsonify({'error': f'Object {manipulated_oid} not found in scene.json'}), 404
+            
+        obj_data = scene_config['objects'][obj_key]
+        
+        if 'object_min' not in obj_data:
+            return jsonify({'error': f'Object min bounds not found for {manipulated_oid}'}), 400
+            
+        current_min_z = obj_data['object_min'][2]
+        delta_z = target_z - current_min_z
+        
+        if abs(delta_z) < 1e-5:
+            return jsonify({'success': True, 'message': 'Object is already on the ground.'})
+            
+        # Optional: backup scene.json before modifying
+        import time
+        backup_path = sim_dir / f'scene.json.backup_{int(time.time())}'
+        shutil.copy(str(scene_json_path), str(backup_path))
+        
+        # Update bounds and center
+        def translate_pt(pt):
+            return [pt[0], pt[1], pt[2] + delta_z]
+            
+        if 'object_center' in obj_data:
+            obj_data['object_center'] = translate_pt(obj_data['object_center'])
+        if 'object_min' in obj_data:
+            obj_data['object_min'] = translate_pt(obj_data['object_min'])
+        if 'object_max' in obj_data:
+            obj_data['object_max'] = translate_pt(obj_data['object_max'])
+        if 'grasp_point' in obj_data:
+            obj_data['grasp_point'] = translate_pt(obj_data['grasp_point'])
+            
+        def fix_path(p):
+            if p and p.startswith('/app/'):
+                return p.replace('/app/', str(base) + '/')
+            elif p and not Path(p).is_absolute():
+                return str(sim_dir / p)
+            return p
+            
+        # Scale meshes
+        for key in ['registered', 'original', 'optimized', 'end_mesh']:
+            if key in obj_data:
+                mesh_path = fix_path(obj_data[key])
+                if Path(mesh_path).exists():
+                    mesh = trimesh.load(mesh_path, force='mesh')
+                    if isinstance(mesh, trimesh.Scene):
+                        mesh = mesh.dump(concatenate=True)
+                    mesh.apply_translation([0, 0, delta_z])
+                    mesh.export(mesh_path)
+                    
+        # Scale trajectories
+        for traj_key in ['fdpose_trajs', 'simple_trajs', 'hybrid_trajs', 'fdpose_trajs_recomputed', 'simple_trajs_recomputed', 'hybrid_trajs_recomputed', 'final_trajs']:
+            if traj_key in obj_data:
+                traj_path = fix_path(obj_data[traj_key])
+                if Path(traj_path).exists():
+                    try:
+                        trajs = np.load(traj_path) # usually [N, 4, 4]
+                        if len(trajs.shape) == 3 and trajs.shape[1] == 4 and trajs.shape[2] == 4:
+                            trajs[:, 2, 3] += delta_z
+                            np.save(traj_path, trajs)
+                    except Exception as e:
+                        print(f"Failed to translate traj {traj_path}: {e}")
+                        
+        # Translate grasps (.npz) and visualizations (.ply)
+        # Search in proposals and grasps directories
+        obj_name = obj_data.get('name', obj_key)
+        proposals_dir = base / 'outputs' / scene_key / 'proposals'
+        grasps_dir = base / 'outputs' / scene_key / 'grasps'
+        
+        for d in [proposals_dir, grasps_dir]:
+            if not d.exists():
+                continue
+            for npz_path in d.glob(f'{obj_key}_{obj_name}_grasp*.npz'):
+                try:
+                    grasps, scores, bite_distance = load_grasps_npz(npz_path)
+                    if grasps is not None and len(grasps) > 0:
+                        grasps[:, 2, 3] += delta_z
+                        save_grasps_npz(grasps, scores, npz_path, bite_distance=bite_distance)
+                except Exception as e:
+                    print(f"Failed to translate grasp NPZ {npz_path}: {e}")
+                    
+            for ply_path in d.glob(f'{obj_key}_{obj_name}_grasp*_viz.ply'):
+                try:
+                    pcd = o3d.io.read_point_cloud(str(ply_path))
+                    pts = np.asarray(pcd.points)
+                    pts[:, 2] += delta_z
+                    pcd.points = o3d.utility.Vector3dVector(pts)
+                    o3d.io.write_point_cloud(str(ply_path), pcd)
+                except Exception as e:
+                    try:
+                        existing_tm = trimesh.load(str(ply_path), force='mesh')
+                        if isinstance(existing_tm, trimesh.Scene):
+                            existing_tm = existing_tm.dump(concatenate=True)
+                        existing_tm.apply_translation([0, 0, delta_z])
+                        existing_tm.export(str(ply_path))
+                    except Exception as e2:
+                        print(f"Failed to translate grasp PLY {ply_path}: {e2}")
+                            
+        # Write updated scene.json
+        with open(scene_json_path, 'w') as f:
+            json.dump(scene_config, f, indent=2)
+            
+        # Re-load the scene in backend
+        scene_data = load_scene_glb(scene_key)
+        
+        # Reset transforms
+        gripper_pose = np.eye(4, dtype=np.float32)
+        scene_transform = np.eye(4, dtype=np.float32)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Successfully dropped object to ground (Z shifted by {delta_z:.4f})'
+        })
+        
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        traceback_str = traceback.format_exc()
+        print(f"Error dropping object to ground: {error_msg}")
         return jsonify({'error': error_msg, 'traceback': traceback_str}), 500
 
 

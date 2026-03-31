@@ -12,6 +12,28 @@ START_IDX=""
 END_IDX=""
 STAGE=""
 
+# Function to select GPU with most free memory
+select_best_gpu() {
+  local best_gpu="0"
+  local max_free="0"
+  
+  while IFS=',' read -r gpu_idx mem_free; do
+    gpu_idx=$(echo "$gpu_idx" | tr -d ' ')
+    mem_free=$(echo "$mem_free" | tr -d ' MiB')
+    
+    if [[ -n "$mem_free" && "$mem_free" -gt "$max_free" ]]; then
+      max_free="$mem_free"
+      best_gpu="$gpu_idx"
+    fi
+  done < <(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null)
+  
+  # Fallback to GPU 0 if parsing fails
+  if [[ -z "$best_gpu" ]]; then
+      best_gpu="0"
+  fi
+  echo "$best_gpu"
+}
+
 # Logging directory
 LOG_DIR="${ROOT_DIR}/logs"
 SUMMARY_FILE="${LOG_DIR}/motion_pipeline_summary.csv"
@@ -116,6 +138,9 @@ export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
 cd "${ROOT_DIR}"
 mkdir -p "${LOG_DIR}"
 
+# Ensure dill is installed (workaround for ultralytics missing requirement in user mode)
+python3 -c "import dill" 2>/dev/null || pip install --user dill
+
 echo "========================================"
 echo "  motion_agent.sh - Motion Pipeline Runner"
 echo "========================================"
@@ -161,13 +186,18 @@ for key in "${KEYS[@]}"; do
       CMD_ARGS="${CMD_ARGS} --stage ${STAGE}"
   fi
   
-  echo "Running: python openreal2sim/motion/motion_manager.py ${CMD_ARGS}" | tee -a "${KEY_LOG}"
+  # Dynamically select the GPU with most free memory
+  FREEST_GPU=$(select_best_gpu)
+  export CUDA_VISIBLE_DEVICES=$FREEST_GPU
+  echo "Selected GPU: ${FREEST_GPU}" | tee -a "${KEY_LOG}"
+  
+  echo "Running: CUDA_VISIBLE_DEVICES=${FREEST_GPU} python -u openreal2sim/motion/motion_manager.py ${CMD_ARGS}" | tee -a "${KEY_LOG}"
   
   # Run motion_manager
   # We pipe output to tee to show it and save it.
   # We use pipefail to catch python exit code.
   set -o pipefail
-  python openreal2sim/motion/motion_manager.py ${CMD_ARGS} 2>&1 | tee -a "${KEY_LOG}"
+  python -u openreal2sim/motion/motion_manager.py ${CMD_ARGS} 2>&1 | tee -a "${KEY_LOG}"
   EXIT_CODE=$?
   set +o pipefail
   

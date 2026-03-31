@@ -47,6 +47,13 @@ function initViewer() {
     const axesHelper = new THREE.AxesHelper(1);
     scene.add(axesHelper);
     
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(5, 10, 5);
+    scene.add(dirLight);
+    
     // Groups - separate background and objects
     sceneGroup = new THREE.Group();
     backgroundGroup = new THREE.Group();
@@ -58,12 +65,6 @@ function initViewer() {
     scene.add(sceneGroup);
     scene.add(gripperGroup);
     
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-    scene.add(ambientLight);
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(5, 5, 5);
-    scene.add(directionalLight);
     
     // Event listeners
     window.addEventListener('resize', onWindowResize);
@@ -437,6 +438,14 @@ async function loadScene() {
                 
                 // Add to objects group
                 objectsGroup.add(objScene);
+                // Color objects blue
+                objScene.traverse((child) => {
+                    if (child.isMesh && child.material) {
+                        child.material = child.material.clone();
+                        child.material.color.setHex(0x4488ff);
+                        child.material.needsUpdate = true;
+                    }
+                });
                 
                 loadedCount++;
                 console.log(`Object ${objName} (${objId}, oid: ${objOid}) loaded (${loadedCount}/${objectIds.length})`);
@@ -860,7 +869,85 @@ function showStatus(elementId, message, type) {
     setTimeout(() => {
         element.textContent = '';
         element.className = '';
-    }, 3000);
+    }, 5000);
+}
+
+async function applySceneScale() {
+    const sceneKey = document.getElementById('scene-key').value;
+    if (!sceneKey) {
+        showStatus('scale-status', 'Please enter a scene key', 'error');
+        return;
+    }
+    
+    const scaleInput = document.getElementById('scene-scale-input').value;
+    const scale = parseFloat(scaleInput);
+    if (isNaN(scale) || scale <= 0) {
+        showStatus('scale-status', 'Invalid scale value', 'error');
+        return;
+    }
+    
+    if (!confirm(`Are you sure you want to scale the entire scene by ${scale}? This will permanently modify the scene's GLB files and scene.json.`)) {
+        return;
+    }
+    
+    showStatus('scale-status', 'Scaling meshes and updating data... This may take a moment.', 'success');
+    
+    try {
+        const response = await fetch('/api/rescale_scene', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: sceneKey, scale: scale })
+        });
+        
+        const data = await response.json();
+        if (response.ok) {
+            showStatus('scale-status', 'Scene successfully scaled! Reloading...', 'success');
+            // Reload the updated scene into the viewer
+            await loadScene();
+        } else {
+            showStatus('scale-status', 'Error: ' + (data.error || 'Unknown error'), 'error');
+        }
+    } catch (error) {
+        showStatus('scale-status', 'Error: ' + error.message, 'error');
+    }
+}
+
+async function dropObjectToGround() {
+    const sceneKey = document.getElementById('scene-key').value;
+    if (!sceneKey) {
+        showStatus('drop-status', 'Please enter a scene key', 'error');
+        return;
+    }
+    
+    if (!manipulatedObjectId) {
+        showStatus('drop-status', 'No manipulated object found', 'error');
+        return;
+    }
+    
+    if (!confirm('Are you sure you want to drop the object to the ground? This will permanently modify its Z position in the GLB and all associated trajectories and grasps.')) {
+        return;
+    }
+    
+    showStatus('drop-status', 'Translating object and updating data... This may take a moment.', 'success');
+    
+    try {
+        const response = await fetch('/api/drop_object_to_ground', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: sceneKey, manipulated_oid: manipulatedObjectId })
+        });
+        
+        const data = await response.json();
+        if (response.ok) {
+            showStatus('drop-status', data.message || 'Object successfully dropped! Reloading...', 'success');
+            // Reload the updated scene into the viewer
+            await loadScene();
+        } else {
+            showStatus('drop-status', 'Error: ' + (data.error || 'Unknown error'), 'error');
+        }
+    } catch (error) {
+        showStatus('drop-status', 'Error: ' + error.message, 'error');
+    }
 }
 
 window.addEventListener('load', () => {

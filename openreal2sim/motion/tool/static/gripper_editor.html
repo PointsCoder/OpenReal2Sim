@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gripper Pose Editor</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="/static/three.min.js"></script>
+    <script src="/static/OrbitControls.js"></script>
+    <script src="/static/GLTFLoader.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: Arial, sans-serif; display: flex; height: 100vh; overflow: hidden; }
@@ -37,6 +37,23 @@
             <input type="text" id="scene-key" placeholder="Enter scene key (e.g.demo_video)">
             <button onclick="loadScene()">Load Scene</button>
             <div id="load-status"></div>
+        </div>
+
+        <div class="section">
+            <h3>Scene Rescaling</h3>
+            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <input type="number" id="scene-scale-input" value="1.0" step="0.1" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" title="Scale factor override">
+                <button onclick="applySceneScale()" style="margin-bottom: 0;">Apply Scale</button>
+            </div>
+            <div id="scale-status"></div>
+            <div style="font-size: 11px; color: #666; margin-top: 5px;">Warning: This physically scales scene GLB files and updates bounds in scene.json.</div>
+        </div>
+
+        <div class="section">
+            <h3>Object Manipulation</h3>
+            <div style="font-size: 11px; color: #666; margin-bottom: 10px;">Translate the selected floating object down to the ground plane. Also updates grasps and trajectories.</div>
+            <button onclick="dropObjectToGround()">Drop Object to Ground</button>
+            <div id="drop-status"></div>
         </div>
 
         <div class="section">

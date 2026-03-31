@@ -37,6 +37,9 @@ args_cli.headless = True # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
+if "cuda" in args_cli.device:
+    torch.cuda.set_device(args_cli.device)
+
 # ─────────── Runtime imports ───────────
 import isaaclab.sim as sim_utils
 from isaaclab.utils.math import subtract_frame_transforms

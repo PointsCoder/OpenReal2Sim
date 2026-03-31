@@ -1,107 +1,36 @@
 keys:
-# - video_00409
-# - video_00411
-# - video_00415
-# - video_00449
-# - video_00454
-# - video_00455
-# - video_00456
-# - video_00463
-- video_00467
-# - video_00475
-# - video_00476
-# - video_00477
-# - video_00478
-# - video_00485
-# - video_00488
-# - video_00501
-# - video_00505
-# - video_00506
-# - video_00508
-# - video_00509
-# - video_00514
-# - video_00516
-# - video_00521
-# - video_00524
-# - video_00527
-# - video_00528
-# - video_00529
-# - video_00531
-# - video_00532
-# - video_00533
-# - video_00534
-# - video_00535
-# - video_00536
-# - video_00537
-# - video_00538
-# - video_00539
-# - video_00540
-# - video_00541
-# - video_00542
-# - video_00544
-# - video_00545
-# - video_00546
-# - video_00551
-# - video_00552
-# - video_00553
-# - video_00554
-# - video_00555
-# - video_00556
-# - video_00557
-# - video_00558
-# - video_00559
-# - video_00560
-# - video_00581
-# - video_00582
-# - video_00583
-# - video_00584
-# - video_00585
-# - video_00586
-# - video_00588
-# - video_00592
-# - video_00593
-# - video_00594
-# - video_00595
-# - video_00596
-# - video_00597
-# - video_00598
-# - video_00599
-# - video_00600
-# - video_00613
-# - video_00615
-# - video_00617
-# - video_00619
-# - video_00621
-# - video_00622
-# - video_00623
-# - video_00624
-# - video_00625
-# - video_00627
-# - video_00630
-# - video_00631
-# - video_00632
-# - video_00005
-# - video_00125
-# - video_00139
-# - video_00633
-# - video_00634
-# - video_00636
-# - video_00638
-# - video_00645
-# - video_00649
-# - video_00651
-# - video_00652
-# - video_00655
-# - video_00657
-# - video_00674
-# - video_00676
-# - video_00903
-# - scene_00157
+- video_00958
+- video_00959
+# - scene_00404
+# - scene_00405
+# - scene_00406
+# - scene_00409
+# - scene_00410
+# - scene_00414
+# - scene_00419
+# - scene_00421
+# - scene_00423
+# - scene_00428
+# - scene_00433
+# - scene_00434
 # - scene_00435
-# - video_00208
-# - video_00073
-# - video_00648
-# - video_00127
+# - scene_00437
+# - scene_00439
+# - scene_00441
+# - scene_00445
+# - scene_00446
+# - scene_00455
+# - scene_00457
+# - scene_00462
+# - scene_00466
+# - scene_00468
+# - scene_00469
+# - scene_00470
+# - scene_00471
+# - scene_00472
+# - scene_00473
+# - scene_00516
+# - video_01202
 
 # global settings, can be overridden by local settings
 global:
@@ -109,11 +38,14 @@ global:
     fps: 25
     quality: 1
     resize: 1
-    gpu: "0" 
+    gpu: "6" 
     depth_refinement: true
   
   reconstruction:
-    gpu: "0" 
+    gpu: "7" 
+
+  motion:
+    gpu: "6"
 
   simulation:
     physics: "default"
