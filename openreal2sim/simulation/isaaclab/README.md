@@ -4,11 +4,12 @@
 
 **Pull the pre-built docker image**
 
-If you want to use a pre-built image from Docker Hub, you can pull it directly:
+Pull the pre-built image rather than building it; build only when you change a Dockerfile:
    ```bash
-   docker pull ghcr.io/pointscoder/openreal2sim/simulation:dev
-   docker tag ghcr.io/pointscoder/openreal2sim/simulation:dev openreal2sim/simulation:dev
+   docker compose -f docker/compose.yml pull simulation
    ```
+   The packages are private until Esteban makes them public, so until then run
+   `docker login ghcr.io` first with a GitHub token that has the `read:packages` scope.
 
 **On the host machine and before entering the container**, run
 ```

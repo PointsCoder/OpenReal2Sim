@@ -40,15 +40,21 @@ You also need to have NVIDIA CUDA Container Toolkit installed. See: https://docs
 
 ### Use Pre-Built Docker Image
 
-If you want to use a pre-built image from Docker Hub, you can pull it directly:
+Pulling the pre-built images is the normal way to get started; building them from
+the Dockerfiles takes hours. From the repository root:
    ```bash
-   docker pull ghcr.io/pointscoder/openreal2sim/reconstruction:dev
-   docker tag ghcr.io/pointscoder/openreal2sim/reconstruction:dev openreal2sim/reconstruction:dev
+   docker compose -f docker/compose.yml pull reconstruction simulation
+   ```
+
+The packages are private until Esteban makes them public, so until then you need
+to authenticate first with a GitHub token that has the `read:packages` scope:
+   ```bash
+   docker login ghcr.io
    ```
 
 ### (Optional) Build the Docker Image
 
-You can also build the docker image yourself. Once the container is running, you can execute any of the scripts above inside it.
+Build the images yourself only when you change a Dockerfile. Once the container is running, you can execute any of the scripts above inside it.
 
 **Build the container image**
    From the repository root:
@@ -60,7 +66,7 @@ Optionally, you may want to push the image to a remote registry (e.g., GitHub Co
 
 If so, you can tag the image and push it:
    ```bash
-   docker tag openreal2sim/reconstruction:dev ghcr.io/<username>/openreal2sim/reconstruction:dev
+   docker tag ghcr.io/licesma/openreal2sim/reconstruction:dev ghcr.io/<username>/openreal2sim/reconstruction:dev
    docker push ghcr.io/<username>/openreal2sim/reconstruction:dev
    ```
 Don't forget to change the visibility of the pushed image to public if you want others to access it.

@@ -4,7 +4,7 @@ services:
     build:
       context: ..
       dockerfile: docker/real2sim/Dockerfile
-    image: openreal2sim/reconstruction:dev
+    image: ghcr.io/licesma/openreal2sim/reconstruction:dev
     # container_name: openreal2sim
     deploy:
       resources:
@@ -63,7 +63,7 @@ services:
     build:
       context: ..
       dockerfile: docker/isaaclab/Dockerfile
-    image: openreal2sim/simulation:dev
+    image: ghcr.io/licesma/openreal2sim/simulation:dev
     user: "${HOST_UID}:${HOST_GID}"
     deploy:
       resources:
