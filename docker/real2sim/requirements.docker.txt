@@ -84,6 +84,9 @@ hydra-colorlog
 pyrootutils
 webdataset
 ultralytics==8.1.34
+dill==0.4.1
+pyquaternion==0.9.9
+transforms3d==0.4.2
 # Note: chumpy installed separately in Dockerfile due to build isolation issues
 
 #11) GraspGen

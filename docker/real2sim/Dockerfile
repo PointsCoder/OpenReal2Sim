@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-dev python3-pip python3-venv python-is-python3 \
     build-essential cmake ninja-build pkg-config libopenblas-dev \
     git curl wget ffmpeg bash libspatialindex-dev \
+    libegl1 libglu1-mesa \
     docker.io \
     && python3 -m pip install --upgrade --no-cache-dir pip wheel setuptools packaging \
     && rm -rf /var/lib/apt/lists/*
