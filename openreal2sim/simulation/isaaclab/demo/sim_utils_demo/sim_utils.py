@@ -57,9 +57,9 @@ def load_sim_parameters(basedir, key) -> dict:
 
     # robot configs
     E = load_extrinsics(exp_config, key)
+    robot_cfg_list = robot_placement_candidates_v2(cam_cfg["scene_info"])
     if E is None:
-        robot_cfg_list = robot_placement_candidates_v2(cam_cfg["scene_info"])
-        robot_cfg = random.choice(robot_placement_candidates_v2(cam_cfg["scene_info"]))
+        robot_cfg = random.choice(robot_cfg_list)
         pos_w, quat_w = robot_cfg["position"], robot_cfg["rotation"]
     else:
         pos_w, quat_w = calibration_to_robot_pose(scene_json, E)
