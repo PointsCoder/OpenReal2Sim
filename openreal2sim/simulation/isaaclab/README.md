@@ -6,8 +6,8 @@
 
 If you want to use a pre-built image from Docker Hub, you can pull it directly:
    ```bash
-   docker pull ghcr.io/pointscoder/isaaclab:dev
-   docker tag ghcr.io/pointscoder/isaaclab:dev isaaclab:dev
+   docker pull ghcr.io/pointscoder/openreal2sim/simulation:dev
+   docker tag ghcr.io/pointscoder/openreal2sim/simulation:dev openreal2sim/simulation:dev
    ```
 
 **On the host machine and before entering the container**, run
@@ -18,11 +18,11 @@ This is to allow the container to access the host's X server for IsaacSim GUI.
 
 Then, launch the container:
 ```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml up -d isaaclab 
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml up -d simulation 
 ```
 and enter it:
 ```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml exec isaaclab bash
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml exec simulation bash
 ```
 
 ## Preprocessing

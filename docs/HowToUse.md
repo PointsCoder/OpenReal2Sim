@@ -21,13 +21,13 @@ and make sure the `key_name` is also in `config/config.yaml`.
 
 2. Make sure we have pulled or built the docker images following the [docker setup](../docker/README.md).
 
-We will use `openreal2sim:dev` image for the reconstruction and `isaaclab:dev` image for the IsaacLab simulation.
+We will use `openreal2sim/reconstruction:dev` image for the reconstruction and `openreal2sim/simulation:dev` image for the IsaacLab simulation.
 
 ### Preprocess
 
 Launch the docker container with mounted repository and data folder:
 ```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run -p 8000:5000 openreal2sim
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run -p 8000:5000 reconstruction
 ```
 
 **Note**: We have mounted several volumes so that checkpoints will be cached even if the container is removed. You can change the volume mappings by modifying the `docker/compose.yml` file.
@@ -157,8 +157,8 @@ Current supported physics simulators:
 
 If you want to use a pre-built image from Docker Hub, you can pull it directly:
 ```bash
-docker pull ghcr.io/pointscoder/isaaclab:dev
-docker tag ghcr.io/pointscoder/isaaclab:dev isaaclab:dev
+docker pull ghcr.io/pointscoder/openreal2sim/simulation:dev
+docker tag ghcr.io/pointscoder/openreal2sim/simulation:dev openreal2sim/simulation:dev
 ```
 
 **On the host machine and before entering the container**, run
@@ -169,11 +169,11 @@ This is to allow the container to access the host's X server for IsaacSim GUI.
 
 Then, launch the container:
 ```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml up -d isaaclab 
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml up -d simulation 
 ```
 and enter it:
 ```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml exec isaaclab bash
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml exec simulation bash
 ```
 We now have a bash script for usd conversion, heuristic manipulation rollout and randomized generation.
 

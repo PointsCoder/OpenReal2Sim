@@ -42,8 +42,8 @@ You also need to have NVIDIA CUDA Container Toolkit installed. See: https://docs
 
 If you want to use a pre-built image from Docker Hub, you can pull it directly:
    ```bash
-   docker pull ghcr.io/pointscoder/openreal2sim:dev
-   docker tag ghcr.io/pointscoder/openreal2sim:dev openreal2sim:dev
+   docker pull ghcr.io/pointscoder/openreal2sim/reconstruction:dev
+   docker tag ghcr.io/pointscoder/openreal2sim/reconstruction:dev openreal2sim/reconstruction:dev
    ```
 
 ### (Optional) Build the Docker Image
@@ -53,15 +53,15 @@ You can also build the docker image yourself. Once the container is running, you
 **Build the container image**
    From the repository root:
    ```bash
-   docker compose -f docker/compose.yml build openreal2sim # or isaaclab
+   docker compose -f docker/compose.yml build reconstruction # or simulation
    ```
 
 Optionally, you may want to push the image to a remote registry (e.g., GitHub Container Registry) for easier sharing.
 
 If so, you can tag the image and push it:
    ```bash
-   docker tag openreal2sim:dev ghcr.io/<username>/openreal2sim:dev
-   docker push ghcr.io/<username>/openreal2sim:dev
+   docker tag openreal2sim/reconstruction:dev ghcr.io/<username>/openreal2sim/reconstruction:dev
+   docker push ghcr.io/<username>/openreal2sim/reconstruction:dev
    ```
 Don't forget to change the visibility of the pushed image to public if you want others to access it.
 
@@ -71,7 +71,7 @@ Every time you want to run a script inside the repo, follow these steps:
 
 #### Run the real2sim container
    ```bash
-   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run --publish 8000:5000 openreal2sim
+   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run --publish 8000:5000 reconstruction
    ```
 
 **Inside the docker container**, run the following script to download pretrained checkpoints and compile c++/cuda extensions:
@@ -86,9 +86,9 @@ python scripts/installation/install.py
    python <path_to_script>.py
    ```
 
-#### Run the isaaclab container
+#### Run the simulation container
    ```bash
-   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run isaaclab
+   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run simulation
    ```
 
 #### Tips if you are using VSCode
