@@ -27,7 +27,25 @@ services:
       - /etc/passwd:/etc/passwd:ro
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
-      - ../:/app
+      - ../openreal2sim:/app/openreal2sim
+      - ../scripts:/app/scripts
+      - ../config:/app/config
+      - ../assets:/app/assets:ro
+      - ../data:/app/data
+      - ../outputs:/app/outputs
+      - ../h5py:/app/h5py
+      - ../tasks:/app/tasks
+      - ../.cache:/app/.cache
+      - ../third_party/ObjectClear:/app/third_party/ObjectClear
+      - ../third_party/PromptDA:/app/third_party/PromptDA
+      - ../third_party/WiLoR:/app/third_party/WiLoR
+      - ../third_party/sam-3d-objects:/app/third_party/sam-3d-objects
+      - ../third_party/mega-sam:/app/third_party/mega-sam
+      - ../third_party/Hunyuan3D-2:/app/third_party/Hunyuan3D-2
+      - ../third_party/GraspGen:/app/third_party/GraspGen
+      # extensions built into the image stay; only the weights are overlaid
+      - ../third_party/Grounded-SAM-2/checkpoints:/app/third_party/Grounded-SAM-2/checkpoints
+      - ../third_party/FoundationPose/weights:/app/third_party/FoundationPose/weights
       - ${TORCH_HOME:-~/.cache/torch}:/tmp/.cache/torch
       - ${HF_HOME:-~/.cache/huggingface}:/tmp/.cache/huggingface
       - ${HY3DGEN_MODELS:-~/.cache/hy3dgen}:/tmp/.cache/hy3dgen
@@ -59,7 +77,15 @@ services:
       - /etc/passwd:/etc/passwd:ro
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
-      - ../:/app
+      - ../openreal2sim:/app/openreal2sim
+      - ../scripts:/app/scripts
+      - ../config:/app/config
+      - ../assets:/app/assets:ro
+      - ../data:/app/data
+      - ../outputs:/app/outputs
+      - ../h5py:/app/h5py
+      - ../tasks:/app/tasks
+      - ../.cache:/app/.cache
       - /tmp/.X11-unix:/tmp/.X11-unix:rw # forward X11 socket
       - ${XAUTHORITY:-$HOME/.Xauthority}:/home/isaac/.Xauthority:ro # X auth cookie
       - /dev:/dev # add: expose input/gpu devices if needed
