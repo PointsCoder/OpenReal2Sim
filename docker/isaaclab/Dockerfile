@@ -47,7 +47,8 @@ ENV TORCH_CUDA_ARCH_LIST="8.9+PTX"
 
 RUN mkdir -p /opt && \
     git clone https://github.com/NVlabs/curobo.git "/opt/curobo" && \
-    cd "/opt/curobo" && pip install -e . --no-build-isolation
+    cd "/opt/curobo" && git checkout v0.7.7 && \
+    pip install -e . --no-build-isolation
 
 # Isaac Sim 4.5.0
 RUN sudo pip install 'isaacsim[all,extscache]==4.5.0' --extra-index-url https://pypi.nvidia.com
