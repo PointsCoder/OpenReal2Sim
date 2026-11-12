@@ -98,6 +98,8 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all # add: be explicit
       - NVIDIA_DRIVER_CAPABILITIES=all # add: include graphics/display
       - OMNI_KIT_DISABLE_EXTS=isaacsim.ros2.bridge
+      - OMNI_KIT_ACCEPT_EULA=YES
+      - ACCEPT_EULA=Y
       # (Optional Wayland; uncomment if you run Wayland)
       # - WAYLAND_DISPLAY=${WAYLAND_DISPLAY}
       # - XDG_RUNTIME_DIR=/run/user/${UID}
