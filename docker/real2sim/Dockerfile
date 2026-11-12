@@ -45,7 +45,10 @@ RUN pip install --no-cache-dir torch-scatter \
 
 # Rest of the Dependencies
 COPY docker/real2sim/requirements.docker.txt         /tmp/requirements.docker.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.docker.txt
+COPY docker/real2sim/constraints.txt                 /tmp/constraints.txt
+RUN pip install --no-cache-dir -c /tmp/constraints.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu118 \
+    -r /tmp/requirements.docker.txt
 
 # gdown for Google Drive downloads
 RUN pip install --no-cache-dir gdown
