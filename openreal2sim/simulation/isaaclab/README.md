@@ -4,11 +4,12 @@
 
 **Pull the pre-built docker image**
 
-If you want to use a pre-built image from Docker Hub, you can pull it directly:
+Pull the pre-built image rather than building it; build only when you change a Dockerfile:
    ```bash
-   docker pull ghcr.io/pointscoder/isaaclab:dev
-   docker tag ghcr.io/pointscoder/isaaclab:dev isaaclab:dev
+   python3 init.py setup
    ```
+   The packages are private until Esteban makes them public, so until then run
+   `docker login ghcr.io` first with a GitHub token that has the `read:packages` scope.
 
 **On the host machine and before entering the container**, run
 ```
@@ -16,13 +17,16 @@ xhost +local:
 ```
 This is to allow the container to access the host's X server for IsaacSim GUI.
 
-Then, launch the container:
+Then run the scripts below from the repository root on the host, each in a fresh
+container:
 ```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml up -d isaaclab 
+python3 init.py run simulation -- python <path_to_script>.py
 ```
-and enter it:
+Add `--gpus 0,1` to pick GPUs, or use `python3 init.py shell simulation` for an
+interactive prompt. Without `init.py`:
 ```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml exec isaaclab bash
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml up -d simulation
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml exec simulation bash
 ```
 
 ## Preprocessing

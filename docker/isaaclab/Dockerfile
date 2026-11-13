@@ -1,4 +1,5 @@
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+# nvidia/cuda:12.8.0-devel-ubuntu22.04
+FROM nvidia/cuda@sha256:54f18e2a8e1b3d03f77b9a6dc905533da46ac93a5513f10e8ba8e560db9fa5ab
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -47,7 +48,8 @@ ENV TORCH_CUDA_ARCH_LIST="8.9+PTX"
 
 RUN mkdir -p /opt && \
     git clone https://github.com/NVlabs/curobo.git "/opt/curobo" && \
-    cd "/opt/curobo" && pip install -e . --no-build-isolation
+    cd "/opt/curobo" && git checkout v0.7.7 && \
+    pip install -e . --no-build-isolation
 
 # Isaac Sim 4.5.0
 RUN sudo pip install 'isaacsim[all,extscache]==4.5.0' --extra-index-url https://pypi.nvidia.com
@@ -58,7 +60,7 @@ RUN chmod -R 777 /usr/local/lib/python3.10/dist-packages/ \
 # Revert the fixed pytorch version
 ENV TERM=xterm-256color
 RUN git clone https://github.com/PointsCoder/IsaacLab.git "/opt/IsaacLab" && \
-    cd "/opt/IsaacLab" && \
+    cd "/opt/IsaacLab" && git checkout b5fa0eb031a2413c182eeb54fa3a9295e8fd867c && \
     sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab/setup.py && \
     sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab_tasks/setup.py && \
     sed -i 's|torch==2.5.1|torch==2.7.0|' source/isaaclab_rl/setup.py && \

@@ -1,4 +1,5 @@
-FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
+# nvidia/cuda:11.8.0-devel-ubuntu22.04
+FROM nvidia/cuda@sha256:94fd755736cb58979173d491504f0b573247b1745250249415b07fefc738e41f
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -10,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-dev python3-pip python3-venv python-is-python3 \
     build-essential cmake ninja-build pkg-config libopenblas-dev \
     git curl wget ffmpeg bash libspatialindex-dev \
+    libegl1 libglu1-mesa \
     docker.io \
     && python3 -m pip install --upgrade --no-cache-dir pip wheel setuptools packaging \
     && rm -rf /var/lib/apt/lists/*
@@ -37,7 +39,7 @@ ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0"
 
 # xFormers
 RUN pip install -v --no-build-isolation -U \
-    "git+https://github.com/facebookresearch/xformers.git@v0.0.28.post3#egg=xformers"
+    "git+https://github.com/facebookresearch/xformers.git@f3bc7a78e687f7987a920e7bad0dca61c927c5b4#egg=xformers"
 
 # Scatter
 RUN pip install --no-cache-dir torch-scatter \
@@ -45,7 +47,10 @@ RUN pip install --no-cache-dir torch-scatter \
 
 # Rest of the Dependencies
 COPY docker/real2sim/requirements.docker.txt         /tmp/requirements.docker.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.docker.txt
+COPY docker/real2sim/constraints.txt                 /tmp/constraints.txt
+RUN pip install --no-cache-dir -c /tmp/constraints.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu118 \
+    -r /tmp/requirements.docker.txt
 
 # gdown for Google Drive downloads
 RUN pip install --no-cache-dir gdown
@@ -70,7 +75,7 @@ RUN cd /app/third_party/Hunyuan3D-2/hy3dgen/texgen/differentiable_renderer && py
 
 # pybind11 (needed for FoundationPose C++ extension)
 RUN cd / && git clone https://github.com/pybind/pybind11 &&\
-    cd pybind11 && git checkout v2.10.0 &&\
+    cd pybind11 && git checkout aa304c9c7d725ffb9d10af08a3b34cb372307020 &&\
     mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DPYBIND11_INSTALL=ON -DPYBIND11_TEST=OFF &&\
     make -j6 && make install
 
@@ -90,7 +95,7 @@ RUN python -m pip install --no-build-isolation --no-cache-dir git+https://github
 RUN python -m pip install --no-cache-dir kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu118.html
 # RUN pip install "git+https://github.com/facebookresearch/pytorch3d.git"
 RUN PIP_NO_BUILD_ISOLATION=1 pip install --no-build-isolation --no-cache-dir \
-    "git+https://github.com/facebookresearch/pytorch3d.git"
+    "git+https://github.com/facebookresearch/pytorch3d.git@e4ad6e5687a360ccdc6ebd91348e8dbbac97bf31"
 
 # FoundationPose C++ extension
 RUN cd /app/third_party/FoundationPose/mycpp && \
@@ -107,7 +112,7 @@ COPY third_party/GraspGen /app/third_party/GraspGen
 RUN cd /app/third_party/GraspGen && pip install -e .
 RUN cd /app/third_party/GraspGen/pointnet2_ops && pip install --no-build-isolation .
 
-RUN pip install --no-build-isolation --no-cache-dir "git+https://github.com/mattloper/chumpy"
+RUN pip install --no-build-isolation --no-cache-dir "git+https://github.com/mattloper/chumpy@580566eafc9ac68b2614b64d6f7aaa84eebb70da"
 
 EXPOSE 5000
 # -------------------------------------------------------------------------

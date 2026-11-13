@@ -19,32 +19,29 @@ data/
 ```
 and make sure the `key_name` is also in `config/config.yaml`.
 
-2. Make sure we have pulled or built the docker images following the [docker setup](../docker/README.md).
+2. Make sure we have pulled or built the docker images following the [docker setup](../docker/README.md):
+```
+python3 init.py setup
+```
 
-We will use `openreal2sim:dev` image for the reconstruction and `isaaclab:dev` image for the IsaacLab simulation.
+We will use `openreal2sim/reconstruction:dev` image for the reconstruction and `openreal2sim/simulation:dev` image for the IsaacLab simulation.
+
+Every step below is one `python3 init.py run <service> -- <command>` call from the
+repository root on the host: `init.py` starts the container, runs the command in it
+and removes it. Add `--gpus 0,1` to pick GPUs and `--port host:container` for the
+GUI steps. `python3 init.py shell reconstruction` opens a bash prompt instead, if
+you prefer to run several commands by hand.
 
 ### Preprocess
 
-Launch the docker container with mounted repository and data folder:
-```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run -p 8000:5000 openreal2sim
-```
-
 **Note**: We have mounted several volumes so that checkpoints will be cached even if the container is removed. You can change the volume mappings by modifying the `docker/compose.yml` file.
 
-The following steps are all performed inside the docker container.
-
-For the first-time use, **inside the docker container**, run the following script to download pretrained checkpoints and compile c++/cuda extensions:
-
-```
-python scripts/installation/install.py
-```
-
-
+The pretrained checkpoints are downloaded by `python3 init.py setup`, which runs
+`scripts/installation/install.py` in the reconstruction container for you.
 
 Running this scripts for all preprocessing steps:
 ```
-python openreal2sim/preprocess/preprocess_manager.py
+python3 init.py run reconstruction -- python openreal2sim/preprocess/preprocess_manager.py
 ```
 
 This will provide estimated depths and camera intrinsics/extrinsics for the reconstruction stage. 
@@ -75,9 +72,9 @@ We can check the point cloud reconstruction quality at `outputs/{key_name}/geome
 
 ### Reconstruction
 
-We first need to segment objects that needs to be reconstructed. We provide a GUI for this purpose:
+We first need to segment objects that needs to be reconstructed. We provide a GUI for this purpose, served on port 7860:
 ```
-python openreal2sim/reconstruction/tools/segmentation_annotator.py
+python3 init.py run reconstruction --port 7860:7860 -- python openreal2sim/reconstruction/tools/segmentation_annotator.py
 ```
 
 ![Segmentation UI](../assets/UI.jpg)
@@ -105,7 +102,7 @@ Example annotated masks are in `outputs/{key_name}/annotated_images`:
 
 Then, run the whole physical scene reconstruction pipeline:
 ```
-python openreal2sim/reconstruction/recon_agent.py
+python3 init.py run reconstruction -- python openreal2sim/reconstruction/recon_agent.py
 ```
 
 We will get a portable scene assets folder at `outputs/{key_name}/simulation` and camera & scene information at `outputs/{key_name}/simulation/scene.json`.
@@ -121,7 +118,7 @@ We can check the mesh reconstruction quality at `outputs/{key_name}/simulation/s
 
 First, please run the motion processing pipeline.
 
-``python openreal2sim/motion/motion_manager.py``.
+``python3 init.py run reconstruction -- python openreal2sim/motion/motion_manager.py``.
 
 
 We also provide a GUI for grasp pose annotation. Please follow the instructions on the interface to annotate the grasping pose for selected scene.
@@ -130,7 +127,7 @@ We also provide a GUI for grasp pose annotation. Please follow the instructions 
 ![Grasp Annotation UI](../assets/GraspGUI.jpg)
 
 
-Please run `python openreal2sim/motion/tool/gripper_pose_editor.py`. This will open the 5000 port of the container and the 8000 port of the server.
+Please run `python3 init.py run reconstruction --port 8000:5000 -- python openreal2sim/motion/tool/gripper_pose_editor.py`. This will open the 5000 port of the container and the 8000 port of the server.
 
 **How to use the GUI annotator:**
 
@@ -155,11 +152,10 @@ Current supported physics simulators:
 
 #### IsaacLab Simulation:
 
-If you want to use a pre-built image from Docker Hub, you can pull it directly:
-```bash
-docker pull ghcr.io/pointscoder/isaaclab:dev
-docker tag ghcr.io/pointscoder/isaaclab:dev isaaclab:dev
-```
+The simulation image is pulled by `python3 init.py setup`; build it only when you
+change a Dockerfile. The packages are private until Esteban makes them public, so
+until then run `docker login ghcr.io` first with a GitHub token that has the
+`read:packages` scope.
 
 **On the host machine and before entering the container**, run
 ```
@@ -167,19 +163,11 @@ xhost +local:
 ```
 This is to allow the container to access the host's X server for IsaacSim GUI.
 
-Then, launch the container:
-```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml up -d isaaclab 
-```
-and enter it:
-```
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml exec isaaclab bash
-```
 We now have a bash script for usd conversion, heuristic manipulation rollout and randomized generation.
 
 Please run
 
-``bash simulation/isaaclab/demo/sim_agent.sh``
+``python3 init.py run simulation -- bash simulation/isaaclab/demo/sim_agent.sh``
 
 If you want to specify the stage, please add ``--stage `` parameter, and choose among ``usd_conversion``, ``sim_heuristic_manip`` and ``sim_randomize_rollout``.
 
@@ -212,8 +200,21 @@ and you can find the visuo-motor trajectories at `outputs/{key_name}/demos/`, as
 
 If the results are not good, a solution might be re-running the reconstruction stage from object pose estimation.
 ```
-python openreal2sim/reconstruction/recon_agent.py --stage "scenario_fdpose_optimization"
+python3 init.py run reconstruction -- python openreal2sim/reconstruction/recon_agent.py --stage "scenario_fdpose_optimization"
 ```
 by tuning the `fdpose_est_refine_iter` and `fdpose_track_refine_iter` in `config/config.yaml`.
 
 You can also try selecting a new traj key. This requires going back to the motion stage and set the ``traj_key`` parameter in ``config.py``.
+
+### Without init.py
+
+`init.py` only assembles `docker compose` calls. The equivalent raw commands are:
+```
+docker compose -f docker/compose.yml pull reconstruction simulation
+HOST_UID=$(id -u) HOST_GID=$(id -g) DOCKER_GID=$(getent group docker | cut -d: -f3) \
+  docker compose -p "$USER" -f docker/compose.yml run --rm --publish 7860:7860 reconstruction bash
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml up -d simulation
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml exec simulation bash
+```
+and then run the python commands above inside the container, dropping the
+`python3 init.py run <service> --` prefix.
