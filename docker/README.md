@@ -38,19 +38,26 @@ to switch to the `docker` group in the current terminal session.
 
 You also need to have NVIDIA CUDA Container Toolkit installed. See: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
 
-### Use Pre-Built Docker Image
+### Set Up with init.py
 
-Pulling the pre-built images is the normal way to get started; building them from
-the Dockerfiles takes hours. From the repository root:
+`init.py` at the repository root does the whole first-time setup: it checks docker
+and the nvidia runtime, creates the host directories the containers write to,
+pulls the images, and downloads the pretrained weights. From the repository root:
    ```bash
-   docker compose -f docker/compose.yml pull reconstruction simulation
+   python3 init.py setup
    ```
 
-The packages are private until Esteban makes them public, so until then you need
-to authenticate first with a GitHub token that has the `read:packages` scope:
+Pulling the pre-built images is the normal way to get started; building them from
+the Dockerfiles takes hours. The packages are private until Esteban makes them
+public, so until then you need to authenticate first with a GitHub token that has
+the `read:packages` scope:
    ```bash
    docker login ghcr.io
    ```
+
+The weights are about 22 GB and take around 20 minutes. `setup` skips them when
+`outputs/.weights_installed` exists; `--force-weights` downloads them again and
+`--skip-weights` leaves them out.
 
 ### (Optional) Build the Docker Image
 
@@ -59,7 +66,7 @@ Build the images yourself only when you change a Dockerfile. Once the container 
 **Build the container image**
    From the repository root:
    ```bash
-   docker compose -f docker/compose.yml build reconstruction # or simulation
+   python3 init.py setup --build
    ```
 
 Optionally, you may want to push the image to a remote registry (e.g., GitHub Container Registry) for easier sharing.
@@ -73,29 +80,31 @@ Don't forget to change the visibility of the pushed image to public if you want 
 
 ### After Getting the Docker Image
 
-Every time you want to run a script inside the repo, follow these steps:
-
-#### Run the real2sim container
+**Run one script in a container**
    ```bash
-   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run --publish 8000:5000 reconstruction
+   python3 init.py run reconstruction -- python openreal2sim/preprocess/preprocess_manager.py
+   python3 init.py run simulation -- python <path_to_script>.py
+   ```
+   Everything after `--` is the command line executed inside the container, from
+   the repository root. The container is removed when the command ends.
+
+**Pick the GPUs**
+   ```bash
+   python3 init.py run reconstruction --gpus 0,1 -- python <path_to_script>.py
+   ```
+   Without `--gpus` the container sees every GPU on the host.
+
+**Publish a port for the GUIs**
+   ```bash
+   python3 init.py run reconstruction --port 7860:7860 -- python openreal2sim/reconstruction/tools/segmentation_annotator.py
+   python3 init.py run reconstruction --port 8000:5000 -- python openreal2sim/motion/tool/gripper_pose_editor.py
    ```
 
-**Inside the docker container**, run the following script to download pretrained checkpoints and compile c++/cuda extensions:
-```
-python scripts/installation/install.py
-```
-
-**Execute a script inside the container**
-   
-   Inside the container’s terminal and from the repository root:
+**Open an interactive shell**
    ```bash
-   python <path_to_script>.py
+   python3 init.py shell reconstruction   # or simulation
    ```
-
-#### Run the simulation container
-   ```bash
-   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -p "$USER" -f docker/compose.yml run simulation
-   ```
+   `shell` takes the same `--gpus` and `--port` flags.
 
 #### Tips if you are using VSCode
 
@@ -104,3 +113,16 @@ python scripts/installation/install.py
 2. Install the [vscode-3d-preview](https://marketplace.visualstudio.com/items?itemName=tatsy.vscode-3d-preview) extension for visualizing 3D point clouds directly in VSCode.
 
 3. Install the [glTF Model Viewer](https://marketplace.visualstudio.com/items?itemName=cloudedcat.vscode-model-viewer) extension for visualizing textured meshes (.glb files) directly in VSCode.
+
+### Without init.py
+
+`init.py` only assembles `docker compose` calls, so the raw commands still work:
+   ```bash
+   docker compose -f docker/compose.yml pull reconstruction simulation
+   HOST_UID=$(id -u) HOST_GID=$(id -g) DOCKER_GID=$(getent group docker | cut -d: -f3) \
+     docker compose -p "$USER" -f docker/compose.yml run --rm --publish 7860:7860 reconstruction bash
+   ```
+`HOST_UID`/`HOST_GID` keep the files the container writes owned by you, and
+`DOCKER_GID` lets the reconstruction container reach the docker socket. Selecting
+a subset of GPUs needs a second `-f` file overriding
+`deploy.resources.reservations.devices`, which is what `--gpus` writes.
