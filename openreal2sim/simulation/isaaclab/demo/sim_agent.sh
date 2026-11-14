@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-#set -euo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd /app && pwd)"
 
 # Default parameters
-gpu_id="1"
+# Respect CUDA_VISIBLE_DEVICES when it is already set; otherwise use GPU 0.
+gpu_id="${CUDA_VISIBLE_DEVICES:-0}"
 CONFIG_PATH="${ROOT_DIR}/config/config.yaml"
 declare -a PIPELINE=()
 START_IDX=""
@@ -29,9 +30,9 @@ Options:
   -h, --help             Show this message and exit
 
 The script loads keys from config.yaml and runs for each key:
-  1. USD conversion (`isaaclab/sim_preprocess/usd_conversion.py`)
-  2. Heuristic manipulation (`isaaclab/sim_heuristic_manip.py`)
-  3. Randomized rollout (`isaaclab/sim_randomize_rollout.py`)
+  1. USD conversion (`isaaclab/demo/sim_utils_demo/usd_conversion.py`)
+  2. Heuristic manipulation (`isaaclab/demo/sim_heuristic_manip.py`)
+  3. Randomized rollout (`isaaclab/demo/sim_randomize_rollout.py`)
 
 Examples:
   # Process keys from index 10 to 20 (exclusive)
@@ -169,6 +170,7 @@ run_stage() {
   case "${stage}" in
     usd_conversion)
       python openreal2sim/simulation/isaaclab/demo/sim_utils_demo/usd_conversion.py \
+        --key "${key}" \
       ;;
     sim_heuristic_manip)
       echo "Setting CUDA_VISIBLE_DEVICES to ${CUDA_VISIBLE_DEVICES}"

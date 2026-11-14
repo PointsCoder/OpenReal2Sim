@@ -48,12 +48,8 @@ pulls the images, and downloads the pretrained weights. From the repository root
    ```
 
 Pulling the pre-built images is the normal way to get started; building them from
-the Dockerfiles takes hours. The packages are private until Esteban makes them
-public, so until then you need to authenticate first with a GitHub token that has
-the `read:packages` scope:
-   ```bash
-   docker login ghcr.io
-   ```
+the Dockerfiles takes hours. The packages are public, so the pull is anonymous and
+no GitHub token or login is needed.
 
 The weights are about 22 GB and take around 20 minutes. `setup` skips them when
 `outputs/.weights_installed` exists; `--force-weights` downloads them again and
