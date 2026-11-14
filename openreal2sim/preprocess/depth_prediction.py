@@ -117,7 +117,7 @@ def run_megasam(video_name: str, key_cfgs: dict):
         str(base_dir / "third_party" / "mega-sam" / "cvd_opt" / "cvd_opt.py"),
         "--output_dir", str(recon_dir),
         "--data_dir", str(recon_dir),
-        "--image_dir", str(data_dir / "resized_images"),
+        "--image_dir", str(recon_dir / "resized_images"),
         "--w_grad", "2.0",
         "--w_normal", "5.0"
     ], env_cvd)
