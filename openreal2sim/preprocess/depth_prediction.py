@@ -126,7 +126,11 @@ def run_megasam(video_name: str, key_cfgs: dict):
     recon_npz_path = recon_dir / "sgd_cvd_hr.npz"
     recon_npz = np.load(recon_npz_path)
     scene_path = data_dir / "scene" / "scene.pkl"
-    saved_dict = {
+    saved_dict = {}
+    if scene_path.exists():
+        with open(scene_path, "rb") as f:
+            saved_dict = pickle.load(f)
+    saved_dict.update({
         "images": recon_npz["images"], # [N, H, W, 3], uint8
         "depths": recon_npz["depths"], # [N, H, W], float32
         "intrinsics": recon_npz["intrinsic"], # [3, 3], float32
@@ -134,7 +138,7 @@ def run_megasam(video_name: str, key_cfgs: dict):
         "n_frames": recon_npz["images"].shape[0], # N
         "height": recon_npz["images"].shape[1],
         "width": recon_npz["images"].shape[2]
-    }
+    })
     with open(scene_path, "wb") as f:
         pickle.dump(saved_dict, f)
 
@@ -176,7 +180,7 @@ def run_moge(key_name: str, key_cfgs: dict):
              0, 0, 1], dtype=np.float32
         ).reshape(3,3)
         
-        saved_dict = {
+        scene_data.update({
             "images": images, # [1, H, W, 3], uint8
             "depths": depth[np.newaxis, ...], # [1, H, W], float32
             "intrinsics": intrinsics, # [3, 3], float32
@@ -184,9 +188,9 @@ def run_moge(key_name: str, key_cfgs: dict):
             "n_frames": 1,
             "height": images.shape[1],
             "width": images.shape[2]
-        }
+        })
         with open(scene_path, "wb") as f:
-            pickle.dump(saved_dict, f)
+            pickle.dump(scene_data, f)
 
     # visualizing dynamic point cloud in html
     # print(f"[Visualization] Saving dynamic PCD HTML")
