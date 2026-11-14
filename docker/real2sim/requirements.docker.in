@@ -1,6 +1,10 @@
 # =================================================================================
 # GENERAL DEPENDENCIES
 # Contains all other project requirements (core libs, add-ons, annotators.
+#
+# This is the list we maintain by hand. The image installs the resolved
+# requirements.docker.lock instead; after editing this file, regenerate the lock
+# with the `uv pip compile` command recorded in the lock's own header.
 # =================================================================================
 
 #__________________________________________________________________________________

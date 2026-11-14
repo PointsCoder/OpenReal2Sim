@@ -1,8 +1,9 @@
-# Lock the CUDA 11.8 torch stack installed at Dockerfile:30 so the later
-# `pip install -r requirements.docker.txt` step cannot upgrade it: tensordict
-# (requirements.docker.txt:91, unpinned) requires torch>=2.11.0a0, and pip
-# replaces the cu118 wheels with cu13 ones, breaking every CUDA extension
-# built later in the image.
+# Lock the CUDA 11.8 torch stack so no later resolution can upgrade it:
+# tensordict (requirements.docker.in, unpinned) requires torch>=2.11.0a0, and a
+# resolver left to itself replaces the cu118 wheels with cu13 ones, breaking
+# every CUDA extension built later in the image. The Dockerfile exports this
+# file as UV_CONSTRAINT, so it applies to every uv layer, and it is also fed to
+# `uv pip compile` when requirements.docker.lock is regenerated.
 torch==2.5.1+cu118
 torchvision==0.20.1+cu118
 torchaudio==2.5.1+cu118
