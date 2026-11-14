@@ -30,9 +30,9 @@ Options:
   -h, --help             Show this message and exit
 
 The script loads keys from config.yaml and runs for each key:
-  1. USD conversion (`isaaclab/sim_preprocess/usd_conversion.py`)
-  2. Heuristic manipulation (`isaaclab/sim_heuristic_manip.py`)
-  3. Randomized rollout (`isaaclab/sim_randomize_rollout.py`)
+  1. USD conversion (`isaaclab/demo/sim_utils_demo/usd_conversion.py`)
+  2. Heuristic manipulation (`isaaclab/demo/sim_heuristic_manip.py`)
+  3. Randomized rollout (`isaaclab/demo/sim_randomize_rollout.py`)
 
 Examples:
   # Process keys from index 10 to 20 (exclusive)
