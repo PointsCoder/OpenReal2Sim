@@ -69,6 +69,12 @@ Build the images yourself only when you change a Dockerfile. Once the container 
    python3 init.py setup --build
    ```
 
+The reconstruction image installs its Python packages with `uv`. The dependency
+list lives in `docker/real2sim/requirements.docker.in` and the Dockerfile
+installs the resolved `docker/real2sim/requirements.docker.lock`; after editing
+the `.in` file, regenerate the lock with the `uv pip compile` command recorded
+in the lock's header.
+
 Optionally, you may want to push the image to a remote registry (e.g., GitHub Container Registry) for easier sharing.
 
 If so, you can tag the image and push it:
