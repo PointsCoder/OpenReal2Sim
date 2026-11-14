@@ -285,7 +285,7 @@ def process_key(key: str, key_cfgs: dict) -> None:
         )
 
     N = imgs_resized.shape[0]
-    saved_dict = {
+    data.update({
         "images": imgs_resized,            # (N,H,W,3) uint8
         "depths": depths_aligned,          # (N,H,W) float16
         "intrinsics": K,                    # (3,3) float32
@@ -293,10 +293,10 @@ def process_key(key: str, key_cfgs: dict) -> None:
         "n_frames": N,
         "height": imgs_resized.shape[1],      # int
         "width": imgs_resized.shape[2],    # int
-    }
+    })
 
     with open(str(scene_path), "wb") as f:
-        pickle.dump(saved_dict, f)
+        pickle.dump(data, f)
 
     # Export PLYs for rebugging depth alignment results
     export_depth_alignment_pointcloud(
