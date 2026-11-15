@@ -14,7 +14,7 @@ openreal2sim/
 │   │   ├── background_pixel_inpainting.py
 │   │   ├── background_point_inpainting.py
 │   │   ├── background_mesh_generation.py
-│   │   ├── object_mesh_generation.py
+│   │   ├── sam_object_mesh_generation.py
 │   │   ├── scenario_construction.py
 │   │   ├── scenario_fdpose_optimization.py
 │   │   ├── scenario_collision_optimization.py
@@ -48,7 +48,7 @@ We generate the 3D mesh of the background using the inpainted point cloud and te
 
 ### object mesh generation
 
-We generate the 3D mesh of each object using the segmented masks and input images. This step produces complete object meshes that can be used in the final scene. (See `modules/object_mesh_generation.py`)
+We generate the 3D mesh of each object using the segmented masks and input images. This step produces complete object meshes that can be used in the final scene. (See `modules/sam_object_mesh_generation.py`)
 
 ### scenario construction
 

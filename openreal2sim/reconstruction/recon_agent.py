@@ -10,10 +10,9 @@ from modules.utils.compose_config import compose_configs
 from modules.utils.notification import notify_started, notify_failed, notify_success
 
 class ReconAgent:
-    def __init__(self, stage=None, key=None, use_sam=False):
+    def __init__(self, stage=None, key=None):
         print('[Info] Initializing ReconAgent...')
         self.base_dir = Path.cwd()
-        self.use_sam = use_sam
         cfg_path = self.base_dir / "config" / "config.yaml"
         cfg = yaml.safe_load(cfg_path.open("r"))
         self.keys = [key] if key is not None else cfg["keys"]
@@ -120,14 +119,9 @@ class ReconAgent:
         print('[Info] Background mesh generation completed.')
 
     def object_mesh_generation(self):
-        if self.use_sam:
-            from modules.sam_object_mesh_generation import sam_object_mesh_generation
-            self.key_scene_dicts = sam_object_mesh_generation(self.keys, self.key_scene_dicts, self.key_cfgs)
-            print('[Info] SAM-3D object mesh generation completed.')
-        else:
-            from modules.object_mesh_generation import object_mesh_generation
-            self.key_scene_dicts = object_mesh_generation(self.keys, self.key_scene_dicts, self.key_cfgs)
-            print('[Info] Object mesh generation completed.')
+        from modules.sam_object_mesh_generation import sam_object_mesh_generation
+        self.key_scene_dicts = sam_object_mesh_generation(self.keys, self.key_scene_dicts, self.key_cfgs)
+        print('[Info] Object mesh generation completed.')
 
     def scenario_construction(self):
         from modules.scenario_construction import scenario_construction
@@ -170,14 +164,13 @@ if __name__ == '__main__':
     parser.add_argument('--stage', type=str, default=None, help='Starting from a certain stage')
     parser.add_argument('--key', type=str, default=None, help='Process a single key instead of all keys from config')
     parser.add_argument('--label', type=str, default=None, help='Optional label for notifications')
-    parser.add_argument('--use-sam', action='store_true', help='Use SAM-3D for object mesh generation (runs in sam3d container)')
     args = parser.parse_args()
 
     if args.label:
         notify_started(args.label)
 
     try:
-        agent = ReconAgent(stage=args.stage, key=args.key, use_sam=args.use_sam)
+        agent = ReconAgent(stage=args.stage, key=args.key)
         scene_dicts = agent.run()
 
         if args.label:

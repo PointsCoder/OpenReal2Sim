@@ -68,11 +68,6 @@ RUN cd /app/third_party/mega-sam/base && python setup.py install
 COPY third_party/Grounded-SAM-2 /app/third_party/Grounded-SAM-2
 RUN cd /app/third_party/Grounded-SAM-2 && python build_cuda.py build_ext --inplace
 
-# Hunyuan3D
-COPY third_party/Hunyuan3D-2 /app/third_party/Hunyuan3D-2
-RUN cd /app/third_party/Hunyuan3D-2/hy3dgen/texgen/custom_rasterizer && python setup.py install
-RUN cd /app/third_party/Hunyuan3D-2/hy3dgen/texgen/differentiable_renderer && python setup.py install
-
 # pybind11 (needed for FoundationPose C++ extension)
 RUN cd / && git clone https://github.com/pybind/pybind11 &&\
     cd pybind11 && git checkout aa304c9c7d725ffb9d10af08a3b34cb372307020 &&\

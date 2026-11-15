@@ -4,9 +4,6 @@
 [submodule "third_party/Grounded-SAM-2"] # for object segmentation [reconstruction]
 	path = third_party/Grounded-SAM-2
 	url = git@github.com:PointsCoder/Grounded-SAM-2.git
-[submodule "third_party/Hunyuan3D-2"] # for object mesh reconstruction [reconstruction]
-	path = third_party/Hunyuan3D-2
-	url = git@github.com:PointsCoder/Hunyuan3D-2.git
 [submodule "third_party/FoundationPose"] # for object pose estimation [reconstruction]
 	path = third_party/FoundationPose
 	url = git@github.com:PointsCoder/FoundationPose.git

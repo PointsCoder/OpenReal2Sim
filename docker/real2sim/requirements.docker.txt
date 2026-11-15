@@ -46,12 +46,9 @@ git+https://github.com/microsoft/MoGe.git@72fdee98935d93b69f7ce0a1369cfd6e2573fc
 
 #__________________________________________________________________________________
 # 6) Object mesh generation
-rembg
-onnxruntime-gpu==1.17.0
 pymeshlab==2023.12.post3
 xatlas
 pybind11
-pygltflib
 accelerate
 
 #__________________________________________________________________________________

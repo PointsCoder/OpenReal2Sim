@@ -18,7 +18,7 @@ INSTALL = "scripts/installation/install.py"
 
 # Directories the compose mounts need: Docker creates missing ones as root.
 REPO_DIRS = ("outputs", "h5py", "tasks", ".cache")
-CACHE_DIRS = ("torch", "huggingface", "hy3dgen", "warp", "matplotlib")
+CACHE_DIRS = ("torch", "huggingface", "warp", "matplotlib")
 
 OVERRIDE = """services:
   {service}:
