@@ -91,6 +91,20 @@ def get_next_demo_id(demo_root: Path) -> int:
     return max(demo_ids) + 1 if demo_ids else 0
 
 
+# extra cameras are optional so older scene configs keep working
+EXTRA_CAMERA_NAMES = {"overview": "overview_camera", "wrist": "wrist_camera"}
+
+
+def get_optional_sensor(scene: Any, name: str):
+    """Return scene[name] if the sensor exists in the scene, else None."""
+    try:
+        if name not in scene.keys():
+            return None
+    except Exception:
+        return None
+    return scene[name]
+
+
 class BaseSimulator:
     """
     Base class for robot simulation.
@@ -180,6 +194,16 @@ class BaseSimulator:
         #                            if f"object_" in key and key != "object_00"]
         self.background_prim = scene["background"]
         self.camera: Camera = scene["camera"]
+        # optional extra viewpoints (overview + wrist), rendered for video only
+        self.overview_camera: Optional[Camera] = get_optional_sensor(
+            scene, EXTRA_CAMERA_NAMES["overview"]
+        )
+        self.wrist_camera: Optional[Camera] = get_optional_sensor(
+            scene, EXTRA_CAMERA_NAMES["wrist"]
+        )
+        self.extra_cam_dict: Dict[str, List[np.ndarray]] = {
+            name: [] for name in EXTRA_CAMERA_NAMES
+        }
 
         # physics properties
         if set_physics_props:
@@ -776,6 +800,8 @@ class BaseSimulator:
         # This matches the render_interval setting
         if self.count % self.decimation == 0:
             self.camera.update(dt=self.task_dt)
+            for camera in self._extra_cameras().values():
+                camera.update(dt=self.task_dt)
             self.task_step_count += 1  # Increment task step counter
         self.count += 1  # Increment physical step counter
         self.scene.update(self.sim_dt)
@@ -1112,10 +1138,42 @@ class BaseSimulator:
             self.save_dict["joint_vel"].append(obs["joint_vel"].cpu().numpy())
             self.save_dict["ee_pose_cam"].append(obs["ee_pose_cam"].cpu().numpy())
             self.save_dict["ee_pose_l"].append(obs["ee_pose_l"].cpu().numpy())
+            self.record_extra_cameras()
+
+    def _extra_cameras(self) -> Dict[str, Camera]:
+        """Return the extra cameras that are present in the scene."""
+        cams = {"overview": self.overview_camera, "wrist": self.wrist_camera}
+        return {name: cam for name, cam in cams.items() if cam is not None}
+
+    def record_extra_cameras(self):
+        """Buffer the rgb frame of every extra camera, like the main camera rgb."""
+        for name, camera in self._extra_cameras().items():
+            rgb = camera.data.output.get("rgb", None)
+            if rgb is None:
+                continue
+            self.extra_cam_dict[name].append(rgb.cpu().numpy())  # [B,H,W,3]
+
+    def write_extra_camera_videos(self, env_dir: Path, b: int, fps: float):
+        """Write overview.mp4 / wrist.mp4 next to sim_video.mp4."""
+        for name, frames in self.extra_cam_dict.items():
+            if not frames:
+                continue
+            arr = np.array(frames)  # [T,B,H,W,3]
+            if arr.ndim != 5 or b >= arr.shape[1]:
+                continue
+            video_path = env_dir / f"{name}.mp4"
+            writer = imageio.get_writer(
+                video_path, fps=fps, codec="libx264", quality=8, macro_block_size=None
+            )
+            for frame in arr[:, b]:
+                writer.append_data(frame[..., :3])
+            writer.close()
 
     def clear_data(self):
         for key in self.save_dict.keys():
             self.save_dict[key] = []
+        for key in self.extra_cam_dict.keys():
+            self.extra_cam_dict[key] = []
  
     def _env_dir(self, base: Path, b: int) -> Path:
         d = base / f"env_{b:03d}"
@@ -1201,6 +1259,7 @@ class BaseSimulator:
                         np.save(env_dir / f"{key}.npy", depth_seq)
                     elif key != "composed_rgb" and len(arr.shape) >= 2:
                         np.save(env_dir / f"{key}.npy", arr[:, b])
+                self.write_extra_camera_videos(env_dir, b, fps=fps)
             # Batch compose all frames for this environment
             rgb_env = stacked["rgb"][:, b]  # [T, H, W, 3]
             mask_env = stacked["segmask"][:, b]  # [T, H, W]
