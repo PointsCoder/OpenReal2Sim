@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-def updateMetadata(metadata_path: Path, reconstruction_time: int, status: str = "success", use_sam: bool = False):
+def updateMetadata(metadata_path: Path, reconstruction_time: int, status: str = "success"):
     """Create or update metadata YAML for a reconstruction run."""
     metadata = {}
     if metadata_path.exists():
@@ -19,11 +19,10 @@ def updateMetadata(metadata_path: Path, reconstruction_time: int, status: str = 
             pass
     metadata["reconstruction_time"] = reconstruction_time
     metadata["reconstruction_status"] = status
-    metadata["use_sam"] = use_sam
     with open(metadata_path, "w") as f:
         yaml.safe_dump(metadata, f)
 
-def run_recon_agent_for_key(key, stage=None, use_sam=False):
+def run_recon_agent_for_key(key, stage=None):
     """Run recon_agent.py for a specific key"""
     script_dir = Path(__file__).parent
     recon_agent_path = script_dir / "recon_agent.py"
@@ -38,8 +37,6 @@ def run_recon_agent_for_key(key, stage=None, use_sam=False):
     cmd = [sys.executable, str(recon_agent_path), "--key", key, "--label", key]
     if stage:
         cmd.extend(["--stage", stage])
-    if use_sam:
-        cmd.append("--use-sam")
 
     stop_timer = threading.Event()
     start_time = time.time()
@@ -62,7 +59,7 @@ def run_recon_agent_for_key(key, stage=None, use_sam=False):
         timer_thread.join(timeout=1)
         elapsed = int(time.time() - start_time)
         print(f"\rRunning {key} ......... [{elapsed}s] - Done!")
-        updateMetadata(metadata_path, elapsed, "success", use_sam)
+        updateMetadata(metadata_path, elapsed, "success")
         return True
     except subprocess.CalledProcessError as e:
         stop_timer.set()
@@ -71,10 +68,10 @@ def run_recon_agent_for_key(key, stage=None, use_sam=False):
         print(f"\rRunning {key} ......... [{elapsed}s] - Failed!")
         print(f"[Error] Exit code: {e.returncode}")
         print(f"[Error] Check logs at: {stdout_log} and {stderr_log}")
-        updateMetadata(metadata_path, elapsed, "fail", use_sam)
+        updateMetadata(metadata_path, elapsed, "fail")
         return False
 
-def main(config_file: str = "config/config.yaml", stage: str = None, use_sam: bool = False):
+def main(config_file: str = "config/config.yaml", stage: str = None):
     """Main function: load config and process keys."""
     with open(config_file, "r") as f:
         config = yaml.safe_load(f)
@@ -87,7 +84,7 @@ def main(config_file: str = "config/config.yaml", stage: str = None, use_sam: bo
     results = {}
     for key in keys:
         print(f"\n{'_'*60}")
-        success = run_recon_agent_for_key(key, stage, use_sam)
+        success = run_recon_agent_for_key(key, stage)
         results[key] = success
         print(f"{'_'*60}\n")
 
@@ -100,7 +97,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config/config.yaml", help="YAML with keys: [key1, key2, ...]")
     parser.add_argument("--stage", type=str, default=None, help="Optional stage to start from")
-    parser.add_argument("--use-sam", action="store_true", help="Use SAM-3D for object mesh generation")
     args = parser.parse_args()
 
-    main(args.config, args.stage, args.use_sam)
+    main(args.config, args.stage)
