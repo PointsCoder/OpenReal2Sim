@@ -71,6 +71,16 @@ DEFAULT_BG_PHYSICS = {
         "min_torsional_patch_radius": 0.005,
     },
 }
+# ---- extra visualization cameras (overview + wrist) ----
+EXTRA_CAM_WIDTH = 640
+EXTRA_CAM_HEIGHT = 480
+# shorter than the 24 mm default, i.e. a wider field of view
+EXTRA_CAM_FOCAL_LENGTH = 14.0
+# overview placement relative to the real camera, see overview_camera_pose()
+OVERVIEW_PULL_BACK = 1.6
+OVERVIEW_LIFT = 1.5
+OVERVIEW_MIN_HEIGHT = 0.6
+
 DEFAULT_OBJ_PHYSICS = {
     "mass_props": {"mass": 0.5},
     "rigid_props": {"disable_gravity": False, "kinematic_enabled": False},
@@ -128,6 +138,124 @@ def create_camera():
         ),
         width=width,
         height=height,
+    )
+
+
+def _look_at_quat_ros(cam_pos, target) -> Tuple[float, float, float, float]:
+    """Return the wxyz quaternion that aims a ros-convention camera at target.
+
+    In the ros convention the camera looks along +Z, with +X right and +Y down.
+    """
+    cam_pos = np.asarray(cam_pos, dtype=float)
+    target = np.asarray(target, dtype=float)
+    forward = target - cam_pos
+    norm = float(np.linalg.norm(forward))
+    if norm < 1e-9:
+        return (1.0, 0.0, 0.0, 0.0)
+    forward = forward / norm
+    world_up = np.array([0.0, 0.0, 1.0], dtype=float)
+    if abs(float(np.dot(forward, world_up))) > 0.99:
+        world_up = np.array([0.0, 1.0, 0.0], dtype=float)
+    right = np.cross(forward, world_up)
+    right /= np.linalg.norm(right) + 1e-12
+    down = np.cross(forward, right)
+    down /= np.linalg.norm(down) + 1e-12
+    rot = np.column_stack([right, down, forward])
+    return tuple(float(q) for q in transforms3d.quaternions.mat2quat(rot))
+
+
+def overview_camera_pose():
+    """Derive a third person pose from the real camera pose and the scene bounds.
+
+    The background mesh is reconstructed from the real camera only, so it has
+    holes when seen from the other side. The overview camera therefore keeps the
+    real camera azimuth (same hemisphere) and only moves back and up, aiming at
+    the manipulated object center.
+    """
+    C = _SCENE_CTX.cam_dict
+    info = C["scene_info"]
+    target = np.asarray(info["object_center"], dtype=float)
+    cam_pos = np.asarray(info["move_to"], dtype=float)
+    scene_min = np.asarray(info["scene_min"], dtype=float)
+    scene_max = np.asarray(info["scene_max"], dtype=float)
+    scene_diag = float(np.linalg.norm(scene_max - scene_min))
+
+    delta = cam_pos - target
+    horizontal = delta[:2]
+    horizontal_dist = float(np.linalg.norm(horizontal))
+    if horizontal_dist < 1e-6:
+        horizontal = np.array([1.0, 0.0], dtype=float)
+        horizontal_dist = 1.0
+    direction = horizontal / horizontal_dist
+
+    back_dist = max(OVERVIEW_PULL_BACK * horizontal_dist, horizontal_dist + 0.5 * scene_diag)
+    height = target[2] + max(
+        OVERVIEW_LIFT * float(delta[2]), 0.5 * scene_diag, OVERVIEW_MIN_HEIGHT
+    )
+    pos = np.array(
+        [
+            target[0] + direction[0] * back_dist,
+            target[1] + direction[1] * back_dist,
+            height,
+        ],
+        dtype=float,
+    )
+    return tuple(float(v) for v in pos), _look_at_quat_ros(pos, target)
+
+
+def create_overview_camera():
+    """Return a fixed third person CameraCfg derived from the real camera pose."""
+    assert _SCENE_CTX is not None, (
+        "init_scene_configs/init_scene_from_scene_dict must be called first."
+    )
+    pos, rot = overview_camera_pose()
+    return CameraCfg(
+        prim_path="{ENV_REGEX_NS}/OverviewCamera",
+        offset=CameraCfg.OffsetCfg(pos=pos, rot=rot, convention="ros"),
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=EXTRA_CAM_FOCAL_LENGTH,
+            focus_distance=400.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.01, 1.0e5),
+        ),
+        width=EXTRA_CAM_WIDTH,
+        height=EXTRA_CAM_HEIGHT,
+    )
+
+
+def hand_link_name() -> str:
+    """Return the gripper link name of the configured robot."""
+    robot_type = _SCENE_CTX.robot_type
+    if robot_type == "franka_panda":
+        return "panda_hand"
+    elif robot_type == "franka_fr3":
+        return "fr3_hand"
+    raise ValueError(f"Unsupported robot type: {robot_type}")
+
+
+def create_wrist_camera():
+    """Return a CameraCfg parented to the gripper, looking along the approach axis."""
+    assert _SCENE_CTX is not None, (
+        "init_scene_configs/init_scene_from_scene_dict must be called first."
+    )
+    hand_link = hand_link_name()
+    return CameraCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/Robot/{hand_link}/wrist_camera",
+        # the hand frame +Z is the approach axis; sit beside and behind the
+        # fingertips so the fingers stay in view
+        offset=CameraCfg.OffsetCfg(
+            pos=(0.05, 0.0, 0.0), rot=(0.707, 0.0, 0.0, 0.707), convention="ros"
+        ),
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=EXTRA_CAM_FOCAL_LENGTH,
+            focus_distance=400.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.01, 1.0e5),
+        ),
+        width=EXTRA_CAM_WIDTH,
+        height=EXTRA_CAM_HEIGHT,
     )
 
 
@@ -211,10 +339,18 @@ def build_tabletop_scene_cfg():
             ),
         )
 
-    # Placeholder entries to be replaced in __post_init__
-    base_attrs["camera"] = CameraCfg(prim_path="{ENV_REGEX_NS}/Camera")
+    # Placeholder entries to be replaced in __post_init__.
+    # Order matters: InteractiveScene._add_entities_from_cfg iterates the cfg
+    # fields in declaration order, so the robot articulation must be declared
+    # before any sensor parented under one of its links (the wrist camera),
+    # otherwise the camera spawn cannot find its parent prim.
     base_attrs["robot"] = FRANKA_PANDA_HIGH_PD_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot"
+    )
+    base_attrs["camera"] = CameraCfg(prim_path="{ENV_REGEX_NS}/Camera")
+    base_attrs["overview_camera"] = CameraCfg(prim_path="{ENV_REGEX_NS}/OverviewCamera")
+    base_attrs["wrist_camera"] = CameraCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/Robot/{hand_link_name()}/wrist_camera"
     )
 
     # Instantiate objects
@@ -245,8 +381,11 @@ def build_tabletop_scene_cfg():
     def __post_init__(self):
         if not C.use_ground_plane:
             self.background.spawn.usd_path = C.background_path
-        self.camera = create_camera()
+        # keep the robot first, see the ordering note above
         self.robot = create_robot()
+        self.camera = create_camera()
+        self.overview_camera = create_overview_camera()
+        self.wrist_camera = create_wrist_camera()
 
     attrs = dict(base_attrs)
     attrs["__doc__"] = "Auto-generated multi-object TableTop scene cfg."
@@ -575,6 +714,8 @@ __all__ = [
     "init_scene_from_scene_dict",
     # Scene builders
     "create_camera",
+    "create_overview_camera",
+    "create_wrist_camera",
     "create_robot",
     "build_tabletop_scene_cfg",
     # Placement samplers
