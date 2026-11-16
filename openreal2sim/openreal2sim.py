@@ -12,10 +12,13 @@ import argparse
 import sys
 from pathlib import Path
 
-# The runner is started as a script, so put the repository root on sys.path.
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# The runner lives inside the package, so the directory python puts on sys.path
+# for a script would shadow the openreal2sim package. Use the repository root.
+HERE = str(Path(__file__).resolve().parent)
+ROOT = str(Path(__file__).resolve().parents[1])
+sys.path = [entry for entry in sys.path if entry != HERE]
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 STAGES = ["preprocess", "reconstruction", "motion"]
 
