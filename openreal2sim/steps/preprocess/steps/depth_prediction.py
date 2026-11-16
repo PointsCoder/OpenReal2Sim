@@ -144,7 +144,7 @@ def run_megasam(video_name: str, key_cfgs: dict):
 
     # visualizing dynamic point cloud in html    
     # print(f"[Visualization] Saving dynamic PCD HTML")
-    # from utils.viz_dynamic_pcd import save_dynamic_pcd
+    # from openreal2sim.steps.preprocess.utils.viz_dynamic_pcd import save_dynamic_pcd
     # save_dynamic_pcd(video_name, max_points=5000)
 
     print(f"[Done] {video_name}")
@@ -194,7 +194,7 @@ def run_moge(key: str, key_cfgs: dict):
 
     # visualizing dynamic point cloud in html
     # print(f"[Visualization] Saving dynamic PCD HTML")
-    # from utils.viz_dynamic_pcd import save_dynamic_pcd
+    # from openreal2sim.steps.preprocess.utils.viz_dynamic_pcd import save_dynamic_pcd
     # save_dynamic_pcd(key, max_points=None)
 
     print(f"[Done] {key}")

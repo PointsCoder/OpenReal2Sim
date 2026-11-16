@@ -9,6 +9,7 @@ import pickle
 import shutil
 import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -201,18 +202,42 @@ class ReconAgent:
         return self.key_scene_dicts
 
 
+def free_gpu_memory():
+    """Give the next key a clean allocator, now that the keys share one process."""
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def run_key(key: str, cfg: dict, stage: str = None) -> bool:
-    """Reconstruct one key, with its own log files and metadata entry."""
+    """Reconstruct one key, with its own log files and metadata entry.
+
+    The keys share this process, so one key must not take the others down:
+    everything but KeyboardInterrupt is recorded as a failed key, including
+    SystemExit raised by a step that calls sys.exit.
+    """
     start_time = time.time()
     metadata_path = Path("outputs") / key / "metadata.yaml"
     print(f"Running {key} .........", end='', flush=True)
     try:
         with key_logs(key):
-            notify_started(key)
-            agent = ReconAgent([key], cfg, stage=stage)
-            agent.run()
-            notify_success(key)
-    except Exception as error:
+            try:
+                notify_started(key)
+                agent = ReconAgent([key], cfg, stage=stage)
+                agent.run()
+                notify_success(key)
+            except KeyboardInterrupt:
+                raise
+            except BaseException:
+                # Still inside key_logs, so the stderr log of the key keeps it.
+                traceback.print_exc()
+                raise
+    except KeyboardInterrupt:
+        raise
+    except BaseException as error:
         elapsed = int(time.time() - start_time)
         print(f" [{elapsed}s] - Failed!")
         print(f"[Error] {error}")
@@ -220,6 +245,8 @@ def run_key(key: str, cfg: dict, stage: str = None) -> bool:
         update_metadata(metadata_path, elapsed, "fail")
         notify_failed(key)
         return False
+    finally:
+        free_gpu_memory()
     elapsed = int(time.time() - start_time)
     print(f" [{elapsed}s] - Done!")
     update_metadata(metadata_path, elapsed, "success")

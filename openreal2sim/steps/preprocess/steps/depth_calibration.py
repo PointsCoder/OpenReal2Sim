@@ -309,7 +309,7 @@ def process_key(key: str, key_cfgs: dict) -> None:
 
     # Optional HTML (keep your current import path)
     print(f"[Visualization] Saving aligned multi-step PCD HTML to: {recon_dir / 'multistep_pcd.html'}")
-    from utils.viz_dynamic_pcd import save_dynamic_pcd
+    from openreal2sim.steps.preprocess.utils.viz_dynamic_pcd import save_dynamic_pcd
     save_dynamic_pcd(key, max_points=5000 if N>1 else None)
     return
 
