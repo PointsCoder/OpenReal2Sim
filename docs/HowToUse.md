@@ -1,10 +1,10 @@
 # User Guide
 
 Our framework contains several stages:
-- [Preprocess](../openreal2sim/preprocess/): collect or estimate depths and camera information from images and videos
-- [Reconstruction](../openreal2sim/reconstruction/): build physically interactable scenes from images and videos
-- [Motion](../openreal2sim/motion/): process trajectory and generate grasp poses
-- [Simulation](../openreal2sim/simulation/): import physical scenes into the simulator, collect robotic demonstrations
+- [Preprocess](../openreal2sim/steps/preprocess/): collect or estimate depths and camera information from images and videos
+- [Reconstruction](../openreal2sim/steps/reconstruction/): build physically interactable scenes from images and videos
+- [Motion](../openreal2sim/steps/motion/): process trajectory and generate grasp poses
+- [Simulation](../openreal2sim/steps/simulation/): import physical scenes into the simulator, collect robotic demonstrations
 
 ### Before We Start
 
@@ -13,11 +13,11 @@ Our framework contains several stages:
 You can also prepare your own data following the same structure:
 ```
 data/
-    key_name.jpg or .png  # for single image input
-    key_name.mp4          # for video input
-    key_name.mp4 + key_name_depth.png # for video input with GT depths
+    key.jpg or .png  # for single image input
+    key.mp4          # for video input
+    key.mp4 + key_depth.png # for video input with GT depths
 ```
-and make sure the `key_name` is also in `config/config.yaml`.
+and make sure the `key` is also in `config/config.yaml`.
 
 2. Make sure we have pulled or built the docker images following the [docker setup](../docker/README.md):
 ```
@@ -37,16 +37,16 @@ you prefer to run several commands by hand.
 **Note**: We have mounted several volumes so that checkpoints will be cached even if the container is removed. You can change the volume mappings by modifying the `docker/compose.yml` file.
 
 The pretrained checkpoints are downloaded by `python3 init.py setup`, which runs
-`scripts/installation/install.py` in the reconstruction container for you.
+`docker/installation/install.py` in the reconstruction container for you.
 
 Running this scripts for all preprocessing steps:
 ```
-python3 init.py run reconstruction -- python openreal2sim/preprocess/preprocess_manager.py
+python3 init.py run reconstruction -- python openreal2sim/openreal2sim.py preprocess
 ```
 
 This will provide estimated depths and camera intrinsics/extrinsics for the reconstruction stage. 
 
-We can check the point cloud reconstruction quality at `outputs/{key_name}/geometry/dynamic_pcd.ply`:
+We can check the point cloud reconstruction quality at `outputs/{key}/geometry/dynamic_pcd.ply`:
 
 <div style="text-align:center;">
   <video
@@ -74,7 +74,7 @@ We can check the point cloud reconstruction quality at `outputs/{key_name}/geome
 
 We first need to segment objects that needs to be reconstructed. We provide a GUI for this purpose, served on port 7860:
 ```
-python3 init.py run reconstruction --port 7860:7860 -- python openreal2sim/reconstruction/tools/segmentation_annotator.py
+python3 init.py run reconstruction --port 7860:7860 -- python openreal2sim/gui/segmentation_annotator.py
 ```
 
 ![Segmentation UI](../assets/UI.jpg)
@@ -83,7 +83,7 @@ python3 init.py run reconstruction --port 7860:7860 -- python openreal2sim/recon
 
 **How to use the GUI annotator:**
 
-1. Input `key_name` (e.g. `demo_image`) in the `Output-key` textbox and press `load` to load image frames
+1. Input `key` (e.g. `demo_image`) in the `Output-key` textbox and press `load` to load image frames
 
 2. Select the objects you want to segment by simply clicking on the image
 
@@ -93,7 +93,7 @@ python3 init.py run reconstruction --port 7860:7860 -- python openreal2sim/recon
 
 **Please note that we must have a `ground` mask annotated, since we need this to find the ground plane for reconstruction.**
 
-Example annotated masks are in `outputs/{key_name}/annotated_images`:
+Example annotated masks are in `outputs/{key}/annotated_images`:
 <p align="center">
   <img src="../assets/seg_image.jpg" width="30%">
   <img src="../assets/seg_video.jpg" width="30%">
@@ -102,12 +102,12 @@ Example annotated masks are in `outputs/{key_name}/annotated_images`:
 
 Then, run the whole physical scene reconstruction pipeline:
 ```
-python3 init.py run reconstruction -- python openreal2sim/reconstruction/recon_agent.py
+python3 init.py run reconstruction -- python openreal2sim/openreal2sim.py reconstruction
 ```
 
-We will get a portable scene assets folder at `outputs/{key_name}/simulation` and camera & scene information at `outputs/{key_name}/simulation/scene.json`.
+We will get a portable scene assets folder at `outputs/{key}/simulation` and camera & scene information at `outputs/{key}/simulation/scene.json`.
 
-We can check the mesh reconstruction quality at `outputs/{key_name}/simulation/scene_optimized.glb`:
+We can check the mesh reconstruction quality at `outputs/{key}/simulation/scene_optimized.glb`:
 <p align="center">
   <img src="../assets/obj1.jpg" width="30%">
   <img src="../assets/obj2.jpg" width="30%">
@@ -118,7 +118,7 @@ We can check the mesh reconstruction quality at `outputs/{key_name}/simulation/s
 
 First, please run the motion processing pipeline.
 
-``python3 init.py run reconstruction -- python openreal2sim/motion/motion_manager.py``.
+``python3 init.py run reconstruction -- python openreal2sim/openreal2sim.py motion``.
 
 
 We also provide a GUI for grasp pose annotation. Please follow the instructions on the interface to annotate the grasping pose for selected scene.
@@ -127,11 +127,11 @@ We also provide a GUI for grasp pose annotation. Please follow the instructions 
 ![Grasp Annotation UI](../assets/GraspGUI.jpg)
 
 
-Please run `python3 init.py run reconstruction --port 8000:5000 -- python openreal2sim/motion/tool/gripper_pose_editor.py`. This will open the 5000 port of the container and the 8000 port of the server.
+Please run `python3 init.py run reconstruction --port 8000:5000 -- python openreal2sim/gui/gripper_pose_editor.py`. This will open the 5000 port of the container and the 8000 port of the server.
 
 **How to use the GUI annotator:**
 
-1. Input `key_name` (e.g. `demo_video`) in the blank textbox and press `Load Scene` to load image frames
+1. Input `key` (e.g. `demo_video`) in the blank textbox and press `Load Scene` to load image frames
 
 2. Use the keyboard to move the gripper till a good pose.
 
@@ -142,7 +142,7 @@ Please run `python3 init.py run reconstruction --port 8000:5000 -- python openre
 
 ### Robotic Simulation
 
-We support importing the reconstructed scenes into different physics simulators and collecting robotic trajectories by cross-embodiment transfer from videos. Please refer to the [simulation](../openreal2sim/simulation/) part for more details.
+We support importing the reconstructed scenes into different physics simulators and collecting robotic trajectories by cross-embodiment transfer from videos. Please refer to the [simulation](../openreal2sim/steps/simulation/) part for more details.
 
 Current supported physics simulators:
 
@@ -193,14 +193,14 @@ You may observe something like this in the IsaacSim GUI:
 
 <br><br>
 
-and you can find the visuo-motor trajectories at `outputs/{key_name}/demos/`, as well as `h5py/{key_name}/`.
+and you can find the visuo-motor trajectories at `outputs/{key}/demos/`, as well as `h5py/{key}/`.
 
 
-**Note**: The heuristic policy can be very un-stable, largely depending on the video object pose estimation quality. Please check the object pose estimation results at `outputs/{key_name}/reconstruction/objects/*.mp4`.
+**Note**: The heuristic policy can be very un-stable, largely depending on the video object pose estimation quality. Please check the object pose estimation results at `outputs/{key}/reconstruction/objects/*.mp4`.
 
 If the results are not good, a solution might be re-running the reconstruction stage from object pose estimation.
 ```
-python3 init.py run reconstruction -- python openreal2sim/reconstruction/recon_agent.py --stage "scenario_fdpose_optimization"
+python3 init.py run reconstruction -- python openreal2sim/openreal2sim.py reconstruction --stage "scenario_fdpose_optimization"
 ```
 by tuning the `fdpose_est_refine_iter` and `fdpose_track_refine_iter` in `config/config.yaml`.
 

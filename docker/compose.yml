@@ -28,7 +28,7 @@ services:
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
       - ../openreal2sim:/app/openreal2sim
-      - ../scripts:/app/scripts
+      - ../docker/installation:/app/docker/installation
       - ../config:/app/config
       - ../assets:/app/assets:ro
       - ../data:/app/data
@@ -76,7 +76,7 @@ services:
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
       - ../openreal2sim:/app/openreal2sim
-      - ../scripts:/app/scripts
+      - ../docker/installation:/app/docker/installation
       - ../config:/app/config
       - ../assets:/app/assets:ro
       - ../data:/app/data

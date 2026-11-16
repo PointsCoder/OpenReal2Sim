@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
 COMPOSE = ROOT / "docker" / "compose.yml"
 SERVICES = ("reconstruction", "simulation")
 MARKER = ROOT / "outputs" / ".weights_installed"
-INSTALL = "scripts/installation/install.py"
+INSTALL = "docker/installation/install.py"
 
 # Directories the compose mounts need: Docker creates missing ones as root.
 REPO_DIRS = ("outputs", "h5py", "tasks", ".cache")
