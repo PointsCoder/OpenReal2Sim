@@ -400,7 +400,10 @@ class BaseSimulator:
         record, so this runs in the except paths of the planning calls.
         """
         try:
-            limits = self.robot.data.joint_pos_limits[:, self.robot_entity_cfg.joint_ids, :]
+            limits = getattr(self.robot.data, "joint_limits", None)
+            if limits is None:
+                limits = self.robot.data.soft_joint_pos_limits
+            limits = limits[:, self.robot_entity_cfg.joint_ids, :]
             pos = joint_pos.detach().to(limits.device).reshape(-1, limits.shape[1])
             limits = limits[: pos.shape[0]]
             low, high = limits[..., 0], limits[..., 1]
