@@ -22,6 +22,8 @@ services:
       - HF_HOME=/tmp/.cache/huggingface
       - HOST_PROJECT_ROOT=${PWD}
       - TORCH_EXTENSIONS_DIR=/tmp/.cache/torch_extensions
+      # Host GPU id for the sibling SAM-3D container, set by init.py --gpus
+      - SAM3D_HOST_GPU=${SAM3D_HOST_GPU:-}
     working_dir: /app
     volumes:
       - /etc/passwd:/etc/passwd:ro

@@ -150,7 +150,7 @@ def run_sam3d_container(sam_3d_dir: Path):
                            "Make sure you're running from docker-compose.")
     
     container_path = str(sam_3d_dir).replace(str(base_dir), "/app")
-    gpu_id = os.environ.get("CUDA_VISIBLE_DEVICES", "1")
+    gpu_id = os.environ.get("SAM3D_HOST_GPU") or os.environ.get("CUDA_VISIBLE_DEVICES", "1")
     
     cmd = [
         "docker", "run", "--rm",
