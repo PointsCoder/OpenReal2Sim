@@ -8,8 +8,8 @@ Pull the pre-built image rather than building it; build only when you change a D
    ```bash
    python3 init.py setup
    ```
-   The packages are private until Esteban makes them public, so until then run
-   `docker login ghcr.io` first with a GitHub token that has the `read:packages` scope.
+   The packages are public, so the pull is anonymous and needs no GitHub token
+   or login.
 
 **On the host machine and before entering the container**, run
 ```

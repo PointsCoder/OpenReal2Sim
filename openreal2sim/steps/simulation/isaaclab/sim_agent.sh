@@ -2,7 +2,7 @@
 # Thin wrapper over openreal2sim/steps/simulation/simulation.py that keeps the
 # key slicing of the old script. The runner owns the stage list and the per step
 # subprocesses; run it directly when you do not need --start or --end.
-#set -euo pipefail
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 RUNNER="${ROOT_DIR}/openreal2sim/steps/simulation/simulation.py"

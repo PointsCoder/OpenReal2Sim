@@ -48,12 +48,8 @@ pulls the images, and downloads the pretrained weights. From the repository root
    ```
 
 Pulling the pre-built images is the normal way to get started; building them from
-the Dockerfiles takes hours. The packages are private until Esteban makes them
-public, so until then you need to authenticate first with a GitHub token that has
-the `read:packages` scope:
-   ```bash
-   docker login ghcr.io
-   ```
+the Dockerfiles takes hours. The packages are public, so the pull is anonymous and
+no GitHub token or login is needed.
 
 The weights are about 22 GB and take around 20 minutes. `setup` skips them when
 `outputs/.weights_installed` exists; `--force-weights` downloads them again and
@@ -68,6 +64,12 @@ Build the images yourself only when you change a Dockerfile. Once the container 
    ```bash
    python3 init.py setup --build
    ```
+
+The reconstruction image installs its Python packages with `uv`. The dependency
+list lives in `docker/real2sim/requirements.docker.in` and the Dockerfile
+installs the resolved `docker/real2sim/requirements.docker.lock`; after editing
+the `.in` file, regenerate the lock with the `uv pip compile` command recorded
+in the lock's header.
 
 Optionally, you may want to push the image to a remote registry (e.g., GitHub Container Registry) for easier sharing.
 

@@ -153,9 +153,8 @@ Current supported physics simulators:
 #### IsaacLab Simulation:
 
 The simulation image is pulled by `python3 init.py setup`; build it only when you
-change a Dockerfile. The packages are private until Esteban makes them public, so
-until then run `docker login ghcr.io` first with a GitHub token that has the
-`read:packages` scope.
+change a Dockerfile. The packages are public, so the pull is anonymous and needs
+no GitHub token or login.
 
 **On the host machine and before entering the container**, run
 ```
