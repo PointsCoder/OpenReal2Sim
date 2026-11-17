@@ -187,6 +187,9 @@ class BaseSimulator:
         # So we use a helper method that can be called later
         self._selected_object_id = selected_object_id  # Will be set by subclasses
         self.object_prim = scene["object_00"]  # Default, will be updated if needed
+        # the names are only used to report which object is still moving
+        self.object_prim_name = "object_00"
+        self.other_object_prim_names = []
         self._update_object_prim()
         
         # # Get all other object prims (excluding the main object)
@@ -327,11 +330,14 @@ class BaseSimulator:
         if prim_name in self.scene.keys():
             #import pdb; pdb.set_trace()
             self.object_prim = self.scene[prim_name]
+            self.object_prim_name = prim_name
             # Update other_object_prims
             self.other_object_prims = []
+            self.other_object_prim_names = []
             for key in self.scene.keys():
                 if f"object_" in key and key != prim_name:
                     self.other_object_prims.append(self.scene[key])
+                    self.other_object_prim_names.append(key)
     # -------- Curobo Motion Planning ----------
     def prepare_curobo(self):
 
@@ -940,6 +946,66 @@ class BaseSimulator:
             self.record_data(obs)
         return joint_pos_des
 
+    # ---------- Settle Objects ----------
+    def settle_objects(
+        self,
+        lin_tol: float = 1e-3,
+        ang_tol: float = 1e-2,
+        max_time: float = 2.0,
+        min_steps: int = 3,
+    ) -> int:
+        """Step until every object is at rest, or until max_time of sim time.
+
+        A fixed number of steps is not enough: an object that spawns touching
+        the reconstructed surface is still moving when the grasp search reads
+        its pose. Returns the number of physics steps taken.
+        """
+        prims = [self.object_prim] + list(self.other_object_prims)
+        names = [self.object_prim_name] + list(self.other_object_prim_names)
+        spawn = [prim.data.root_state_w[:, :7].clone() for prim in prims]
+
+        # hold the arm still so a long settle does not drag it to a stale target
+        self.robot.set_joint_position_target(
+            self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids],
+            joint_ids=self.robot_entity_cfg.joint_ids,
+        )
+        self.robot.set_joint_position_target(
+            self.gripper_open_tensor, joint_ids=self.robot_gripper_cfg.joint_ids
+        )
+
+        max_steps = max(min_steps, int(round(max_time / self.sim_dt)))
+        lin = ang = float("nan")
+        steps = 0
+        settled = False
+        while steps < max_steps:
+            self.step()
+            steps += 1
+            if steps < min_steps:
+                continue
+            lin = max(
+                float(prim.data.root_state_w[:, 7:10].norm(dim=1).max()) for prim in prims
+            )
+            ang = max(
+                float(prim.data.root_state_w[:, 10:13].norm(dim=1).max()) for prim in prims
+            )
+            if lin < lin_tol and ang < ang_tol:
+                settled = True
+                break
+
+        deltas = []
+        for name, prim, start in zip(names, prims, spawn):
+            now = prim.data.root_state_w[:, :7]
+            d_pos = float((now[:, :3] - start[:, :3]).norm(dim=1).max())
+            dot = (now[:, 3:7] * start[:, 3:7]).sum(dim=1).abs().clamp(max=1.0)
+            d_rot = float(torch.rad2deg(2.0 * torch.acos(dot)).max())
+            deltas.append(f"{name} {d_pos:.4f} m / {d_rot:.2f} deg")
+        print(
+            f"[SETTLE] {'settled' if settled else 'NOT settled'} after {steps} steps "
+            f"({steps * self.sim_dt:.2f} s), lin {lin:.5f} m/s, ang {ang:.5f} rad/s, "
+            f"pose delta from spawn: " + ", ".join(deltas)
+        )
+        return steps
+
     # ---------- Reset Envs ----------
     def reset(self, env_ids=None):
         """
@@ -1006,8 +1072,7 @@ class BaseSimulator:
         self.clear_data()
         obs = self.get_observation(gripper_open=True)
 
-        for _ in range(3):
-            self.step()
+        self.settle_objects()
 
         # current_object_pose = self.object_prim.data.root_state_w[:, :7]
         # print("[INFO]After step, current_object_pose", current_object_pose)

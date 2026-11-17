@@ -345,7 +345,7 @@ class HeuristicManipulation(BaseSimulator):
         Reset → pre → grasp → close → lift → hold; return (success[B], score[B]).
         """
         B = self.scene.num_envs
-        self.reset()
+        # the caller resets and reads the settled object pose before mapping the grasps
 
         # open gripper buffer
         jp = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
@@ -620,6 +620,41 @@ class HeuristicManipulation(BaseSimulator):
 
 
 
+    def current_object_mat(self) -> np.ndarray:
+        """The manipulated object pose, env-local, as a 4x4 matrix."""
+        pose = self.object_prim.data.root_state_w[:, :7].cpu().numpy()
+        mat = np.eye(4, dtype=np.float32)
+        mat[:3, :3] = transforms3d.quaternions.quat2mat(pose[0, 3:7])
+        mat[:3, 3] = pose[0, :3] - self.scene.env_origins.cpu().numpy()[0]
+        return mat
+
+    def grasp_delta_mat(self) -> np.ndarray:
+        """Transform from the pose the grasps were mapped with to the current one.
+
+        The object settles slightly differently after every reset, so grasps
+        mapped once from self.grasp_ref_mat drift out of the object frame.
+        """
+        cur = self.current_object_mat()
+        self.grasp_cur_mat = cur
+        delta = (cur @ np.linalg.inv(self.grasp_ref_mat)).astype(np.float32)
+        trace = float(np.clip((np.trace(delta[:3, :3]) - 1.0) / 2.0, -1.0, 1.0))
+        print(
+            f"[GRASP] object pose vs grasp reference: {np.linalg.norm(delta[:3, 3]):.4f} m, "
+            f"{np.degrees(np.arccos(trace)):.2f} deg"
+        )
+        return delta
+
+    def remap_grasp_pose(self, p_w: np.ndarray, q_w: np.ndarray, delta_mat: np.ndarray):
+        """Move one grasp pose by delta_mat."""
+        mat = np.eye(4, dtype=np.float32)
+        mat[:3, :3] = transforms3d.quaternions.quat2mat(q_w)
+        mat[:3, 3] = p_w
+        mat = delta_mat @ mat
+        return (
+            mat[:3, 3].astype(np.float32),
+            transforms3d.quaternions.mat2quat(mat[:3, :3]).astype(np.float32),
+        )
+
     def build_grasp_info(
         self,
         grasp_pos_w_batch: np.ndarray,   # (B,3)  GraspNet proposal in world frame
@@ -692,9 +727,12 @@ class HeuristicManipulation(BaseSimulator):
             block = idx_all[start : start + B]
             if len(block) < B:
                 block = block + [block[-1]] * (B - len(block))
+            self.reset()
+            delta_mat = self.grasp_delta_mat()
             grasp_pos_w_batch, grasp_quat_w_batch = [], []
             for idx in block:
                 p_w, q_w = gg.retrieve_grasp_group(int(idx))
+                p_w, q_w = self.remap_grasp_pose(p_w, q_w, delta_mat)
                 grasp_pos_w_batch.append(p_w.astype(np.float32))
                 grasp_quat_w_batch.append(q_w.astype(np.float32))
             grasp_pos_w_batch  = np.stack(grasp_pos_w_batch,  axis=0)  # (B,3)
@@ -794,10 +832,11 @@ class HeuristicManipulation(BaseSimulator):
         """
         B = self.scene.num_envs
         self.reset()
-        current_object_pose = self.object_prim.data.root_state_w[:, :7].cpu().numpy()
-        cur_4x4_mat = np.eye(4, dtype=np.float32)
-        cur_4x4_mat[:3, :3] = transforms3d.quaternions.quat2mat(current_object_pose[0, 3:7])
-        cur_4x4_mat[:3, 3] = current_object_pose[0, :3] - self.scene.env_origins.cpu().numpy()[0]
+        cur_4x4_mat = self.current_object_mat()
+        # every attempt remaps the grasps from this reference to the pose the
+        # object settles into after its own reset
+        self.grasp_ref_mat = cur_4x4_mat
+        self.grasp_cur_mat = cur_4x4_mat
         print(f"[INFO] cur_4x4_mat: {cur_4x4_mat}")
         self.wait(gripper_open=True, steps=10)
 
@@ -860,10 +899,12 @@ class HeuristicManipulation(BaseSimulator):
                 pre_all = np.array([rets[j]["chosen_pre"] for j in block], dtype=np.float32)
                 del_all = np.array([rets[j]["chosen_delta"] for j in block], dtype=np.float32)
 
-                info_all = self.build_grasp_info(p_all, q_all, pre_all, del_all)
-
                 # reset and conduct main process: open→pre→grasp→close→follow_object_goals
                 self.reset()
+                delta_mat = self.grasp_delta_mat()
+                for j in range(len(p_all)):
+                    p_all[j], q_all[j] = self.remap_grasp_pose(p_all[j], q_all[j], delta_mat)
+                info_all = self.build_grasp_info(p_all, q_all, pre_all, del_all)
 
                 init_manip_object_com = self.object_prim.data.root_com_pos_w[:, :3].cpu().numpy()
                 init_manip_object_com -= self.scene.env_origins.cpu().numpy()
@@ -957,14 +998,14 @@ class HeuristicManipulation(BaseSimulator):
                         pregrasp_mat = np.eye(4, dtype=np.float32)
                         pregrasp_mat[:3, :3] = transforms3d.quaternions.quat2mat(pregrasp_pose[3:7])
                         pregrasp_mat[:3, 3] = pregrasp_pose[:3]
-                        ori_pregrasp_mat = np.linalg.inv(cur_4x4_mat) @ pregrasp_mat
+                        ori_pregrasp_mat = np.linalg.inv(self.grasp_cur_mat) @ pregrasp_mat
                         pregrasp_pose = np.concatenate([ori_pregrasp_mat[:3, 3], transforms3d.quaternions.mat2quat(ori_pregrasp_mat[:3, :3])])
                         grasp_pose = self.save_dict["grasp_pose_w"][k]
                         grasp_pose[:3] = grasp_pose[:3] - self.scene.env_origins.cpu().numpy()[k]
                         grasp_mat = np.eye(4, dtype=np.float32)
                         grasp_mat[:3, :3] = transforms3d.quaternions.quat2mat(grasp_pose[3:7])
                         grasp_mat[:3, 3] = grasp_pose[:3]
-                        ori_grasp_mat = np.linalg.inv(cur_4x4_mat) @ grasp_mat
+                        ori_grasp_mat = np.linalg.inv(self.grasp_cur_mat) @ grasp_mat
                         grasp_pose = np.concatenate([ori_grasp_mat[:3, 3], transforms3d.quaternions.mat2quat(ori_grasp_mat[:3, :3])])
                         
                         end_object_pose = object_prim_world_pose[k]
