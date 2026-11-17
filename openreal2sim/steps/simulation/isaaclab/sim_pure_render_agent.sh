@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 #set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd /app && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 
 # Default parameters
-gpu_id="1"
 CONFIG_PATH="${ROOT_DIR}/config/config.yaml"
 declare -a PIPELINE=()
 START_IDX=""
@@ -16,7 +14,7 @@ usage() {
 Usage: sim_pure_render_agent.sh [options]
 
 Options:
-  --config <path>        Path to config.yaml file (default: /app/config/config.yaml)
+  --config <path>        Path to config.yaml file (default: <repo>/config/config.yaml)
   --stage <stage>         Stage to run (can be specified multiple times)
                           Available stages:
                             - sim_calib
@@ -28,8 +26,8 @@ Options:
   -h, --help             Show this message and exit
 
 The script loads keys from config.yaml and runs for each key:
-  1. Calibration (`isaaclab/demo/sim_calib.py`)
-  2. Direct rendering (`isaaclab/demo/sim_direct_render.py`)
+  1. Calibration (`isaaclab/sim_calib.py`)
+  2. Direct rendering (`isaaclab/sim_direct_render.py`)
 
 Examples:
   # Process keys from index 10 to 20 (exclusive)
@@ -162,19 +160,17 @@ fi
 run_stage() {
   local stage="$1"
   local key="$2"
-  export CUDA_VISIBLE_DEVICES="${gpu_id}"
   echo "=============================="
   echo "[RUN] Stage: ${stage} | Key: ${key}"
   echo "=============================="
 
   case "${stage}" in
     sim_calib)
-      echo "Setting CUDA_VISIBLE_DEVICES to ${CUDA_VISIBLE_DEVICES}"
-      python openreal2sim/steps/simulation/isaaclab/demo/sim_calib.py \
+      python openreal2sim/steps/simulation/isaaclab/sim_calib.py \
         --key "${key}" \
       ;;
     sim_direct_render)
-      python openreal2sim/steps/simulation/isaaclab/demo/sim_direct_render.py \
+      python openreal2sim/steps/simulation/isaaclab/sim_direct_render.py \
         --key "${key}" \
       ;;
     *)
