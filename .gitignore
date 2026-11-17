@@ -1,6 +1,8 @@
 # Project
 data/
 outputs/
+h5py/
+tasks/
 .gradio/
 third_party/IsaacLab
 
