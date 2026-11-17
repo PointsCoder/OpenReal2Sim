@@ -84,7 +84,9 @@ We provide an easy-to-use interace for filtering out these bad demos. Please run
 ## Running Config Explanation
 There are two editable configs for this script:
 
-First, running device and start/end options defined in the bash script.
+First, the start/end key range, defined in `sim_agent.sh`. The GPU is not set
+here: the container is pinned to one device, so pick it with `init.py --gpus`
+(or a compose override) when you start the simulation service.
 
 Second, the randomizer config, environment num and total trajectry num are all defined in the `running_cfg.py` file. Please edit that file for your own needs.
 

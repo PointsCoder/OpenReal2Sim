@@ -138,13 +138,18 @@ echo "[INFO] Loaded ${#KEYS[@]} key(s) from ${CONFIG_PATH}${RANGE_INFO}: ${KEYS[
 export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
 cd "${ROOT_DIR}"
 
+FAILED=()
 for k in "${KEYS[@]}"; do
   echo "########## Processing key: ${k} ##########"
   if [[ -n "${STAGE}" ]]; then
-    python3 "${RUNNER}" --config "${CONFIG_PATH}" --key "${k}" --stage "${STAGE}" || exit 1
+    python3 "${RUNNER}" --config "${CONFIG_PATH}" --key "${k}" --stage "${STAGE}" || FAILED+=("${k}")
   else
-    python3 "${RUNNER}" --config "${CONFIG_PATH}" --key "${k}" || exit 1
+    python3 "${RUNNER}" --config "${CONFIG_PATH}" --key "${k}" || FAILED+=("${k}")
   fi
 done
 
 echo "[DONE] Processed keys: ${KEYS[*]}"
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+  echo "[ERR] Failed keys: ${FAILED[*]}" >&2
+  exit 1
+fi

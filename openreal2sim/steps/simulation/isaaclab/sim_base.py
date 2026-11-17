@@ -1125,6 +1125,9 @@ class BaseSimulator:
         already_existing_num = len(list(base.iterdir()))
         return base / f"demo_{already_existing_num:03d}.mp4"
 
+    def _demo_dir(self) -> Path:
+        return self.out_dir / self.img_folder / "demos" / f"demo_{self.demo_id}"
+
     def save_data(self, ignore_keys: List[str] = [], env_ids: Optional[List[int]] = None, export_hdf5: bool = False, save_other_things: bool = True, formal = True):
         self.save_dict["joint_pos_des"] = np.array(self.joint_pos_des_list) # Size: T, B, 7
         stacked = {k: np.array(v) for k, v in self.save_dict.items()}
