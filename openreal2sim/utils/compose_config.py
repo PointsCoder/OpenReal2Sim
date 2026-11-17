@@ -31,6 +31,16 @@ default_configs = {
         "collision_clearance": 0.002,  # in meters, minimum clearance distance for collision optimization
         "collision_sdf_resolution": 192,  # resolution for SDF grid if using "sdf" mode
     },
+    "simulation": {
+        "physics": "default",
+        "extrinsics": None,
+        "goal_offset": 0.005,
+        "grasp_idx": -1,
+        "grasp_pre": None,
+        "grasp_delta": 0.1,
+        "traj_key": "fdpose_trajs",  # "fdpose_trajs", "simple_trajs", "hybrid_trajs"
+        "manip_object_id": "2",
+    },
     "motion": {
         "gpu": "0",
         "n_points": 5000,

@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 import yaml
 import torch
@@ -8,34 +9,19 @@ import transforms3d
 
 from sim_utils.calibration_utils import calibration_to_robot_pose, load_extrinsics
 
-default_config = {
-    "physics": "default",
-    "extrinsics": None,
-    "goal_offset": 0.005,
-    "grasp_idx": -1,
-    "grasp_pre": None,
-    "grasp_delta": 0.1,
-    "traj_key": "fdpose_trajs", # "fdpose_trajs", "simple_trajs", "hybrid_trajs"
-    "manip_object_id": "2",
-}
+# The backend scripts run from the repository root, but they are started as
+# scripts, so make sure the shared utilities are importable.
+ROOT = Path(__file__).resolve().parents[5]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-def compose_configs(key_name: str, config: dict) -> dict:
-    ret_key_config = {}
-    local_config = config["local"].get(key_name, {})
-    local_config = local_config.get("simulation", {})
-    global_config = config.get("global", {})
-    global_config = global_config.get("simulation", {})
-    for param in default_config.keys():
-        value = local_config.get(param, global_config.get(param, default_config[param]))
-        ret_key_config[param] = value
-    print(f"[Info] Config for {key_name}: {ret_key_config}")
-    return ret_key_config
+from openreal2sim.utils.compose_config import compose_configs
 
 def load_sim_parameters(basedir, key) -> dict:
     scene_json_path = Path(basedir) / "outputs" / key / "simulation" / "scene.json"
     scene_json   = json.load(open(scene_json_path, "r"))
     exp_config = yaml.load(open(Path(basedir) / "config/config.yaml"), Loader=yaml.FullLoader)
-    exp_config = compose_configs(key, exp_config)
+    exp_config = compose_configs(key, exp_config, "simulation")
     manip_object_id = scene_json["manipulated_oid"]
 
     object_center = scene_json["objects"][manip_object_id]["object_center"]
