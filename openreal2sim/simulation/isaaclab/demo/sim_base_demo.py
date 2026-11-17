@@ -986,12 +986,18 @@ class BaseSimulator:
         ang_tol: float = 1e-2,
         max_time: float = 2.0,
         min_steps: int = 3,
+        stagnation_steps: int = 20,
+        stagnation_pos_tol: float = 5e-4,
+        stagnation_rot_tol: float = 0.1,
     ) -> int:
         """Step until every object is at rest, or until max_time of sim time.
 
         A fixed number of steps is not enough: an object that spawns touching
         the reconstructed surface is still moving when the grasp search reads
-        its pose. Returns the number of physics steps taken.
+        its pose. Objects resting against each other never reach the velocity
+        tolerances though, they jitter in place, so a pose that stops changing
+        over the last `stagnation_steps` counts as settled too. Returns the
+        number of physics steps taken.
         """
         prims = [self.object_prim] + list(self.other_object_prims)
         names = [self.object_prim_name] + list(self.other_object_prim_names)
@@ -1006,36 +1012,50 @@ class BaseSimulator:
             self.gripper_open_tensor, joint_ids=self.robot_gripper_cfg.joint_ids
         )
 
+        def pose_delta(now, before):
+            d_pos = float((now[:, :3] - before[:, :3]).norm(dim=1).max())
+            dot = (now[:, 3:7] * before[:, 3:7]).sum(dim=1).abs().clamp(max=1.0)
+            return d_pos, float(torch.rad2deg(2.0 * torch.acos(dot)).max())
+
         max_steps = max(min_steps, int(round(max_time / self.sim_dt)))
-        lin = ang = float("nan")
+        history: List[List[torch.Tensor]] = []
         steps = 0
-        settled = False
+        reason = "timeout"
+        lin = [float("nan")] * len(prims)
+        ang = [float("nan")] * len(prims)
+        drift_pos = drift_rot = float("nan")
         while steps < max_steps:
             self.step()
             steps += 1
+            history.append([prim.data.root_state_w[:, :7].clone() for prim in prims])
+            if len(history) > stagnation_steps + 1:
+                history.pop(0)
             if steps < min_steps:
                 continue
-            lin = max(
-                float(prim.data.root_state_w[:, 7:10].norm(dim=1).max()) for prim in prims
-            )
-            ang = max(
-                float(prim.data.root_state_w[:, 10:13].norm(dim=1).max()) for prim in prims
-            )
-            if lin < lin_tol and ang < ang_tol:
-                settled = True
+            lin = [float(prim.data.root_state_w[:, 7:10].norm(dim=1).max()) for prim in prims]
+            ang = [float(prim.data.root_state_w[:, 10:13].norm(dim=1).max()) for prim in prims]
+            if max(lin) < lin_tol and max(ang) < ang_tol:
+                reason = "at rest"
                 break
+            if len(history) > stagnation_steps:
+                drifts = [pose_delta(history[-1][i], history[0][i]) for i in range(len(prims))]
+                drift_pos = max(d[0] for d in drifts)
+                drift_rot = max(d[1] for d in drifts)
+                if drift_pos < stagnation_pos_tol and drift_rot < stagnation_rot_tol:
+                    reason = "pose stagnant"
+                    break
 
+        speeds = ", ".join(
+            f"{name} {l:.5f} m/s / {a:.5f} rad/s" for name, l, a in zip(names, lin, ang)
+        )
         deltas = []
-        for name, prim, start in zip(names, prims, spawn):
-            now = prim.data.root_state_w[:, :7]
-            d_pos = float((now[:, :3] - start[:, :3]).norm(dim=1).max())
-            dot = (now[:, 3:7] * start[:, 3:7]).sum(dim=1).abs().clamp(max=1.0)
-            d_rot = float(torch.rad2deg(2.0 * torch.acos(dot)).max())
+        for name, prim, start_pose in zip(names, prims, spawn):
+            d_pos, d_rot = pose_delta(prim.data.root_state_w[:, :7], start_pose)
             deltas.append(f"{name} {d_pos:.4f} m / {d_rot:.2f} deg")
         print(
-            f"[SETTLE] {'settled' if settled else 'NOT settled'} after {steps} steps "
-            f"({steps * self.sim_dt:.2f} s), lin {lin:.5f} m/s, ang {ang:.5f} rad/s, "
-            f"pose delta from spawn: " + ", ".join(deltas)
+            f"[SETTLE] {reason} after {steps} steps ({steps * self.sim_dt:.2f} s), "
+            f"drift over last {stagnation_steps} steps {drift_pos:.5f} m / {drift_rot:.3f} deg, "
+            f"speeds: {speeds}, pose delta from spawn: " + ", ".join(deltas)
         )
         return steps
 
