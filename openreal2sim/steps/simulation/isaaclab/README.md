@@ -64,7 +64,18 @@ isaaclab/
 ```
 
 ## Running the pipeline
-Please run `bash openreal2sim/steps/simulation/isaaclab/sim_agent.sh` to collect the demo. This will iterate through the keys in `config/config.yaml` and run the three stages for each one.
+Run the stage runner, which iterates through the keys in `config/config.yaml` and
+runs the three steps for each one:
+```
+python openreal2sim/steps/simulation/simulation.py
+```
+It takes the same flags as the other stage runners: `--config` for the config
+file, `--key` for a single key and `--stage` to start from a given step
+(`usd_conversion`, `sim_heuristic_manip` or `sim_randomize_rollout`). Every step
+runs in its own process because IsaacSim can only be started once per process.
+
+`sim_agent.sh` is now a thin wrapper that adds the `--start` and `--end` key
+slicing on top of the runner.
 
 ## Demo Judging
 We provide an easy-to-use interace for filtering out these bad demos. Please run `python openreal2sim/steps/simulation/isaaclab/tools/demo_judge.py`. On the gui, you can first choose whether to preserve or delete one demo, and final confirms deletion after browsing all demos for one task.

@@ -163,15 +163,15 @@ xhost +local:
 ```
 This is to allow the container to access the host's X server for IsaacSim GUI.
 
-We now have a bash script for usd conversion, heuristic manipulation rollout and randomized generation.
+The simulation stage runs usd conversion, heuristic manipulation rollout and randomized generation.
 
 Please run
 
-``python3 init.py run simulation -- bash simulation/isaaclab/demo/sim_agent.sh``
+``python3 init.py run simulation -- python openreal2sim/steps/simulation/simulation.py``
 
-If you want to specify the stage, please add ``--stage `` parameter, and choose among ``usd_conversion``, ``sim_heuristic_manip`` and ``sim_randomize_rollout``.
+If you want to start from a given step, please add the ``--stage`` parameter, and choose among ``usd_conversion``, ``sim_heuristic_manip`` and ``sim_randomize_rollout``. ``--key`` processes a single key and ``--config`` points at another config file.
 
-The tunable params ares stored in ``simulation/isaaclab/demo/env/running_cfg.py``, please refer to that file for detailed instructions.
+The tunable params are stored in ``openreal2sim/steps/simulation/isaaclab/envs/running_cfg.py``, please refer to that file for detailed instructions.
 
 **Note**: when running the above script for the first time, it may take quite a while to load IsaacSim. Just be patient.
 

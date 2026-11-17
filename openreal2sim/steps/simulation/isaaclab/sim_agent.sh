@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
+# Thin wrapper over openreal2sim/steps/simulation/simulation.py that keeps the
+# key slicing of the old script. The runner owns the stage list and the per step
+# subprocesses; run it directly when you do not need --start or --end.
 #set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd /app && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+RUNNER="${ROOT_DIR}/openreal2sim/steps/simulation/simulation.py"
 
-# Default parameters
-gpu_id="1"
 CONFIG_PATH="${ROOT_DIR}/config/config.yaml"
-declare -a PIPELINE=()
+STAGE=""
 START_IDX=""
 END_IDX=""
 
@@ -16,33 +17,29 @@ usage() {
 Usage: sim_agent.sh [options]
 
 Options:
-  --config <path>        Path to config.yaml file (default: /app/config/config.yaml)
-  --stage <stage>         Stage to run (can be specified multiple times)
-                          Available stages:
+  --config <path>        Path to config.yaml file (default: <repo>/config/config.yaml)
+  --stage <stage>        Start from this step, one of
                             - usd_conversion
                             - sim_heuristic_manip
                             - sim_randomize_rollout
-                          If not specified, runs all stages in order
-  --start <index>         Start index (0-based) for keys to process (inclusive)
-  --end <index>           End index (0-based) for keys to process (exclusive)
-                          If specified, only processes keys[start:end]
+                         If not specified, runs all steps in order
+  --start <index>        Start index (0-based) for keys to process (inclusive)
+  --end <index>          End index (0-based) for keys to process (exclusive)
+                         If specified, only processes keys[start:end]
   -h, --help             Show this message and exit
 
-The script loads keys from config.yaml and runs for each key:
-  1. USD conversion (`isaaclab/sim_preprocess/usd_conversion.py`)
-  2. Heuristic manipulation (`isaaclab/sim_heuristic_manip.py`)
-  3. Randomized rollout (`isaaclab/sim_randomize_rollout.py`)
+The script loads keys from config.yaml and calls the runner once per key:
+  python openreal2sim/steps/simulation/simulation.py --key <key>
 
 Examples:
   # Process keys from index 10 to 20 (exclusive)
   sim_agent.sh --start 10 --end 20
-  
+
   # Process keys from index 5 to the end
   sim_agent.sh --start 5
 EOF
 }
 
-# Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)
@@ -51,11 +48,8 @@ while [[ $# -gt 0 ]]; do
       ;;
     --stage)
       STAGE="${2:?Missing value for --stage}"
-      # Validate stage
       case "${STAGE}" in
-        usd_conversion|sim_heuristic_manip|sim_randomize_rollout)
-          PIPELINE+=("${STAGE}")
-          ;;
+        usd_conversion|sim_heuristic_manip|sim_randomize_rollout) ;;
         *)
           echo "[ERR] Invalid stage: ${STAGE}" >&2
           echo "[ERR] Valid stages: usd_conversion, sim_heuristic_manip, sim_randomize_rollout" >&2
@@ -92,13 +86,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Load keys from config.yaml
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "[ERR] Config file not found: ${CONFIG_PATH}" >&2
   exit 1
 fi
 
-# Extract keys from YAML using Python (more reliable than parsing YAML in bash)
 KEYS=($(python3 -c "
 import yaml
 import sys
@@ -109,11 +101,10 @@ try:
         if not all_keys:
             print('[ERR] No keys found in config.yaml', file=sys.stderr)
             sys.exit(1)
-        
-        # Apply slice if specified
+
         start_idx = ${START_IDX:--1}
         end_idx = ${END_IDX:--1}
-        
+
         if start_idx >= 0 and end_idx >= 0:
             keys = all_keys[start_idx:end_idx]
         elif start_idx >= 0:
@@ -122,11 +113,11 @@ try:
             keys = all_keys[:end_idx]
         else:
             keys = all_keys
-        
+
         if not keys:
             print('[ERR] No keys in specified range', file=sys.stderr)
             sys.exit(1)
-        
+
         print(' '.join(keys))
 except Exception as e:
     print(f'[ERR] Failed to load config: {e}', file=sys.stderr)
@@ -138,61 +129,22 @@ if [[ ${#KEYS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-# Display range info if specified
 RANGE_INFO=""
 if [[ -n "${START_IDX}" ]] || [[ -n "${END_IDX}" ]]; then
   RANGE_INFO=" (range: ${START_IDX:-0}:${END_IDX:-end})"
 fi
-
 echo "[INFO] Loaded ${#KEYS[@]} key(s) from ${CONFIG_PATH}${RANGE_INFO}: ${KEYS[*]}"
 
-# Determine which stages to run
 export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
 cd "${ROOT_DIR}"
 
-# If no stages specified, run all stages in order
-if [[ ${#PIPELINE[@]} -eq 0 ]]; then
-  PIPELINE=("usd_conversion" "sim_heuristic_manip" "sim_randomize_rollout")
-  echo "[INFO] No stages specified, running all stages: ${PIPELINE[*]}"
-else
-  echo "[INFO] Running specified stages: ${PIPELINE[*]}"
-fi
-
-run_stage() {
-  local stage="$1"
-  local key="$2"
-  export CUDA_VISIBLE_DEVICES="${gpu_id}"
-  echo "=============================="
-  echo "[RUN] Stage: ${stage} | Key: ${key}"
-  echo "=============================="
-
-  case "${stage}" in
-    usd_conversion)
-      python openreal2sim/steps/simulation/isaaclab/demo/sim_utils_demo/usd_conversion.py \
-      ;;
-    sim_heuristic_manip)
-      echo "Setting CUDA_VISIBLE_DEVICES to ${CUDA_VISIBLE_DEVICES}"
-      python openreal2sim/steps/simulation/isaaclab/demo/sim_heuristic_manip.py \
-        --key "${key}" \
-      ;;
-    sim_randomize_rollout)
-      python openreal2sim/steps/simulation/isaaclab/demo/sim_randomize_rollout.py \
-        --key "${key}" \
-      ;;
-    *)
-      echo "[ERR] Unsupported stage '${stage}'" >&2
-      exit 1
-      ;;
-  esac
-}
-
 for k in "${KEYS[@]}"; do
   echo "########## Processing key: ${k} ##########"
-  for stage in "${PIPELINE[@]}"; do
-    run_stage "${stage}" "${k}"
-  done
+  if [[ -n "${STAGE}" ]]; then
+    python3 "${RUNNER}" --config "${CONFIG_PATH}" --key "${k}" --stage "${STAGE}" || exit 1
+  else
+    python3 "${RUNNER}" --config "${CONFIG_PATH}" --key "${k}" || exit 1
+  fi
 done
 
 echo "[DONE] Processed keys: ${KEYS[*]}"
-
-
