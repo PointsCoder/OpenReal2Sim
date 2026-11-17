@@ -503,7 +503,13 @@ class BaseSimulator:
                 
                 # Check if trajectory is valid
                 if traj is None:
-                    print(f"[ERROR] Motion planning returned None trajectory on attempt {retry+1}/{max_retries}")
+                    print(
+                        f"[ERROR] Motion planning returned None trajectory on attempt "
+                        f"{retry+1}/{max_retries}: status {result.status}, goal pos "
+                        f"{[round(float(v), 4) for v in pos_b[0]]}, goal quat "
+                        f"{[round(float(v), 4) for v in quat_b[0]]}"
+                    )
+                    self.report_joint_limits(joint_pos0, "plan_single no trajectory")
                     if retry < max_retries - 1:
                         if self.reinitialize_motion_gen():
                             print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
