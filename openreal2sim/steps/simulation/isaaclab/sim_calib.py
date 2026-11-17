@@ -130,12 +130,12 @@ from curobo.types.math import Pose
 from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 
 # ─────────── Simulation environments ───────────
-from sim_base_demo import BaseSimulator
-from sim_env_factory_demo import make_env, get_prim_name_from_oid
+from sim_base import BaseSimulator
+from sim_env_factory import make_env, get_prim_name_from_oid
 
 
-from sim_utils_demo.transform_utils import pose_to_mat, mat_to_pose
-from sim_utils_demo.sim_utils import load_sim_parameters
+from sim_utils.transform_utils import pose_to_mat, mat_to_pose
+from sim_utils.sim_utils import load_sim_parameters
 
 BASE_DIR = Path.cwd()
 out_dir = BASE_DIR / "outputs"
@@ -325,7 +325,7 @@ def select_best_grasp_simple(sim_cfgs: dict, scene):
         best_grasp: Dict with 'position' and 'quaternion' (in canonical object frame)
         cur_4x4_mat: Current object transformation matrix (for converting back)
     """
-    from demo.sim_utils_demo.grasp_group_utils import GraspGroup
+    from sim_utils.grasp_group_utils import GraspGroup
 
     # Load grasp path from config
     grasp_path = sim_cfgs["demo_cfg"]["grasp_path"]
@@ -347,7 +347,7 @@ def select_best_grasp_simple(sim_cfgs: dict, scene):
     # Get current object pose to transform grasps
     # Assuming object is in scene (we'll get it from the first env)
     selected_object_id = sim_cfgs["demo_cfg"]["manip_object_id"]
-    from demo.sim_env_factory_demo import get_prim_name_from_oid
+    from sim_env_factory import get_prim_name_from_oid
     prim_name = get_prim_name_from_oid(str(selected_object_id))
     object_prim = scene[prim_name]
 
@@ -400,7 +400,7 @@ def sim_direct_render(key: str, args_cli: argparse.Namespace):
     sim_cfgs = load_sim_parameters(BASE_DIR, key)
 
     # Create a temporary scene to get object pose for grasp transformation
-    from demo.envs.task_construct import construct_task_config
+    from envs.task_construct import construct_task_config
     import json
 
     scene_json_path = BASE_DIR / "outputs" / key / "simulation" / "scene.json"
@@ -420,7 +420,7 @@ def sim_direct_render(key: str, args_cli: argparse.Namespace):
     simulation_cfg = get_simulation_config(key)
     
     # Ensure scene context is initialized before calling select_best_grasp_simple
-    from demo.sim_env_factory_demo import init_scene_from_scene_dict
+    from sim_env_factory import init_scene_from_scene_dict
     init_scene_from_scene_dict(
         scene=sim_cfgs["scene_cfg"],
         cfgs=sim_cfgs,
@@ -445,7 +445,7 @@ def sim_direct_render(key: str, args_cli: argparse.Namespace):
 
     # Read actual object poses from environment before closing
     object_poses = {}
-    from demo.sim_env_factory_demo import get_prim_name_from_oid
+    from sim_env_factory import get_prim_name_from_oid
     for obj in sim_cfgs["scene_cfg"]["objects"].values():
         prim_name = get_prim_name_from_oid(str(obj["oid"]))
         if prim_name in env.scene.keys():
@@ -468,7 +468,7 @@ def sim_direct_render(key: str, args_cli: argparse.Namespace):
 
     # Add reference trajectory with the selected grasp
 
-    from demo.envs.task_cfg import TrajectoryCfg, SuccessMetric, SuccessMetricType, RobotType
+    from envs.task_cfg import TrajectoryCfg, SuccessMetric, SuccessMetricType, RobotType
 
     # Get robot type
     robot_type_str = args_cli.robot if hasattr(args_cli, 'robot') else sim_cfgs["robot_cfg"].get("robot_type", "franka")
@@ -492,7 +492,7 @@ def sim_direct_render(key: str, args_cli: argparse.Namespace):
         ]
 
     # Create pre-grasp pose (grasp - offset along approach axis)
-    from demo.sim_utils_demo.transform_utils import grasp_approach_axis_batch
+    from sim_utils.transform_utils import grasp_approach_axis_batch
     approach_axis = grasp_approach_axis_batch(best_grasp['quaternion'].reshape(1, 4))[0]
     pregrasp_pos = best_grasp['position'] - 0.12 * approach_axis
     pregrasp_pose = np.concatenate([pregrasp_pos, best_grasp['quaternion']])
@@ -557,7 +557,7 @@ def sim_direct_render(key: str, args_cli: argparse.Namespace):
     )
 
     # Add reference trajectory
-    from demo.envs.task_construct import add_reference_trajectory
+    from envs.task_construct import add_reference_trajectory
     add_reference_trajectory(task_cfg, [traj_cfg], task_json_path.parent)
 
     print(f"[INFO] Created task config with selected grasp")

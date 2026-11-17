@@ -11,12 +11,12 @@ from sim_utils.calibration_utils import calibration_to_robot_pose, load_extrinsi
 default_config = {
     "physics": "default",
     "extrinsics": None,
-    "goal_offset": 0,
+    "goal_offset": 0.005,
     "grasp_idx": -1,
     "grasp_pre": None,
-    "grasp_delta": None,
+    "grasp_delta": 0.1,
     "traj_key": "fdpose_trajs", # "fdpose_trajs", "simple_trajs", "hybrid_trajs"
-    "manip_object_id": "1",
+    "manip_object_id": "2",
 }
 
 def compose_configs(key_name: str, config: dict) -> dict:
@@ -36,8 +36,9 @@ def load_sim_parameters(basedir, key) -> dict:
     scene_json   = json.load(open(scene_json_path, "r"))
     exp_config = yaml.load(open(Path(basedir) / "config/config.yaml"), Loader=yaml.FullLoader)
     exp_config = compose_configs(key, exp_config)
+    manip_object_id = scene_json["manipulated_oid"]
 
-    # cam configs
+    object_center = scene_json["objects"][manip_object_id]["object_center"]
     cam_cfg = {
         "width":  int(scene_json["camera"]["width"]),
         "height": int(scene_json["camera"]["height"]),
@@ -50,40 +51,51 @@ def load_sim_parameters(basedir, key) -> dict:
             "move_to":      list(scene_json["camera"]["camera_position"]),
             "scene_min":    list(scene_json["aabb"]["scene_min"]),
             "scene_max":    list(scene_json["aabb"]["scene_max"]),
-            "object_center":list(scene_json["objects"]["1"]["object_center"]),
+            "object_center":list(object_center),
         },
     }
 
     # robot configs
     E = load_extrinsics(exp_config, key)
+    robot_cfg_list = robot_placement_candidates_v2(cam_cfg["scene_info"])
     if E is None:
-        robot_cfg = random.choice(robot_placement_candidates_v2(cam_cfg["scene_info"]))
+        robot_cfg = random.choice(robot_cfg_list)
         pos_w, quat_w = robot_cfg["position"], robot_cfg["rotation"]
     else:
         pos_w, quat_w = calibration_to_robot_pose(scene_json, E)
     robot_pose = list(pos_w) + list(quat_w)
     robot_cfg = {
         "robot_pose": robot_pose,
+        "robot_cfg_list": robot_cfg_list,
     }
 
     # demo configs
-    goal_offset = exp_config.get("goal_offset", 0)
+   
+    goal_offset = exp_config.get("goal_offset", 0.05)
     grasp_idx = exp_config.get("grasp_idx", -1)
     grasp_pre = exp_config.get("grasp_pre", None)
-    grasp_delta = exp_config.get("grasp_delta", None)
-    traj_key = exp_config.get("traj_key", "fdpose_trajs") # "fdpose_trajs", "simple_trajs", "hybrid_trajs"
-    manip_object_id = exp_config.get("manip_object_id", "1")
-    traj_path = scene_json["objects"][manip_object_id][traj_key]
+    grasp_delta = exp_config.get("grasp_delta", 0.1)
+    traj_key = exp_config.get("traj_key", "fdpose_trajs")
+    if scene_json["objects"][manip_object_id].get("final_trajs", None) is not None:
+        traj_path = scene_json["objects"][manip_object_id]["final_trajs"]
+    else:
+        traj_path = scene_json["objects"][manip_object_id]["trajs"][traj_key]
+    # if scene_json["objects"][manip_object_id].get("rescored_grasps", None) is not None:
+    #     grasp_path = scene_json["objects"][manip_object_id]["rescored_grasps"]
+    # else:
     grasp_path = scene_json["objects"][manip_object_id].get("grasps", None)
+    task_type = scene_json["task_type"]
+    final_gripper_closed = scene_json["gripper_closed"]
     demo_cfg = {
         "manip_object_id": manip_object_id,
-        "traj_key": traj_key,
         "traj_path": traj_path,
         "goal_offset": goal_offset,
         "grasp_idx": grasp_idx,
         "grasp_pre": grasp_pre,
         "grasp_delta": grasp_delta,
         "grasp_path": grasp_path,
+        "final_gripper_closed": final_gripper_closed,
+        "task_type": task_type,
     }
 
     # physics configs
@@ -133,7 +145,7 @@ viz_obj_physics = {
 
 def robot_placement_candidates_v2(
     scene_info: dict,
-    reachability=(0.3, 0.65),
+    reachability=(0.5, 0.65),
     reachability_zcenter_offset=0.3,
     robot_aabb=(0.12, 0.12, 0.72),
     num_radius_steps=10,

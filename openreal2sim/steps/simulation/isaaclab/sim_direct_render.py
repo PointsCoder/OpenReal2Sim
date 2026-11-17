@@ -130,12 +130,12 @@ from curobo.types.math import Pose
 from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 
 # ─────────── Simulation environments ───────────
-from sim_base_demo import BaseSimulator
-from sim_env_factory_demo import make_env, get_prim_name_from_oid
+from sim_base import BaseSimulator
+from sim_env_factory import make_env, get_prim_name_from_oid
 
 
-from sim_utils_demo.transform_utils import pose_to_mat, mat_to_pose
-from sim_utils_demo.sim_utils import load_sim_parameters
+from sim_utils.transform_utils import pose_to_mat, mat_to_pose
+from sim_utils.sim_utils import load_sim_parameters
 
 BASE_DIR = Path.cwd()
 out_dir = BASE_DIR / "outputs"
@@ -1234,7 +1234,7 @@ def sim_direct_render(key: str, args_cli: argparse.Namespace):
     sim_cfgs = load_sim_parameters(BASE_DIR, key)
 
     # Create a temporary scene to get object pose for grasp transformation
-    from demo.envs.task_construct import construct_task_config
+    from envs.task_construct import construct_task_config
     import json
 
     scene_json_path = BASE_DIR / "outputs" / key / "simulation" / "scene.json"

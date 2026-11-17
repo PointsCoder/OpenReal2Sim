@@ -21,7 +21,6 @@ from isaaclab.sim.schemas import schemas_cfg
 import isaaclab.sim as sim_utils
 from isaaclab.sensors.camera import CameraCfg
 from isaaclab_assets import FRANKA_PANDA_HIGH_PD_CFG
-from config.franka_fr3 import FRANKA_FR3_HIGH_PD_CFG
 
 # Manager-based API (terms/configs)
 from isaaclab.managers import (
@@ -50,12 +49,13 @@ class SceneCtx:
     background_path: str
     robot_pos: List[float]
     robot_rot: List[float]
-    robot_type: str = "franka_panda"
     bg_physics: Optional[Dict] = None
     obj_physics: List[Dict] = None
     use_ground_plane: bool = False
     ground_z: Optional[float] = None
-
+    oid_to_index: Optional[Dict[str, int]] = None  # Maps oid (str) to prim index
+    index_to_oid: Optional[Dict[int, str]] = None  # Maps prim index to oid (str)
+    robot_cfg_list: List[Dict] = None   
 
 _SCENE_CTX: Optional[SceneCtx] = None
 
@@ -83,6 +83,21 @@ DEFAULT_OBJ_PHYSICS = {
     },
 }
 
+DEFAULT_NO_COLLISION_BG_PHYSICS = {
+    "mass_props": {"mass": 100.0},
+    "rigid_props": {"disable_gravity": True, "kinematic_enabled": True},
+    "collision_props": {
+        "collision_enabled": False,
+    },
+}
+
+DEFAULT_NO_COLLISION_OBJ_PHYSICS = {
+    "mass_props": {"mass": 0.5},
+    "rigid_props": {"disable_gravity": True, "kinematic_enabled": False},
+    "collision_props": {
+        "collision_enabled": False,
+    },
+}
 
 def _deep_update(dst: dict, src: dict | None) -> dict:
     """Recursive dict update without touching the original."""
@@ -136,13 +151,7 @@ def create_robot():
     assert _SCENE_CTX is not None, (
         "init_scene_configs/init_scene_from_scene_dict must be called first."
     )
-    robot_type = _SCENE_CTX.robot_type
-    if robot_type == "franka_panda":
-        robot = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-    elif robot_type == "franka_fr3":
-        robot = FRANKA_FR3_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-    else:
-        raise ValueError(f"Unsupported robot type: {robot_type}")
+    robot = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
     robot.init_state.pos = tuple(_SCENE_CTX.robot_pos)
     robot.init_state.rot = tuple(_SCENE_CTX.robot_rot)
     return robot
@@ -151,7 +160,7 @@ def create_robot():
 # --------------------------------------------------------------------------------------
 # Dynamic InteractiveSceneCfg builder
 # --------------------------------------------------------------------------------------
-def build_tabletop_scene_cfg():
+def build_tabletop_scene_cfg(has_collision: bool = True):
     """
     Auto-generate a multi-object InteractiveSceneCfg subclass:
       - background, camera, robot
@@ -170,10 +179,26 @@ def build_tabletop_scene_cfg():
         spawn=sim_utils.DomeLightCfg(intensity=4000.0, color=(1.0, 1.0, 1.0)),
     )
 
-    _bg = _deep_update(DEFAULT_BG_PHYSICS, C.bg_physics)
+    if has_collision:
+        BG_PHYSICS = DEFAULT_BG_PHYSICS
+        OBJ_PHYSICS = DEFAULT_OBJ_PHYSICS
+    else:
+        BG_PHYSICS = DEFAULT_NO_COLLISION_BG_PHYSICS
+        OBJ_PHYSICS = DEFAULT_NO_COLLISION_OBJ_PHYSICS
+
+    _bg = _deep_update(BG_PHYSICS, C.bg_physics)
     _objs = [
-        _deep_update(DEFAULT_OBJ_PHYSICS, obj_physics) for obj_physics in C.obj_physics
+        _deep_update(OBJ_PHYSICS, obj_physics) for obj_physics in C.obj_physics
     ]
+
+    _bg["collision_props"]["collision_enabled"] = BG_PHYSICS["collision_props"]["collision_enabled"]
+    for _obj in _objs:
+        _obj["collision_props"]["collision_enabled"] = OBJ_PHYSICS["collision_props"]["collision_enabled"]
+    
+    # Force disable_gravity to match default (prevent override from external configs)
+    _bg["rigid_props"]["disable_gravity"] = BG_PHYSICS["rigid_props"]["disable_gravity"]
+    for _obj in _objs:
+        _obj["rigid_props"]["disable_gravity"] = OBJ_PHYSICS["rigid_props"]["disable_gravity"]
 
     bg_mass_cfg = schemas_cfg.MassPropertiesCfg(**_bg["mass_props"])
     bg_rigid_cfg = schemas_cfg.RigidBodyPropertiesCfg(**_bg["rigid_props"])
@@ -266,14 +291,29 @@ def init_scene_from_scene_dict(
     cfgs: dict,
     *,
     use_ground_plane: bool = False,
-    robot_type: str = "franka_panda",
 ):
     """
     Initialize SceneCtx directly from a raw scene dict.
     If robot pose not provided, sample one with robot_placement_candidates_v2().
     """
     cam_dict = cfgs["cam_cfg"]
-    obj_paths = [o["usd"] for o in scene["objects"].values()]
+    
+    # Sort objects by oid to ensure consistent ordering
+    # scene["objects"] keys are oid strings (e.g., "1", "2", ...)
+    sorted_objects = sorted(scene["objects"].items(), key=lambda x: int(x[0]))
+    
+    # Build oid <-> index mapping
+    oid_to_index = {}
+    index_to_oid = {}
+    obj_paths = []
+    obj_physics_list = []
+    
+    for index, (oid_str, obj_data) in enumerate(sorted_objects):
+        oid_to_index[oid_str] = index
+        index_to_oid[index] = oid_str
+        obj_paths.append(obj_data["usd"])
+        obj_physics_list.append(obj_data.get("physics", None))
+    print("[INFO] oid_to_index", oid_to_index)
     background_path = scene["background"]["usd"]
 
     # overwrite physics
@@ -281,9 +321,9 @@ def init_scene_from_scene_dict(
     obj_physics = cfgs["physics_cfg"]["obj_physics"]
     bg_physics = cfgs["physics_cfg"]["bg_physics"]
     if obj_physics is None:
-        obj_physics = [o.get("physics", None) for o in scene["objects"].values()]
+        obj_physics = obj_physics_list  # Use physics from sorted objects
     elif isinstance(obj_physics, dict):
-        obj_physics = [obj_physics for _ in scene["objects"].values()]
+        obj_physics = [obj_physics for _ in range(len(obj_paths))]
     elif isinstance(obj_physics, list):
         assert len(obj_physics) == len(scene["objects"]), (
             "obj_physics must be a list of the same length as scene['objects'] if provided."
@@ -297,7 +337,7 @@ def init_scene_from_scene_dict(
 
     robot_pos = cfgs["robot_cfg"]["robot_pose"][:3]
     robot_rot = cfgs["robot_cfg"]["robot_pose"][3:]
-
+    robot_cfg_list = cfgs["robot_cfg"]["robot_cfg_list"]
     ground_z = None
     if use_ground_plane:
         try:
@@ -315,11 +355,12 @@ def init_scene_from_scene_dict(
         background_path=background_path,
         robot_pos=list(robot_pos),
         robot_rot=list(robot_rot),
-        robot_type=robot_type,
         bg_physics=bg_physics,
         obj_physics=list(obj_physics),
         use_ground_plane=use_ground_plane,
         ground_z=ground_z,
+        oid_to_index=oid_to_index,
+        index_to_oid=index_to_oid,
     )
 
     return {
@@ -330,6 +371,7 @@ def init_scene_from_scene_dict(
         "robot_rot": robot_rot,
         "use_ground_plane": use_ground_plane,
         "ground_z": ground_z,
+        "robot_cfg_list": robot_cfg_list,
     }
 
 
@@ -373,19 +415,11 @@ def _build_manip_env_cfg(scene_cfg_cls, *, num_envs: int, env_spacing: float = 2
             physx.enable_stabilization = True
             physx.enable_sleeping = True
 
-            # ---- Determine robot-specific names ----
-            if _SCENE_CTX.robot_type == "franka_panda":
-                robot_prefix = "panda"
-            elif _SCENE_CTX.robot_type == "franka_fr3":
-                robot_prefix = "fr3"
-            else:
-                raise ValueError(f"Unsupported robot type: {_SCENE_CTX.robot_type}")
-
             # ---- IK arm & binary gripper ----
             self.actions.arm_action = DifferentialInverseKinematicsActionCfg(
                 asset_name="robot",
-                joint_names=[f"{robot_prefix}_joint.*"],
-                body_name=f"{robot_prefix}_hand",
+                joint_names=["panda_joint.*"],
+                body_name="panda_hand",
                 controller=DifferentialIKControllerCfg(
                     command_type="pose", use_relative_mode=True, ik_method="dls"
                 ),
@@ -396,11 +430,11 @@ def _build_manip_env_cfg(scene_cfg_cls, *, num_envs: int, env_spacing: float = 2
             )
             self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
                 asset_name="robot",
-                joint_names=[f"{robot_prefix}_finger.*"],
-                open_command_expr={f"{robot_prefix}_finger_.*": 0.04},
-                close_command_expr={f"{robot_prefix}_finger_.*": 0.0},
+                joint_names=["panda_finger.*"],
+                open_command_expr={"panda_finger_.*": 0.04},
+                close_command_expr={"panda_finger_.*": 0.0},
             )
-            self.commands.object_pose.body_name = f"{robot_prefix}_hand"
+            self.commands.object_pose.body_name = "panda_hand"
 
     return ManipEnvCfg
 
@@ -413,12 +447,59 @@ def load_scene_json(key: str) -> dict:
     return json.load(open(scene_path))
 
 
+def get_prim_name_from_oid(oid: str | int) -> str:
+    """
+    Get the prim name (e.g., "object_00") from object id.
+    
+    Args:
+        oid: Object ID as string (e.g., "1") or integer (e.g., 1)
+        
+    Returns:
+        Prim name string (e.g., "object_00")
+    """
+    assert _SCENE_CTX is not None, "init_scene_from_scene_dict must be called first."
+    oid_str = str(oid)
+    if _SCENE_CTX.oid_to_index is None:
+        raise ValueError("oid_to_index mapping not available. Scene may not have been initialized from scene dict.")
+    index = int(_SCENE_CTX.oid_to_index.get(oid_str))
+    if index is None:
+        raise ValueError(f"OID '{oid_str}' not found in scene. Available OIDs: {list(_SCENE_CTX.oid_to_index.keys())}")
+    return f"object_{index:02d}"
+
+
+def get_oid_from_prim_name(prim_name: str) -> str:
+    """
+    Get the object id from prim name (e.g., "object_00" -> "1").
+    
+    Args:
+        prim_name: Prim name string (e.g., "object_00")
+        
+    Returns:
+        OID as string (e.g., "1")
+    """
+    assert _SCENE_CTX is not None, "init_scene_from_scene_dict must be called first."
+    if not prim_name.startswith("object_"):
+        raise ValueError(f"Invalid prim name format: {prim_name}")
+    try:
+        index = int(prim_name.split("_")[1])
+    except (IndexError, ValueError):
+        raise ValueError(f"Invalid prim name format: {prim_name}")
+    if _SCENE_CTX.index_to_oid is None:
+        raise ValueError("index_to_oid mapping not available. Scene may not have been initialized from scene dict.")
+    oid = _SCENE_CTX.index_to_oid.get(index)
+    if oid is None:
+        raise ValueError(f"Index {index} not found in scene. Available indices: {list(_SCENE_CTX.index_to_oid.keys())}")
+    return oid
+
+
 def make_env(
     cfgs: dict,
     num_envs: int = 1,
     device: str = "cuda:0",
     bg_simplify: bool = False,
-    robot_type: str = "franka_panda",
+    physics_freq: int = 100,
+    decimation: int = 1,
+    has_collision: bool = True,
 ) -> Tuple["ManagerBasedRLEnv", "ManagerBasedRLEnvCfg"]:
     """
     Public entry to construct a ManagerBasedRLEnv from outputs/<key>/simulation/scene.json.
@@ -431,17 +512,17 @@ def make_env(
     init_scene_from_scene_dict(
         scene,
         cfgs=cfgs,
-        use_ground_plane=bg_simplify,
-        robot_type=robot_type,
-    )
+        use_ground_plane=bg_simplify)
 
     # Build scene & env cfg
-    SceneCfg = build_tabletop_scene_cfg()
+    SceneCfg = build_tabletop_scene_cfg(has_collision=has_collision)
     ManipEnvCfg = _build_manip_env_cfg(SceneCfg, num_envs=num_envs, env_spacing=2.5)
     env_cfg = ManipEnvCfg()
     env_cfg.sim.device = device
     env_cfg.scene.num_envs = num_envs  # double safety
-
+    env_cfg.sim.dt = 1 / physics_freq
+    env_cfg.sim.render_interval = decimation
+    env_cfg.decimation = decimation
     env = ManagerBasedRLEnv(cfg=env_cfg)
     return env, env_cfg
 

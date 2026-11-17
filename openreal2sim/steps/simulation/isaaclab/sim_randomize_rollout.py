@@ -18,7 +18,6 @@ file_path = Path(__file__).resolve()
 import imageio 
 
 sys.path.append(str(file_path.parent))
-sys.path.append(str(file_path.parent.parent))
 from envs.task_cfg import TaskCfg, TaskType, SuccessMetric, SuccessMetricType, TrajectoryCfg
 from envs.task_construct import construct_task_config, add_reference_trajectory, load_task_cfg, add_generated_trajectories
 from envs.randomizer import Randomizer
@@ -36,15 +35,15 @@ args_cli.headless = True # headless mode for batch execution
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
 
-from sim_utils_demo.transform_utils import pose_to_mat, mat_to_pose, grasp_approach_axis_batch
-from sim_utils_demo.sim_utils import load_sim_parameters
+from sim_utils.transform_utils import pose_to_mat, mat_to_pose, grasp_approach_axis_batch
+from sim_utils.sim_utils import load_sim_parameters
 # ─────────── Runtime imports ───────────
 import isaaclab.sim as sim_utils
 from isaaclab.utils.math import subtract_frame_transforms
 
 # ─────────── Simulation environments ───────────
-from sim_base_demo import BaseSimulator, get_next_demo_id
-from sim_env_factory_demo import make_env
+from sim_base import BaseSimulator, get_next_demo_id
+from sim_env_factory import make_env
 
 
 BASE_DIR   = Path.cwd()
@@ -180,7 +179,7 @@ class RandomizeExecution(BaseSimulator):
         # --- object pose/vel: set object at env origins with identity quat ---
         env_origins = self.scene.env_origins.to(device)[env_ids_t]  # (M,3)
         # Set poses for all objects from object_poses_dict
-        from sim_env_factory_demo import get_prim_name_from_oid
+        from sim_env_factory import get_prim_name_from_oid
         for oid in self.object_poses_dict.keys():
             # Get prim name from oid
             prim_name = get_prim_name_from_oid(str(oid))

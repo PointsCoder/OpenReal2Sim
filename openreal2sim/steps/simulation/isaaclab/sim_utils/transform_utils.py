@@ -3,20 +3,8 @@ import torch
 import numpy as np
 import transforms3d
 
-def grasp_to_world(grasp) -> tuple[np.ndarray, np.ndarray]:
-    """
-    GraspNet -> EE:
-      X_grasp=approach, Y_grasp=width, Z_grasp=thickness
-      We want: Z_EE=approach, Y_EE=-width, X_EE=thickness
-    """
-    Rg = grasp.rotation_matrix.astype(np.float32)
-    delta = np.array([[0, 0, 1],
-                      [0, -1, 0],
-                      [1, 0, 0]], dtype=np.float32)
-    Ree = Rg @ delta
-    q   = transforms3d.quaternions.mat2quat(Ree).astype(np.float32)  # wxyz
-    p   = grasp.translation.astype(np.float32)
-    return p, q
+# Note: grasp_to_world has been moved to grasp_group_utils.py as a method of GraspGroup
+# Use: grasp_group.grasp_to_world(grasp_index) or grasp_group.grasp_to_world(grasp_object)
 
 def grasp_approach_axis_batch(qw_batch: np.ndarray) -> np.ndarray:
     """
