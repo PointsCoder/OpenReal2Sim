@@ -58,6 +58,9 @@ class SimulationAgent:
         command = [sys.executable, str(script), "--key", key]
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join([str(ROOT)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        # Without this the step output sits in the child's pipe buffer, so a long
+        # run looks hung and the log only arrives when the step ends.
+        env["PYTHONUNBUFFERED"] = "1"
         print("=" * 30)
         print(f"[Run] Step: {step} | Key: {key}")
         print("=" * 30, flush=True)
