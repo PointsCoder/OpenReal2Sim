@@ -199,6 +199,7 @@ class HeuristicManipulation(BaseSimulator):
         obj_pos_initial = self.object_prim.data.root_com_pos_w[:, 0:3]
         initial_grasp_dist = torch.norm(ee_pos_initial - obj_pos_initial, dim=1) # [B]
         self.initial_grasp_dist = initial_grasp_dist
+        self.plan_failed = False
 
         for t in t_iter:
             if recalibrate_interval> 0 and t % recalibrate_interval == 0:
@@ -232,8 +233,17 @@ class HeuristicManipulation(BaseSimulator):
                 self.save_dict["actions"].append(np.concatenate([ee_pos_b.cpu().numpy(), ee_quat_b.cpu().numpy(), np.ones((B, 1))], axis=1))
                 action_index = np.ones((B, 1)) * self.get_current_frame_count()
                 self.save_dict["action_indices"].append(action_index)
+            if torch.any(success == False):
+                # The planner held the pose instead of moving: re-commanding the
+                # same state at every remaining step only freezes the arm, so
+                # give up on this attempt and let the trial loop move on.
+                print(f"[WARN] planner failed at goal step {t}/{T}, abandoning this attempt")
+                self.plan_failed = True
+                break
 
         is_success, rechoose_base_flag = self.is_success() #& self.goal_is_success()
+        if self.plan_failed:
+            is_success = torch.zeros_like(is_success)
         success_ids = torch.where(is_success)[0]
         print(f'[INFO] waiting for gripper final state: open is {not self.final_gripper_closed}')
         joint_pos = self.wait(gripper_open=not self.final_gripper_closed, steps=50)

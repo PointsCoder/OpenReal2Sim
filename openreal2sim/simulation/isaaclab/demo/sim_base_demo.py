@@ -393,6 +393,31 @@ class BaseSimulator:
         T = flat.shape[0] // B
         return flat.view(B, T, 7).contiguous()
 
+    def report_joint_limits(self, joint_pos: torch.Tensor, tag: str):
+        """Print the planner's start state against the robot's joint limits.
+
+        A planner crash is only diagnosable if the state it choked on is on the
+        record, so this runs in the except paths of the planning calls.
+        """
+        try:
+            limits = self.robot.data.joint_pos_limits[:, self.robot_entity_cfg.joint_ids, :]
+            pos = joint_pos.detach().to(limits.device).reshape(-1, limits.shape[1])
+            limits = limits[: pos.shape[0]]
+            low, high = limits[..., 0], limits[..., 1]
+            margin = torch.minimum(pos - low, high - pos)
+            for b in range(pos.shape[0]):
+                worst = int(torch.argmin(margin[b]))
+                print(
+                    f"[LIMITS] {tag} env {b}: joint_pos "
+                    f"{[round(float(v), 4) for v in pos[b]]}, margin to limits "
+                    f"{[round(float(v), 4) for v in margin[b]]}, tightest joint {worst} "
+                    f"({float(pos[b, worst]):.4f} in "
+                    f"[{float(low[b, worst]):.4f}, {float(high[b, worst]):.4f}]), "
+                    f"out of range: {bool((margin[b] < 0).any())}"
+                )
+        except Exception as exc:
+            print(f"[LIMITS] {tag}: could not read joint limits: {exc}")
+
     # ---------- Planning / Execution (Single) ----------
     def reinitialize_motion_gen(self):
         """
@@ -438,7 +463,7 @@ class BaseSimulator:
 
   
     def motion_planning_single(
-        self, position, quaternion, max_attempts=1, use_graph=True, max_retries=1
+        self, position, quaternion, max_attempts=1, use_graph=True, max_retries=2
     ):
         """
         Single environment planning with automatic recovery from crashes.
@@ -494,7 +519,8 @@ class BaseSimulator:
                 
             except AttributeError as e:
                 print(f"[ERROR] Motion planner crash on attempt {retry+1}/{max_retries}: {e}")
-                
+                self.report_joint_limits(joint_pos0, "plan_single crash")
+
                 if retry < max_retries - 1:
                     if self.reinitialize_motion_gen():
                         print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
@@ -514,7 +540,8 @@ class BaseSimulator:
                     error_type = "Exception"
                 
                 print(f"[ERROR] Unexpected error: {error_type}: {error_msg}")
-                
+                self.report_joint_limits(joint_pos0, "plan_single error")
+
                 # Check for recoverable errors
                 is_recoverable = False
                 try:
@@ -529,10 +556,12 @@ class BaseSimulator:
                         continue
                 break
         
-        # Complete failure - return dummy trajectory with False success
-        print("[ERROR] Motion planning failed critically - returning dummy trajectory")
+        # Complete failure: hold the current pose for one step and report the
+        # failure, so the caller abandons the attempt instead of re-commanding
+        # the same infeasible state at every step of the trajectory.
+        print("[ERROR] Motion planning failed critically - holding pose, attempt failed")
         joint_pos0 = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids][0:1].contiguous()
-        # Return current position as 1-step trajectory with failure
+        self.report_joint_limits(joint_pos0, "plan_single gave up")
         dummy_traj = joint_pos0.unsqueeze(1)  # (1, 1, dof)
         dummy_success = torch.zeros(1, dtype=torch.bool, device=self.sim.device)
         return dummy_traj, dummy_success
@@ -541,7 +570,7 @@ class BaseSimulator:
    
 
     def motion_planning_batch(
-        self, position, quaternion, max_attempts=1, allow_graph=False, max_retries=1
+        self, position, quaternion, max_attempts=1, allow_graph=False, max_retries=2
     ):
         """
         Multi-environment planning with automatic recovery from crashes.
@@ -652,7 +681,8 @@ class BaseSimulator:
                 
             except AttributeError as e:
                 print(f"[ERROR] Motion planner crash on attempt {retry+1}/{max_retries}: {e}")
-                
+                self.report_joint_limits(joint_pos, "plan_batch crash")
+
                 if retry < max_retries - 1:
                     if self.reinitialize_motion_gen():
                         print(f"[INFO] Retrying motion planning (attempt {retry+2}/{max_retries})...")
@@ -673,7 +703,8 @@ class BaseSimulator:
                     error_type = "Exception"
                 
                 print(f"[ERROR] Unexpected error in motion planning: {error_type}: {error_msg}")
-                
+                self.report_joint_limits(joint_pos, "plan_batch error")
+
                 # Check for recoverable errors
                 is_recoverable = False
                 try:
@@ -689,10 +720,12 @@ class BaseSimulator:
                         continue
                 break
         
-        # If we get here, all retries failed - return dummy trajectory with all False success
-        print("[ERROR] Motion planning failed critically - returning dummy trajectory")
+        # All retries failed: hold the current pose for one step and report the
+        # failure, see motion_planning_single().
+        print("[ERROR] Motion planning failed critically - holding pose, attempt failed")
         B = self.scene.num_envs
         joint_pos = self.robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids].contiguous()
+        self.report_joint_limits(joint_pos, "plan_batch gave up")
         dof = joint_pos.shape[-1]
         # Return current position as 1-step trajectory with all failures
         dummy_traj = joint_pos.unsqueeze(1)  # (B, 1, dof)
