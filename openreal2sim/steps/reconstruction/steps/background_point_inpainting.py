@@ -26,6 +26,8 @@ import yaml
 
 from moge.model.v2 import MoGeModel
 
+from openreal2sim.steps.reconstruction.utils.table_slab import depth_to_points
+
 
 base_dir = Path.cwd()
 
@@ -99,20 +101,11 @@ def robust_scale_shift_align(
 
     return float(a), float(b)
 
-def depth_to_points(depth: np.ndarray, K: np.ndarray) -> np.ndarray:
-    H, W = depth.shape
-    fx, fy, cx, cy = K[0,0], K[1,1], K[0,2], K[1,2]
-    ii, jj = np.meshgrid(np.arange(W), np.arange(H), indexing="xy")
-    z = depth.reshape(-1)
-    x = (ii.reshape(-1) - cx) * z / fx
-    y = (jj.reshape(-1) - cy) * z / fy
-    return np.stack([x, y, z], 1)
-
 def plane_fill(depth0, K, ground, obj):
     H,W=depth0.shape; fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
 
     # fit plane on ground region
-    pts_ground = depth_to_points(depth0, K)[ground.ravel()]
+    pts_ground = depth_to_points(depth0, K).reshape(-1, 3)[ground.ravel()]
     pc = o3d.geometry.PointCloud(); pc.points = o3d.utility.Vector3dVector(pts_ground)
     plane,_ = pc.segment_plane(distance_threshold=0.01, ransac_n=3, num_iterations=1000)
     a,b,c,d = plane
@@ -196,10 +189,10 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
 
         scene_dict["recon"]["bg_depth"] = depth_bg.astype(np.float32)
         scene_dict["recon"]["fg_depth"] = depth0.astype(np.float32)
-        bg_pts = depth_to_points(depth_bg, K)
+        bg_pts = depth_to_points(depth_bg, K).reshape(-1, 3)
         bg_colors = bg_img.reshape(-1,3) / 255.
         bg_color_pts = np.concatenate([bg_pts.reshape(H,W,3), bg_colors.reshape(H,W,3)], -1)
-        fg_pts = depth_to_points(depth0, K)
+        fg_pts = depth_to_points(depth0, K).reshape(-1, 3)
         fg_colors = fg_img.reshape(-1,3) / 255.
         fg_color_pts = np.concatenate([fg_pts.reshape(H,W,3), fg_colors.reshape(H,W,3)], -1)
         scene_dict["recon"]["bg_pts"] = bg_color_pts.astype(np.float32) # (H, W, 6) xyzrgb rgb in [0,1]

@@ -1,14 +1,30 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Generate a textured background height-map mesh using background pointmap.
-and optionally thicken it along the opposite direction of the ground normal
+Generate the textured background mesh.
+
+Two modes, selected by cfg["bg_table_mode"]:
+  - "slab" (default): the table is built like an object. A plane is fitted on the
+    recon.ground_mask pixels of recon.bg_depth, the mask outline is projected onto it to
+    give a footprint (extended past the image border by a margin so objects cannot fall
+    off), and the footprint is extruded downward into a flat slab. The top face carries
+    the inpainted background image through UVs from the camera projection; the sides, the
+    bottom and the part of the top that reaches past the image are a flat colour sampled
+    from the table. Whatever the slab does not cover (walls, the far side of the table)
+    can be kept as a thickened per-pixel height-map mesh in a second node
+    ("background_depth"), off by default -- see the note below.
+  - "depth": the old behaviour, the whole background including the tabletop meshed from
+    per-pixel depth and thickened along the opposite direction of the ground normal. With
+    the default config this reproduces the pre-slab mesh exactly.
+
 Inputs:
     - outputs/{key}/scene/scene.pkl (must contain a "bg_pts" key in "recon" containing background pointmap)
-Outputs: 
+Outputs:
     - outputs/{key}/recon/background_textured_mesh.glb # background textured mesh
+      ("slab" mode: node "table_slab", plus node "background_depth" when
+       bg_table_keep_depth_layer is on; "depth" mode: a single mesh, as before)
     - outputs/{key}/recon/ground_normal.ply # estimated ground plane and normal direction (debug purpose)
-    - outputs/{key}/recon/mesh_thickness_debug.ply # background mesh and pointmap (debug purpose)
+    - outputs/{key}/recon/mesh_thickness_debug.ply # background mesh and pointmap ("depth" mode only, debug purpose)
 Note:
     - added keys in "recon": "info", "normal"
     - the "info" key contains lightweight scenario info that can be exported to json
@@ -18,9 +34,14 @@ Note:
             },
             "groundplane_in_cam": {
                 "point":  # a point on the ground plane [x,y,z],
-                "normal": # the normal of the ground plane [x,y,z], 
+                "normal": # the normal of the ground plane [x,y,z],
             }
         }
+    - nothing downstream distinguishes collision from visual geometry: every consumer of
+      background_registered.glb (scenario_collision_optimization, Isaac Lab, ManiSkill,
+      MuJoCo) feeds the whole file to its collider builder, so the "background_depth"
+      node is collision geometry too. That is why it is off by default, and why it is
+      thickened into a closed body (bg_mesh_thickness) when it is turned on.
 """
 
 from pathlib import Path
@@ -31,18 +52,16 @@ import yaml
 import pickle
 from PIL import Image
 
-# ──────────────────── util ─────────────────────
-def get_boundary_edges(mesh: trimesh.Trimesh):
-    edges = np.vstack([
-        mesh.faces[:, [0, 1]],
-        mesh.faces[:, [1, 2]],
-        mesh.faces[:, [2, 0]]
-    ])
-    edges = np.sort(edges, axis=1)
-    edges_unique, counts = np.unique(edges, axis=0, return_counts=True)
-    boundary_edges = edges_unique[counts == 1]
-    return boundary_edges
+from openreal2sim.steps.reconstruction.utils.table_slab import (
+    boundary_edges, build_table_slab, clean_ground_mask, depth_to_points, fit_plane_trimmed,
+    flat_color_uv, footprint_polygon, plane_frame, plane_rms, slab_shadow_mask)
 
+# used when cfg["bg_mesh_discontinuity_rel"] is left at None: the filter is on for the slab's
+# depth layer and off in "depth" mode, which keeps that mode an exact reproduction of the
+# pre-slab background mesh
+SLAB_DEPTH_LAYER_DISCONTINUITY_REL = 0.02
+
+# ──────────────────── util ─────────────────────
 def add_thickness_below_mesh_preserve_texture(mesh: trimesh.Trimesh,
                                               thickness: float = 0.02,
                                               direction: np.ndarray | None = None
@@ -56,7 +75,7 @@ def add_thickness_below_mesh_preserve_texture(mesh: trimesh.Trimesh,
     bot_f  = top_f[:, ::-1] + len(top_v)
 
     side_faces = []
-    for v0, v1 in get_boundary_edges(mesh):
+    for v0, v1 in boundary_edges(mesh.faces):
         v0b, v1b = v0 + len(top_v), v1 + len(top_v)
         side_faces += [[v0, v1, v1b], [v0, v1b, v0b]]
     faces = np.vstack([top_f, bot_f, np.asarray(side_faces, int)])
@@ -119,6 +138,75 @@ def depth_continuous_faces(verts: np.ndarray, faces: np.ndarray, rel_thresh: flo
     zmin, zmax = fz.min(axis=1), fz.max(axis=1)
     keep = (zmax - zmin) <= rel_thresh * np.abs(zmin)
     return keep & np.isfinite(zmin) & np.isfinite(zmax)
+
+def per_pixel_background_mesh(pmap: np.ndarray, img: Image.Image, cfg: dict,
+                              normal: np.ndarray, signed: float,
+                              drop_mask: np.ndarray | None = None
+                              ) -> tuple[trimesh.Trimesh, dict]:
+    """The per-pixel height-map mesh (the original background mesher).
+
+    `drop_mask` (H,W bool) removes the faces that touch those pixels, which is how the
+    tabletop is cut out of this layer when the slab replaces it.
+    """
+    H, W = pmap.shape[:2]
+    simplify_step = cfg["bg_mesh_simplify_step"]
+    target_faces = cfg["bg_mesh_target_faces"]
+    pmap_s, H2, W2, grid_step = simplify_heightmap_pmap(
+        pmap, step=(simplify_step if simplify_step and simplify_step > 1 else None),
+        target_faces=(target_faces if target_faces and target_faces > 0 else None)
+    )
+    if (H2, W2) != (H, W):
+        orig_F = 2 * (H - 1) * (W - 1)
+        new_F = 2 * (H2 - 1) * (W2 - 1)
+        print(f"[i] simplified grid: ({H},{W}) -> ({H2},{W2}) faces ~ {orig_F} -> {new_F}")
+
+    verts = pmap_s[..., :3].reshape(-1, 3)
+    faces = []
+    for i in range(H2 - 1):
+        base = i * W2
+        for j in range(W2 - 1):
+            faces += [[base + j, base + j + 1, base + j + W2],
+                      [base + j + 1, base + j + W2 + 1, base + j + W2]]
+    faces = np.asarray(faces, dtype=np.int32)
+    diag = {"grid_faces": int(len(faces))}
+
+    # drop the triangles that bridge a depth discontinuity (they render as ramps)
+    # the tolerance scales with the grid step, since a coarser grid samples larger depth steps
+    disc_rel = cfg["bg_mesh_discontinuity_rel"]
+    if disc_rel and disc_rel > 0:
+        keep = depth_continuous_faces(verts, faces, disc_rel * grid_step)
+        print(f"[i] depth discontinuity filter (> {100 * disc_rel * grid_step:.1f}% relative depth jump): "
+              f"faces {len(faces)} -> {int(keep.sum())}")
+        faces = faces[keep]
+        diag["faces_after_discontinuity"] = int(len(faces))
+
+    if drop_mask is not None:
+        drop_s = drop_mask[np.ix_(_uniform_idx(H, grid_step), _uniform_idx(W, grid_step))] \
+            if grid_step > 1 else drop_mask
+        drop_v = drop_s.reshape(-1)
+        keep = ~drop_v[faces].any(axis=1)
+        print(f"[i] tabletop cut out of the per-pixel layer: faces {len(faces)} -> {int(keep.sum())}")
+        faces = faces[keep]
+        diag["faces_after_drop_mask"] = int(len(faces))
+
+    uu, vv = np.meshgrid(np.linspace(0, 1, W2, dtype=np.float32),
+                         np.linspace(1, 0, H2, dtype=np.float32))
+    uv = np.stack([uu, vv], -1).reshape(-1, 2)
+
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    face_normals = mesh.face_normals
+    if len(face_normals) > 0:
+        dot_products = np.dot(face_normals, normal)
+        if np.mean(dot_products) < 0:
+            print("[Info] Flipping face orientation to align with ground normal")
+            mesh.faces = np.flip(mesh.faces, axis=1)
+
+    mesh.visual = trimesh.visual.TextureVisuals(uv=uv, image=img)
+
+    # flipping mesh normals for correct texturing
+    if signed > 0:
+        mesh.faces = mesh.faces[:, ::-1]
+    return mesh, diag
 
 def visualize_plane_normal(plane_pts, normal, filename, num_arrow_pts=200, normal_length=0.5):
     plane_pts = np.asarray(plane_pts)
@@ -194,20 +282,26 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         fg_pmap = recon["fg_pts"] # (H,W,6) float32
 
         H, W = pmap.shape[:2]
-        img = recon["background"]
-        img = Image.fromarray(np.ascontiguousarray(img), mode="RGB")
+        img_rgb = np.ascontiguousarray(recon["background"])
+        img = Image.fromarray(img_rgb, mode="RGB")
+        K = np.asarray(scene_dict["intrinsics"], np.float64)
 
-        # plane estimation to determine mesh thickening direction
+        # plane estimation: fitted on the ground mask pixels of the inpainted background
+        # depth, used both for the mesh thickening direction and for the table slab
         ground_mask = recon["ground_mask"]
-        plane_pts = pmap[..., :3][ground_mask].reshape(-1, 3)
+        if "bg_depth" in recon:
+            bg_xyz = depth_to_points(np.asarray(recon["bg_depth"], np.float64), K)
+        else:
+            print(f"[Warning] [{key}] no 'bg_depth' in recon, falling back to 'bg_pts'")
+            bg_xyz = pmap[..., :3].astype(np.float64)
+        plane_pts = bg_xyz[ground_mask].reshape(-1, 3)
         plane_pts = plane_pts[np.all(np.isfinite(plane_pts), axis=1)]
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(plane_pts)
-        plane_model, _ = pcd.segment_plane(distance_threshold=0.01,
-                                        ransac_n=10, num_iterations=2000)
-        a, b, c, d = plane_model
-        normal = np.array([a, b, c], np.float64)
-        normal /= (np.linalg.norm(normal) + 1e-12)
+        normal, plane_offset, inliers = fit_plane_trimmed(
+            plane_pts, dist_thresh=0.01, ransac_n=10, num_iterations=2000)
+        print(f"[Info] [{key}] plane fit on {len(plane_pts)} ground points: "
+              f"inliers {int(inliers.sum())} ({100 * inliers.mean():.1f}%), "
+              f"RMS all {1000 * plane_rms(plane_pts, normal, plane_offset):.2f} mm, "
+              f"RMS inliers {1000 * plane_rms(plane_pts[inliers], normal, plane_offset):.2f} mm")
 
         # we need to determine the normal direction (up or down)
         # we will assume most object points are above the ground plane, and use this hints to flip normal if needed
@@ -216,12 +310,17 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         pts = pts[np.all(np.isfinite(pts), axis=1)]
         obj_pts = pts
         assert len(obj_pts) > 0, f"[Error] No valid object points found in {key}! We need them to determine the ground normal direction."
+        # a point on the fitted plane, closest to the centroid of the ground points
         p0 = plane_pts.mean(axis=0)
+        p0 = p0 - (p0 @ normal + plane_offset) * normal
         signed = np.median((obj_pts - p0) @ normal)
         # np.mean((obj_pts - p0) @ normal) is always positive
         if signed < 0:
             print(f"[Info] Flipping normal direction for {key} because the median signed distance is negative")
             normal = -normal
+            plane_offset = -plane_offset
+            # `signed` keeps its sign on purpose: the per-pixel path uses it below to pick
+            # the winding that textures correctly
 
         save_plane_normal_path = recon_dir / "ground_normal.ply"
         visualize_plane_normal(plane_pts, normal, save_plane_normal_path,
@@ -231,66 +330,73 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         direction = -normal
         print(f"[Info] plane normal = {normal}, thicken dir = {direction}")
 
-        # since we are generating a mesh with every pixel as a vertex, the vertices might be too many for large images
-        # perform mesh simplification if needed
-        simplify_step = cfg["bg_mesh_simplify_step"]
-        target_faces = cfg["bg_mesh_target_faces"]
-        pmap_s, H2, W2, grid_step = simplify_heightmap_pmap(
-            pmap, step=(simplify_step if simplify_step and simplify_step > 1 else None),
-            target_faces=(target_faces if target_faces and target_faces > 0 else None)
-        )
-        if (H2, W2) != (H, W):
-            orig_F = 2 * (H - 1) * (W - 1)
-            new_F  = 2 * (H2 - 1) * (W2 - 1)
-            print(f"[i] simplified grid: ({H},{W}) -> ({H2},{W2}) "
-                f"faces ~ {orig_F} -> {new_F}")
+        table_mode = cfg["bg_table_mode"]
+        if table_mode not in ("slab", "depth"):
+            raise ValueError(f"unknown bg_table_mode: {table_mode}")
+        if cfg["bg_mesh_discontinuity_rel"] is None:
+            cfg = dict(cfg, bg_mesh_discontinuity_rel=(
+                0.0 if table_mode == "depth" else SLAB_DEPTH_LAYER_DISCONTINUITY_REL))
 
-        # construct mesh
-        verts = pmap_s[..., :3].reshape(-1, 3)
-        faces = []
-        for i in range(H2 - 1):
-            base = i * W2
-            for j in range(W2 - 1):
-                faces += [[base + j, base + j + 1, base + j + W2],
-                        [base + j + 1, base + j + W2 + 1, base + j + W2]]
-        faces = np.asarray(faces, dtype=np.int32)
+        if table_mode == "slab":
+            # ── the table is built like an object: a flat textured slab ──
+            e1, e2 = plane_frame(normal, p0)
+            poly2, fdiag = footprint_polygon(
+                ground_mask, K, normal, plane_offset, p0, e1, e2,
+                mode=cfg["bg_table_footprint_mode"],
+                simplify_px=cfg["bg_table_simplify_px"],
+                border_px=cfg["bg_table_border_px"],
+                margin=cfg["bg_table_margin"])
+            if len(poly2) < 3:
+                raise RuntimeError(f"[Error] [{key}] could not build a table footprint from ground_mask")
+            flat_uv = flat_color_uv(img_rgb, clean_ground_mask(ground_mask), H, W)
+            slab, sdiag = build_table_slab(
+                poly2, p0, e1, e2, normal, K, (H, W),
+                thickness=cfg["bg_table_thickness"], max_edge=cfg["bg_table_max_edge"],
+                flat_uv=flat_uv, img=img)
+            print(f"[Info] [{key}] table footprint: {fdiag}")
+            print(f"[Info] [{key}] table slab: {sdiag}")
 
-        # drop the triangles that bridge a depth discontinuity (they render as ramps)
-        # the tolerance scales with the grid step, since a coarser grid samples larger depth steps
-        disc_rel = cfg["bg_mesh_discontinuity_rel"]
-        if disc_rel and disc_rel > 0:
-            keep = depth_continuous_faces(verts, faces, disc_rel * grid_step)
-            print(f"[i] depth discontinuity filter (> {100 * disc_rel * grid_step:.1f}% relative depth jump): "
-                  f"faces {len(faces)} -> {int(keep.sum())}")
-            faces = faces[keep]
-
-        uu, vv = np.meshgrid(np.linspace(0, 1, W2, dtype=np.float32),
-                            np.linspace(1, 0, H2, dtype=np.float32))
-        uv = np.stack([uu, vv], -1).reshape(-1, 2)
-
-        mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-        
-        face_normals = mesh.face_normals
-        if len(face_normals) > 0:
-            dot_products = np.dot(face_normals, normal)
-            avg_dot = np.mean(dot_products)
-            if avg_dot < 0:
-                print("[Info] Flipping face orientation to align with ground normal")
-                mesh.faces = np.flip(mesh.faces, axis=1)
-        
-        mesh.visual = trimesh.visual.TextureVisuals(uv=uv, image=img)
-
-        # flipping mesh normals for correct texturing
-        if signed > 0:
-            mesh.faces = mesh.faces[:, ::-1]
-
-        thickness = cfg["bg_mesh_thickness"]
-        mesh_thick = add_thickness_below_mesh_preserve_texture(mesh, thickness, direction)
-
-        mesh_path = recon_dir / "background_textured_mesh.glb"
-        mesh_thick.export(mesh_path)
-        visualize_mesh_thickness_with_pointmap(recon_dir, mesh_thick, pmap[..., :3])
-        print(f"[Info] [{key}] background textured mesh saved: {mesh_path}")
+            geoms = {"table_slab": slab}
+            if cfg["bg_table_keep_depth_layer"]:
+                # everything the slab does not cover stays a per-pixel mesh, in its own node.
+                # it is thickened like the old background mesh, because downstream it is a
+                # collider as well: nothing separates visual from collision geometry
+                shadow = slab_shadow_mask(bg_xyz[..., 2], K,
+                                          normal, plane_offset, p0, e1, e2, poly2,
+                                          ground_mask=clean_ground_mask(ground_mask))
+                print(f"[Info] [{key}] slab hides {100 * shadow.mean():.1f}% of the pixels")
+                layer, ldiag = per_pixel_background_mesh(
+                    pmap, img, cfg, normal, signed, drop_mask=shadow)
+                if len(layer.faces):
+                    # most of the pixel grid now belongs to the slab, so drop the vertices
+                    # the remaining faces do not use before thickening doubles them
+                    layer.remove_unreferenced_vertices()
+                    layer = add_thickness_below_mesh_preserve_texture(
+                        layer, cfg["bg_mesh_thickness"], direction)
+                    ldiag["thickened_faces"] = int(len(layer.faces))
+                    geoms["background_depth"] = layer
+                    print(f"[Info] [{key}] background depth layer: {ldiag}")
+                else:
+                    print(f"[Info] [{key}] the slab covers the whole background, "
+                          f"no depth layer to keep")
+            # always a Scene, so the layers are named in the file; note that trimesh loads
+            # any glb as a Scene anyway, single mesh or not
+            mesh_path = recon_dir / "background_textured_mesh.glb"
+            out_scene = trimesh.Scene()
+            for name, geom in geoms.items():
+                out_scene.add_geometry(geom, node_name=name, geom_name=name)
+            out_scene.export(mesh_path)
+            print(f"[Info] [{key}] background textured mesh saved: {mesh_path} "
+                  f"(nodes: {list(geoms)})")
+        else:
+            # ── old behaviour: the whole background, tabletop included, from per-pixel depth ──
+            mesh, _ = per_pixel_background_mesh(pmap, img, cfg, normal, signed)
+            thickness = cfg["bg_mesh_thickness"]
+            mesh_thick = add_thickness_below_mesh_preserve_texture(mesh, thickness, direction)
+            mesh_path = recon_dir / "background_textured_mesh.glb"
+            mesh_thick.export(mesh_path)
+            visualize_mesh_thickness_with_pointmap(recon_dir, mesh_thick, pmap[..., :3])
+            print(f"[Info] [{key}] background textured mesh saved: {mesh_path}")
 
         # update scene_dict
         scene_dict["info"] = scene_dict.get("info", {})
