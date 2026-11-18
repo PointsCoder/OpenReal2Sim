@@ -23,6 +23,27 @@ default_configs = {
         "bg_mesh_simplify_step": 1,  # 1 means no background mesh simplification
         "bg_mesh_target_faces": 0,  # 0 means no background mesh simplification
         "bg_mesh_thickness": 0.1,  # in meters, added thickness of the background mesh
+        "bg_mesh_discontinuity_rel": None,  # drop background faces whose vertex depths differ by
+                                            # more than this fraction of the depth (0 means no
+                                            # filtering). None picks the default for the mode: on
+                                            # for the slab's depth layer, off in "depth" mode so
+                                            # that mode reproduces the pre-slab background mesh
+        "bg_table_mode": "slab",  # "slab": the table is a flat textured slab fitted on the ground
+                                  # mask, "depth": the old per-pixel mesh for the whole background
+        "bg_table_thickness": 0.03,  # in meters, thickness of the table slab
+        "bg_table_margin": 0.0,  # in meters, how far the slab extends past the view frustum where
+                                 # the ground mask touches the image border. 0 stops the slab at
+                                 # the border; a margin keeps objects from falling off, but it also
+                                 # grows the scene AABB that the robot base placement uses
+        "bg_table_footprint_mode": "hull",  # how the projected ground mask outline is turned into
+                                            # the slab footprint: "hull", "rect" or "outline"
+        "bg_table_max_edge": 0.05,  # in meters, max triangle edge of the slab top face; the top is
+                                    # flat either way, this only bounds the texture projection error
+        "bg_table_simplify_px": 4.0,  # in pixels, outline simplification tolerance (approxPolyDP)
+        "bg_table_border_px": 2,  # in pixels, how close to the image border counts as touching it
+        "bg_table_keep_depth_layer": False,  # keep whatever the slab does not cover as a per-pixel
+                                             # mesh in a second node of the same glb. Off by
+                                             # default: that node is collision geometry downstream
         "fast_scene_construction": False,  # whether to use fast (but inaccurate) point cloud registration
         "fdpose_tracking_mode": "normal",  # foundation pose tracking mode: "normal" or "perframe"
         "fdpose_est_refine_iter": 5,  # foundation pose: number of iterations for pose estimation refinement
