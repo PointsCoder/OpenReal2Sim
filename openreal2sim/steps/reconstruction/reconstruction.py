@@ -23,6 +23,10 @@ if str(ROOT) not in sys.path:
 from openreal2sim.utils.compose_config import compose_configs
 from openreal2sim.utils.notification import notify_started, notify_failed, notify_success
 
+# Opt-in step: replaces the manual annotator, selected by name only, so the
+# default run keeps using the masks a human already annotated.
+OPTIONAL_STEPS = ["auto_segmentation"]
+
 STEPS = [
     "mask_propagation",
     "background_pixel_inpainting",
@@ -91,10 +95,12 @@ class ReconAgent:
             self.key_scene_dicts[key] = scene_dict
         self.steps = list(STEPS)
         if stage is not None:
-            if stage in self.steps:
+            if stage in OPTIONAL_STEPS:
+                self.steps = [stage] + self.steps
+            elif stage in self.steps:
                 self.steps = self.steps[self.steps.index(stage):]
             else:
-                print(f"[Warning] Step '{stage}' not found. It must be one of the {self.steps}. Running all steps by default.")
+                print(f"[Warning] Step '{stage}' not found. It must be one of the {OPTIONAL_STEPS + self.steps}. Running all steps by default.")
         print('[Info] ReconAgent initialized.')
 
     def save_scene_dicts(self):
@@ -153,6 +159,11 @@ class ReconAgent:
             with open(json_path, 'w') as f:
                 json.dump(scene_json, f, indent=2)
         print('[Info] Scene JSON files saved.')
+
+    def auto_segmentation(self):
+        from openreal2sim.steps.reconstruction.steps.segmentation_auto import auto_segmentation
+        self.key_scene_dicts = auto_segmentation(self.keys, self.key_scene_dicts)
+        print("[Info] Automatic frame-0 segmentation completed.")
 
     def mask_propagation(self):
         from openreal2sim.steps.reconstruction.steps.segmentation_mask_propagation import mask_propagation
@@ -276,7 +287,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=str, default="config/config.yaml", help="YAML with keys: [key1, key2, ...]")
     parser.add_argument("--key", type=str, default=None, help="Process a single key instead of all keys from config")
-    parser.add_argument("--stage", type=str, default=None, help="Start from this step, one of %s" % ", ".join(STEPS))
+    parser.add_argument("--stage", type=str, default=None, help="Start from this step, one of %s" % ", ".join(OPTIONAL_STEPS + STEPS))
     return parser.parse_args(argv)
 
 

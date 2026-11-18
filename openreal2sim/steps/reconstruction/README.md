@@ -9,6 +9,7 @@ This directory provides tools for building a physically interactable scene from 
 openreal2sim/steps/reconstruction
 ├── reconstruction.py                # the stage runner
 ├── steps
+│   ├── segmentation_auto.py
 │   ├── segmentation_mask_propagation.py
 │   ├── background_pixel_inpainting.py
 │   ├── background_point_inpainting.py
@@ -34,6 +35,8 @@ We first need to segment the objects and the ground (for gravity alignment) in t
 With the object and ground masks, we can reconstruct the 3D meshes of each object and the background in the following steps.
 
 We use the GUI `openreal2sim/gui/segmentation_annotator.py` to segment and annotate the video, and `steps/segmentation_mask_propagation.py` to propagate the masks over the frames.
+
+Alternatively, `steps/segmentation_auto.py` does the same step without a human: Grounding DINO with the prompt `all objects.` boxes everything it scores above 0.4, SAM 2.1 masks each box (three candidates, the one filling the box best wins) and the objects are written to `scene.pkl` as `object_1..N`, then propagated. A second Grounding DINO pass with the prompt `table. desk. floor.` writes the `ground` mask that the later steps need for gravity alignment, so no hand annotation is required. It replaces the masks already in `scene.pkl`, together with the `objects` and `recon` entries built from them.
 
 ### background pixel inpainting
 
@@ -85,8 +88,16 @@ You can also run a single key with `--key`, and start from a certain step using 
 ```
 python openreal2sim/openreal2sim.py reconstruction --key <key> --stage scenario_construction
 ```
+To segment automatically instead of using the GUI, run the whole pipeline starting from the automatic step (it is not part of the default run):
+```
+python openreal2sim/openreal2sim.py reconstruction --key <key> --stage auto_segmentation
+```
+or run it on its own, propagation included:
+```
+python openreal2sim/steps/reconstruction/steps/segmentation_auto.py --key <key>
+```
 The `stage` argument can be set to one of the following:
-[mask_propagation, background_pixel_inpainting, background_point_inpainting, background_mesh_generation, object_mesh_generation, scenario_construction, scenario_fdpose_optimization]
+[auto_segmentation, mask_propagation, background_pixel_inpainting, background_point_inpainting, background_mesh_generation, object_mesh_generation, scenario_construction, scenario_fdpose_optimization, scenario_collision_optimization]
 
 You can also run individual stages separately, for example:
 ```

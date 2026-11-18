@@ -101,10 +101,16 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
         if mask_accum is not None:
             cv2.imwrite(mask_img_path, (mask_accum.astype(np.uint8)) * 255)
 
-        if ground_accum is not None:
-            cv2.imwrite(ground_mask_path, (ground_accum.astype(np.uint8)) * 255)
-        else:
-            print(f'[Warning] No ground mask found in {key}/scene/scene.pkl! This may affect gravity alignment later.')
+        if ground_accum is None:
+            raise RuntimeError(
+                f"[{key}] no object named 'ground' in outputs/{key}/scene/scene.pkl. "
+                "The ground mask carries the ground plane and the later steps "
+                "(background_point_inpainting, background_mesh_generation) cannot run "
+                "without it. Annotate a 'ground' object with "
+                "openreal2sim/gui/segmentation_annotator.py, or run the auto_segmentation "
+                "step (steps/segmentation_auto.py), which detects the ground itself."
+            )
+        cv2.imwrite(ground_mask_path, (ground_accum.astype(np.uint8)) * 255)
 
         # ---------- single image + single mask ----------
         input_img_list = [input_path]
@@ -154,7 +160,7 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
             scene_dict["recon"] = {}
         scene_dict["recon"]["background"] = np.ascontiguousarray(np.array(fused_img_pil, dtype=np.uint8))
         scene_dict["recon"]["foreground"] = np.ascontiguousarray(np.array(image_orig,   dtype=np.uint8))
-        scene_dict["recon"]["ground_mask"] = ground_accum if ground_accum is not None else None # H x W, bool
+        scene_dict["recon"]["ground_mask"] = ground_accum  # H x W, bool
         scene_dict["recon"]["object_mask"] = mask_accum if mask_accum is not None else None   # H x W, bool
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:

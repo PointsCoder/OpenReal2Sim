@@ -24,7 +24,7 @@ Note:
 """
 
 from __future__ import annotations
-import re, cv2, sys, torch, pickle, gradio as gr, numpy as np
+import re, cv2, sys, pickle, gradio as gr, numpy as np
 from pathlib import Path
 from typing import Dict, Any
 import supervision as sv
@@ -34,19 +34,16 @@ ROOT  = Path.cwd()
 THIRD = ROOT / "third_party/Grounded-SAM-2"; 
 sys.path.append(str(THIRD))
 
-from sam2.build_sam import build_sam2, build_sam2_video_predictor
-from sam2.sam2_image_predictor import SAM2ImagePredictor
-from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+from openreal2sim.utils.grounded_sam2_loader import (
+    detect_boxes,
+    load_dino,
+    load_sam2_image_predictor,
+    load_sam2_video_predictor,
+)
 
-DEV  = "cuda" if torch.cuda.is_available() else "cpu"
-CFG  = "configs/sam2.1/sam2.1_hiera_l.yaml"
-CKPT = "third_party/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt"
-
-video_pred = build_sam2_video_predictor(CFG, CKPT)
-img_pred   = SAM2ImagePredictor(build_sam2(CFG, CKPT))
-dino_proc  = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
-dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-                 "IDEA-Research/grounding-dino-base").to(DEV)
+video_pred = load_sam2_video_predictor()
+img_pred   = load_sam2_image_predictor()
+load_dino()   # built at start up, as before, so the first Detect is not slower
 
 OUT_ROOT = ROOT / "outputs"; OUT_ROOT.mkdir(exist_ok=True)
 
@@ -136,15 +133,8 @@ def add_mask_unique(fid:int,name:str,bbox,mask,*,iou_thr=.95,oid:int|None=None):
 
 # ────────── DINO / SAM / video (same as before, slightly modified) ──────────
 def run_dino(img,txt):
-    batch=dino_proc(images=[img],text=txt,return_tensors="pt")
-    batch={k:v.to(DEV) for k,v in batch.items()}
-    with torch.no_grad():
-        out=dino_model(pixel_values=batch["pixel_values"],
-                       input_ids=batch["input_ids"],
-                       attention_mask=batch.get("attention_mask"))
-    res=dino_proc.post_process_grounded_object_detection(out,batch["input_ids"],
-                                                         .25,.3,target_sizes=[img.shape[:2]])
-    return res[0]["boxes"].cpu().numpy()
+    boxes,_=detect_boxes(img,txt,.25,.3)
+    return boxes
 
 def mask_from_boxes(img,boxes):
     img_pred.set_image(img)
