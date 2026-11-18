@@ -90,7 +90,7 @@ def _calc_step_for_target_faces(H: int, W: int, target_faces: int) -> int:
 
 def simplify_heightmap_pmap(pmap: np.ndarray,
                             step: int | None = None,
-                            target_faces: int | None = None) -> tuple[np.ndarray, int, int]:
+                            target_faces: int | None = None) -> tuple[np.ndarray, int, int, int]:
     H, W = pmap.shape[:2]
     if step is None:
         if target_faces is None or target_faces <= 0:
@@ -100,13 +100,25 @@ def simplify_heightmap_pmap(pmap: np.ndarray,
     step = max(1, int(step))
 
     if step == 1:
-        return pmap, H, W
+        return pmap, H, W, step
 
     r_idx = _uniform_idx(H, step)
     c_idx = _uniform_idx(W, step)
     pmap_ds = pmap[np.ix_(r_idx, c_idx)]
     H2, W2 = pmap_ds.shape[:2]
-    return pmap_ds, H2, W2
+    return pmap_ds, H2, W2, step
+
+# ──────────────────── depth discontinuity filter ─────────────────────
+def depth_continuous_faces(verts: np.ndarray, faces: np.ndarray, rel_thresh: float) -> np.ndarray:
+    """Mask of faces whose vertex depths agree within `rel_thresh` (relative to the depth).
+
+    A quad that straddles a depth cliff (e.g. table edge -> far wall) is otherwise
+    triangulated into long triangles that render as ramps between foreground and background.
+    """
+    fz = verts[:, 2][faces]
+    zmin, zmax = fz.min(axis=1), fz.max(axis=1)
+    keep = (zmax - zmin) <= rel_thresh * np.abs(zmin)
+    return keep & np.isfinite(zmin) & np.isfinite(zmax)
 
 def visualize_plane_normal(plane_pts, normal, filename, num_arrow_pts=200, normal_length=0.5):
     plane_pts = np.asarray(plane_pts)
@@ -223,7 +235,7 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         # perform mesh simplification if needed
         simplify_step = cfg["bg_mesh_simplify_step"]
         target_faces = cfg["bg_mesh_target_faces"]
-        pmap_s, H2, W2 = simplify_heightmap_pmap(
+        pmap_s, H2, W2, grid_step = simplify_heightmap_pmap(
             pmap, step=(simplify_step if simplify_step and simplify_step > 1 else None),
             target_faces=(target_faces if target_faces and target_faces > 0 else None)
         )
@@ -242,6 +254,15 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
                 faces += [[base + j, base + j + 1, base + j + W2],
                         [base + j + 1, base + j + W2 + 1, base + j + W2]]
         faces = np.asarray(faces, dtype=np.int32)
+
+        # drop the triangles that bridge a depth discontinuity (they render as ramps)
+        # the tolerance scales with the grid step, since a coarser grid samples larger depth steps
+        disc_rel = cfg["bg_mesh_discontinuity_rel"]
+        if disc_rel and disc_rel > 0:
+            keep = depth_continuous_faces(verts, faces, disc_rel * grid_step)
+            print(f"[i] depth discontinuity filter (> {100 * disc_rel * grid_step:.1f}% relative depth jump): "
+                  f"faces {len(faces)} -> {int(keep.sum())}")
+            faces = faces[keep]
 
         uu, vv = np.meshgrid(np.linspace(0, 1, W2, dtype=np.float32),
                             np.linspace(1, 0, H2, dtype=np.float32))

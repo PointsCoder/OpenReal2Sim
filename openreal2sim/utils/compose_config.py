@@ -23,6 +23,9 @@ default_configs = {
         "bg_mesh_simplify_step": 1,  # 1 means no background mesh simplification
         "bg_mesh_target_faces": 0,  # 0 means no background mesh simplification
         "bg_mesh_thickness": 0.1,  # in meters, added thickness of the background mesh
+        "bg_mesh_discontinuity_rel": 0.02,  # drop background faces whose vertex depths differ by
+                                            # more than this fraction of the depth (0 means no
+                                            # filtering)
         "fast_scene_construction": False,  # whether to use fast (but inaccurate) point cloud registration
         "fdpose_tracking_mode": "normal",  # foundation pose tracking mode: "normal" or "perframe"
         "fdpose_est_refine_iter": 5,  # foundation pose: number of iterations for pose estimation refinement
