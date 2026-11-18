@@ -84,7 +84,7 @@ Don't forget to change the visibility of the pushed image to public if you want 
 
 **Run one script in a container**
    ```bash
-   python3 init.py run reconstruction -- python openreal2sim/preprocess/preprocess_manager.py
+   python3 init.py run reconstruction -- python openreal2sim/openreal2sim.py preprocess
    python3 init.py run simulation -- python <path_to_script>.py
    ```
    Everything after `--` is the command line executed inside the container, from
@@ -98,8 +98,8 @@ Don't forget to change the visibility of the pushed image to public if you want 
 
 **Publish a port for the GUIs**
    ```bash
-   python3 init.py run reconstruction --port 7860:7860 -- python openreal2sim/reconstruction/tools/segmentation_annotator.py
-   python3 init.py run reconstruction --port 8000:5000 -- python openreal2sim/motion/tool/gripper_pose_editor.py
+   python3 init.py run reconstruction --port 7860:7860 -- python openreal2sim/gui/segmentation_annotator.py
+   python3 init.py run reconstruction --port 8000:5000 -- python openreal2sim/gui/gripper_pose_editor.py
    ```
 
 **Open an interactive shell**

@@ -22,13 +22,15 @@ services:
       - HF_HOME=/tmp/.cache/huggingface
       - HOST_PROJECT_ROOT=${PWD}
       - TORCH_EXTENSIONS_DIR=/tmp/.cache/torch_extensions
+      # Host GPU id for the sibling SAM-3D container, set by init.py --gpus
+      - SAM3D_HOST_GPU=${SAM3D_HOST_GPU:-}
     working_dir: /app
     volumes:
       - /etc/passwd:/etc/passwd:ro
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
       - ../openreal2sim:/app/openreal2sim
-      - ../scripts:/app/scripts
+      - ../docker/installation:/app/docker/installation
       - ../config:/app/config
       - ../assets:/app/assets:ro
       - ../data:/app/data
@@ -76,7 +78,7 @@ services:
       - /etc/group:/etc/group:ro
       - ${HOME}:${HOME}
       - ../openreal2sim:/app/openreal2sim
-      - ../scripts:/app/scripts
+      - ../docker/installation:/app/docker/installation
       - ../config:/app/config
       - ../assets:/app/assets:ro
       - ../data:/app/data

@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
 COMPOSE = ROOT / "docker" / "compose.yml"
 SERVICES = ("reconstruction", "simulation")
 MARKER = ROOT / "outputs" / ".weights_installed"
-INSTALL = "scripts/installation/install.py"
+INSTALL = "docker/installation/install.py"
 
 # Directories the compose mounts need: Docker creates missing ones as root.
 REPO_DIRS = ("outputs", "h5py", "tasks", ".cache")
@@ -48,7 +48,12 @@ def docker_gid():
         return "999"
 
 
-def compose_env():
+def gpu_ids(gpus):
+    """The host GPU indices of a --gpus list, in order."""
+    return [g.strip() for g in (gpus or "").split(",") if g.strip()]
+
+
+def compose_env(gpus=None):
     env = dict(os.environ)
     env["HOST_UID"] = str(os.getuid())
     env["HOST_GID"] = str(os.getgid())
@@ -57,12 +62,18 @@ def compose_env():
     # The simulation service mounts $XAUTHORITY; point it somewhere that exists.
     if not env.get("XAUTHORITY") or not Path(env["XAUTHORITY"]).exists():
         env["XAUTHORITY"] = "/dev/null"
+    # SAM-3D runs as a sibling container started through the host docker socket,
+    # where the remapped CUDA_VISIBLE_DEVICES of the reconstruction container
+    # means nothing. Name the host GPU the step should ask the daemon for.
+    ids = gpu_ids(gpus)
+    if ids:
+        env["SAM3D_HOST_GPU"] = ids[0]
     return env
 
 
 def gpu_override(service, gpus, keep):
     """Write a compose override pinning the service to the given GPUs."""
-    ids = ", ".join('"%s"' % g.strip() for g in gpus.split(",") if g.strip())
+    ids = ", ".join('"%s"' % g for g in gpu_ids(gpus))
     if not ids:
         fail("--gpus takes a comma separated list of indices, for example 0,1")
     handle, path = tempfile.mkstemp(prefix="openreal2sim-gpus-", suffix=".yml")
@@ -134,7 +145,7 @@ def make_dirs():
 def setup(args):
     check_host()
     make_dirs()
-    env = compose_env()
+    env = compose_env(args.gpus)
     if args.build:
         print("building %s (hours, only needed when a Dockerfile changes)" % ", ".join(SERVICES))
         if compose(["build"] + list(SERVICES), env):
@@ -175,7 +186,9 @@ def run(args, command):
     compose_args = ["run", "--rm"]
     for port in args.port:
         compose_args += ["--publish", port]
-    code = compose(compose_args + [args.service] + command, compose_env(), overrides)
+    code = compose(
+        compose_args + [args.service] + command, compose_env(args.gpus), overrides
+    )
     for path in keep:
         os.unlink(path)
     return code
