@@ -236,7 +236,7 @@ def process_key(key: str, key_cfgs: dict) -> None:
     with open(str(scene_path), "rb") as f:
         data = pickle.load(f)
     imgs_npz = data["images"]     # (N,h,w,3) uint8
-    depths_npz = data["depths"]   # (N,h,w) float16/float32
+    depths_npz = data["depths"]   # (N,h,w) float32
     K = data["intrinsics"]         # (3,3) float32
     N = imgs_npz.shape[0]
     src_H, src_W = imgs_npz.shape[1], imgs_npz.shape[2]
@@ -270,7 +270,7 @@ def process_key(key: str, key_cfgs: dict) -> None:
 
     # Apply to all frames, clip and cast
     depths_aligned = a * depths_for_alignment + b
-    depths_aligned = np.clip(depths_aligned, 1e-3, 1e2).astype(np.float16)
+    depths_aligned = np.clip(depths_aligned, 1e-3, 1e2).astype(np.float32)
 
     # overwrite scene.pkl
     fx, fy, cx, cy = key_cfgs.get("fx"), key_cfgs.get("fy"), key_cfgs.get("cx"), key_cfgs.get("cy")
@@ -287,7 +287,7 @@ def process_key(key: str, key_cfgs: dict) -> None:
     N = imgs_resized.shape[0]
     data.update({
         "images": imgs_resized,            # (N,H,W,3) uint8
-        "depths": depths_aligned,          # (N,H,W) float16
+        "depths": depths_aligned,          # (N,H,W) float32
         "intrinsics": K,                    # (3,3) float32
         "extrinsics": data["extrinsics"],  # (N,4,4) float32
         "n_frames": N,
