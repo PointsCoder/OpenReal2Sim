@@ -10,14 +10,9 @@ ROOT  = Path.cwd()
 THIRD = ROOT / "third_party/Grounded-SAM-2"
 sys.path.append(str(THIRD))
 
-from sam2.build_sam import build_sam2_video_predictor
+from openreal2sim.utils.grounded_sam2_loader import load_sam2_video_predictor
 
 OUT_ROOT = ROOT / "outputs"; OUT_ROOT.mkdir(exist_ok=True)
-
-CFG  = "configs/sam2.1/sam2.1_hiera_l.yaml"
-CKPT = "third_party/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt"
-
-video_pred = build_sam2_video_predictor(CFG, CKPT)
 
 MASK_ANN  = sv.MaskAnnotator()
 BOX_ANN   = sv.BoxAnnotator()
@@ -59,12 +54,15 @@ def render(frames, mask_dict: object, idx:int):
 
     return draw_objects(frames[idx].copy(),mask_dict.get(idx,{}))
 
-def save_masks(output_directory: object, mask_dict: Dict[int, Dict]):
+def save_masks(output_directory: object, mask_dict: Dict[int, Dict], drop_keys=()):
+    """Write mask_dict into scene.pkl, dropping any keys that the new masks invalidate."""
     scene_path = output_directory / "scene/scene.pkl"
     with open(scene_path, "rb") as f:
         scene_dict = pickle.load(f)
 
     scene_dict["mask"] = mask_dict.copy()
+    for stale in drop_keys:
+        scene_dict.pop(stale, None)
 
     with open(scene_path, "wb") as f:
         pickle.dump(scene_dict, f)
@@ -112,6 +110,9 @@ def propagate_maks(segmented_video: object, output_directory: Path):
 
     object_pairs = [(object_id ,object_dict["mask"]) for object_id, object_dict in objects.items()]
 
+    # Built here, not at import time, so importing this module for save_masks
+    # alone does not load SAM 2 onto the GPU.
+    video_pred = load_sam2_video_predictor()
     state=video_pred.init_state(video_path=str(output_directory/"resized_images"))
     for object_id, object_mask in object_pairs: 
         video_pred.add_new_mask(state, cur_idx, object_id, object_mask)
