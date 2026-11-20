@@ -46,6 +46,9 @@ default_configs = {
                                              # default: that node is collision geometry downstream
         "fast_scene_construction": False,  # whether to use fast (but inaccurate) point cloud registration
         "fdpose_tracking_mode": "normal",  # foundation pose tracking mode: "normal" or "perframe"
+        "fdpose_seed_from_registration": True,  # seed the frame-0 foundation pose with the
+                                                # registered placement instead of searching a
+                                                # global rotation grid, which can flip the object
         "fdpose_est_refine_iter": 5,  # foundation pose: number of iterations for pose estimation refinement
         "fdpose_track_refine_iter": 1,  # foundation pose: number of iterations for pose tracking refinement
         "collision_optimization_mode": "plane",  # collision checking mode: "sdf" or "plane"
