@@ -500,6 +500,7 @@ def register_object_mesh(
         pose=None,
         factors=None,
         fast_alignment: bool = True,
+        cfg=None,
     ):
     base_dir = Path.cwd()
     object_dir = base_dir / f"outputs/{key}/reconstruction/objects"
@@ -523,6 +524,16 @@ def register_object_mesh(
         fg_mesh, T_object = fast_registration(target_pcd_o3d, obj_info, object_dir)
     else:
         fg_mesh, T_object = slow_registration(target_pcd_o3d, obj_info, object_dir)
+    # Decide the orientation by render-and-compare instead of trusting the
+    # seed: SAM-3D gets symmetries wrong, and neither a point cloud fit nor a
+    # projection check can tell a remote turned 180 degrees from the right one.
+    search_record = None
+    if cfg is not None and cfg["pose_candidates"]:
+        from openreal2sim.steps.reconstruction.steps.pose_candidate_search import search_object_pose
+        fg_mesh, T_search, search_record = search_object_pose(
+            key, scene_dict, obj_info, fg_mesh, cfg)
+        T_object = T_search @ T_object
+        report_projection(key, obj_info, fg_mesh, scene_dict)
 
     determinant = float(np.linalg.det(T_object[:3, :3]))
     print(f"[Info] Object {obj_info['oid']} registered, transform determinant {determinant:.6f}.")
@@ -530,7 +541,7 @@ def register_object_mesh(
         f"object {obj_info['oid']} registration transform is a reflection, determinant {determinant}"
     )
 
-    return fg_mesh, obj_info, T_object
+    return fg_mesh, obj_info, T_object, search_record
 
 # ─────────────────────────── scene registration utilities ──────────────────────────
 
@@ -581,7 +592,8 @@ def snap_to_plane(mesh, point, normal, max_height_fraction):
     return transform, gap, True
 
 
-def register_scene_meshes(key, fg_meshes, obj_infos, object_transforms, scene_dict, cfg=None):
+def register_scene_meshes(key, fg_meshes, obj_infos, object_transforms, scene_dict, cfg=None,
+                          search_records=None):
     """
     Register the foreground and background meshes to the physical scene.
     Recover the camera pose and save the aligned meshes.
@@ -639,17 +651,32 @@ def register_scene_meshes(key, fg_meshes, obj_infos, object_transforms, scene_di
     # transform object meshes
     base_dir = Path.cwd()
     save_obj_infos = {}
+    search_records = search_records or {}
     snap = True if cfg is None else cfg["table_snap"]
+    rest = True if cfg is None else cfg["table_rest"]
     max_height_fraction = 0.2 if cfg is None else cfg["table_snap_max_height_fraction"]
+    max_rest_rotation = 45.0 if cfg is None else cfg["table_rest_max_rotation_deg"]
+    lift_below_plane = True if cfg is None else cfg["table_rest_lift_below_plane"]
     for obj_info, fg_mesh, T_object in zip(obj_infos, fg_meshes, object_transforms):
         # apply gravity and translation to each object mesh
         fg_mesh.apply_transform(T_gravity)
         fg_mesh.apply_transform(T_to_origin)
 
-        # drop the object onto the table, which is the plane the gravity
-        # alignment was estimated from
+        # rest the object on the table, which is the plane the gravity
+        # alignment was estimated from: turn its support face flat, then drop
+        # it along the normal until it touches
         T_snap = np.eye(4)
-        if snap:
+        rest_report = None
+        if rest:
+            from openreal2sim.steps.reconstruction.steps.pose_candidate_search import rest_on_plane
+            print(f"[Info] Resting object {obj_info['oid']}_{obj_info['name']} on the table")
+            T_snap, rest_report = rest_on_plane(
+                fg_mesh, p0, normal,
+                max_rotation_deg=max_rest_rotation,
+                max_height_fraction=max_height_fraction,
+                lift_below_plane=lift_below_plane,
+            )
+        elif snap:
             T_snap, _, _ = snap_to_plane(fg_mesh, p0, normal, max_height_fraction)
 
         # the object GLB to world transform, the whole chain in one matrix
@@ -675,6 +702,10 @@ def register_scene_meshes(key, fg_meshes, obj_infos, object_transforms, scene_di
             "registered": str(out_path),
             "object_to_world": T_object_to_world.tolist(),
         }
+        if rest_report is not None:
+            save_obj_info["table_rest"] = rest_report
+        if obj_info['oid'] in search_records and search_records[obj_info['oid']] is not None:
+            save_obj_info["pose_search"] = search_records[obj_info['oid']]
         save_obj_infos[obj_info['oid']] = save_obj_info
         print(f"[Info] Object {obj_info['oid']}_{obj_info['name']} aligned and saved to: {out_path}")
 
@@ -740,9 +771,10 @@ def scenario_construction(keys, key_scene_dicts, key_cfgs):
                 poses = {oid: None for oid in object_metas}
 
         fg_meshes, obj_infos, object_transforms = [], [], []
+        search_records = {}
         for oid, obj in object_metas.items():
             print(f"[Info] Adding object {obj['name']} (oid={obj['oid']}) to scene [key={key}]")
-            fg_mesh, obj_info, T_object = register_object_mesh(
+            fg_mesh, obj_info, T_object, search_record = register_object_mesh(
                 key            = key,
                 scene_dict      = scene_dict,
                 obj_info       = obj,
@@ -750,12 +782,15 @@ def scenario_construction(keys, key_scene_dicts, key_cfgs):
                 pose           = poses[oid],
                 factors        = factors,
                 fast_alignment = cfg["fast_scene_construction"],
+                cfg            = cfg,
             )
             fg_meshes.append(fg_mesh)
             obj_infos.append(obj_info)
             object_transforms.append(T_object)
+            search_records[obj_info["oid"]] = search_record
         print(f"[Info] align the scene meshes [key={key}] with gravity ===")
-        scene_dict = register_scene_meshes(key, fg_meshes, obj_infos, object_transforms, scene_dict, cfg)
+        scene_dict = register_scene_meshes(key, fg_meshes, obj_infos, object_transforms, scene_dict, cfg,
+                                           search_records=search_records)
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)
