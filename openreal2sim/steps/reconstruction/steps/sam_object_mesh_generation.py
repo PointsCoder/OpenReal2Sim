@@ -13,6 +13,7 @@ Outputs:
     - outputs/{key}/sam-3d/{idx}.png (object masked RGBA image, idx is 0-based)
     - outputs/{key}/sam-3d/image.png (original RGB image)
     - outputs/{key}/sam-3d/{oid}_{name}.glb (generated 3D mesh)
+    - outputs/{key}/reconstruction/objects/{oid}_{name}_pose.json (SAM-3D layout pose)
     - outputs/{key}/scene/scene.pkl (updated with "objects" key)
 """
 
@@ -156,6 +157,10 @@ def run_sam3d_container(sam_3d_dir: Path):
         "docker", "run", "--rm",
         "--gpus", "all",
         "-e", f"CUDA_VISIBLE_DEVICES={gpu_id}",
+        # The container is removed after every object, so without a torch cache
+        # on the repository mount it downloads the 1.2 GB DINOv2 backbone again
+        # on each run.
+        "-e", "TORCH_HOME=/app/.cache/torch",
         "-v", f"{host_project_root}:/app",
         "-v", f"{host_project_root}/third_party/sam-3d-objects/sam3d_objects:/opt/sam3d/sam3d_objects",
         "-w", "/app",
@@ -234,6 +239,18 @@ def sam_object_mesh_generation(keys, key_scene_dicts, key_cfgs):
                 print(f"[Warn] [{key}] No GLB output for {stem} (expected {src_glb})")
                 glb_path = None
 
+            # The layout pose SAM-3D predicts for the mesh, which the
+            # registration uses as the object orientation.
+            src_pose = sam_3d_dir / f"output_{idx}_pose.json"
+            pose_path = None
+            if src_pose.exists():
+                dst_pose = out_dir / f"{stem}_pose.json"
+                src_pose.rename(dst_pose)
+                pose_path = dst_pose
+                print(f"[Info] [{key}] Moved layout pose: {src_pose} → {dst_pose}")
+            else:
+                print(f"[Warn] [{key}] No layout pose for {stem} (expected {src_pose})")
+
             mask_png = out_dir / f"{stem}_mask.jpg"
             Image.fromarray(mask.astype(np.uint8) * 255).save(mask_png)
 
@@ -241,6 +258,7 @@ def sam_object_mesh_generation(keys, key_scene_dicts, key_cfgs):
                 "oid": oid,
                 "name": name,
                 "glb": str(glb_path) if glb_path else None,
+                "pose": str(pose_path) if pose_path else None,
                 "mask": mask,
             }
 

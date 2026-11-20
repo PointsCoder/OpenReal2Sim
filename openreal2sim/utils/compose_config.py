@@ -45,7 +45,57 @@ default_configs = {
                                              # mesh in a second node of the same glb. Off by
                                              # default: that node is collision geometry downstream
         "fast_scene_construction": False,  # whether to use fast (but inaccurate) point cloud registration
+        "object_placement_mode": "sam3d",  # "sam3d": place the object with the rotation,
+                                           # translation and scale SAM-3D predicted, converted
+                                           # into our camera; "pointcloud_fit": the old path that
+                                           # fits the scale from the bounding box diagonal, centres
+                                           # the object on the point cloud and refines with an ICP
+        "table_snap": True,  # translate the object along the ground plane normal so it rests on it
+        "table_snap_max_height_fraction": 0.2,  # only snap when the gap to the plane is under this
+                                                # fraction of the object height, so a stacked or
+                                                # hanging object is not pulled down
+        "table_rest": True,  # before the snap, turn the support face of the object (the face of
+                             # its oriented bounding box nearest the plane) parallel to the plane,
+                             # so a tilted object ends up resting instead of touching at one point.
+                             # Off restores the plain snap along the normal
+        "table_rest_max_rotation_deg": 45.0,  # largest rotation the resting step may ask for
+        "table_rest_lift_below_plane": True,  # an object whose lowest vertex is under the plane is
+                                              # lifted however deep it had sunk: the height
+                                              # fraction above guards against dragging a stacked
+                                              # object down, and nothing rests inside a table
+        "pose_candidates": True,  # choose the orientation by render-and-compare over the seed and
+                                  # its symmetric twins instead of trusting the seed. Off restores
+                                  # the placement as the layout predicted it
+        "pose_candidate_square_ratio": 0.8,  # footprints at least this square also get the 90
+                                             # degree yaws, which doubles the candidate set
+        "pose_candidate_max": 8,  # hard cap on the number of candidates scored
+        "pose_score_frames": 5,  # how many frames of the clip each candidate is scored on
+        "pose_score_mask_iou_min": 0.8,  # frames count only while the propagated mask still
+                                         # overlaps the frame-0 mask this much: past that a hand
+                                         # has moved the object and the frame says nothing about
+                                         # the reconstructed pose
+        "pose_score_weight_silhouette": 1.0,  # weight of one minus the mask intersection over union
+        "pose_score_weight_colour": 1.0,  # weight of the normalised colour correlation term
+        "pose_score_weight_depth": 1.0,  # weight of the depth error against the mega-sam depth
+        "pose_score_depth_scale_fraction": 0.25,  # the depth error is read against this fraction of
+                                                  # the object diagonal, so that a few centimetres
+                                                  # of error cost about as much as a wrong colour
+        "pose_refine_mode": "fdpose",  # local refinement of the winning candidate: "fdpose" is the
+                                       # FoundationPose refiner seeded with it, "photometric" is a
+                                       # pattern search on the same cost, "off" skips it
+        "pose_refine_max_rotation_deg": 45.0,  # cap on how far the refinement may turn the object
+                                               # away from the candidate it was seeded with
+        "pose_refine_max_translation_fraction": 0.5,  # same cap on the shift, as a fraction of the
+                                                      # object bounding box diagonal. A refinement
+                                                      # is only kept when it also lowers the cost
+        "pose_refine_levels": 3,  # pattern search: how many times the step size is halved
         "fdpose_tracking_mode": "normal",  # foundation pose tracking mode: "normal" or "perframe"
+        "fdpose_seed_from_registration": True,  # seed the frame-0 foundation pose with the
+                                                # registered placement instead of searching a
+                                                # global rotation grid, which can flip the object
+        "fdpose_placement_from_registration": True,  # keep the registered placement for the
+                                                     # exported mesh and use foundation pose only
+                                                     # to track the motion across the frames
         "fdpose_est_refine_iter": 5,  # foundation pose: number of iterations for pose estimation refinement
         "fdpose_track_refine_iter": 1,  # foundation pose: number of iterations for pose tracking refinement
         "collision_optimization_mode": "plane",  # collision checking mode: "sdf" or "plane"

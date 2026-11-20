@@ -150,6 +150,7 @@ class ReconAgent:
                     "object_center": obj["object_center"],
                     "object_min": obj["object_min"],
                     "object_max": obj["object_max"],
+                    "object_to_world": obj.get("object_to_world"),
                     "optimized": str(new_obj_glb_path),
                     "fdpose_trajs": str(new_obj_fdpose_trajs_path),
                     "simple_trajs": str(new_obj_simple_trajs_path),

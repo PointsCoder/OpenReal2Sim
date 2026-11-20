@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 import numpy as np
 import cv2, imageio
+import torch
 import trimesh
 import yaml
 
@@ -261,6 +262,8 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
         scene_dict = key_scene_dicts[key]
         key_cfg = key_cfgs[key]
         pose_tracking_mode = key_cfg["fdpose_tracking_mode"]
+        seed_from_registration = key_cfg["fdpose_seed_from_registration"]
+        placement_from_registration = key_cfg["fdpose_placement_from_registration"]
         est_refine_iter = key_cfg["fdpose_est_refine_iter"]
         track_refine_iter = key_cfg["fdpose_track_refine_iter"]
         objects = scene_dict["info"]["objects"]
@@ -313,6 +316,12 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                 glctx=glctx
             )
 
+            # The registered mesh carries world coordinates, so the pose of frame 0
+            # is just the world to camera transform.
+            T_seed_cam = np.linalg.inv(
+                np.array(scene_dict["info"]["camera"]["camera_opencv_to_world"],
+                         dtype=np.float64).reshape(4, 4))
+
             all_poses: List[np.ndarray] = []
             pose_prev: Optional[np.ndarray] = None
             for i in range(len(reader)):
@@ -326,9 +335,27 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
                                             iteration=max(1, est_refine_iter))
                 else:
                     if i == 0:
-                        ob_mask_0 = reader.get_mask(0).astype(bool)
-                        pose = est.register(K=K_i, rgb=color, depth=depth,
-                                            ob_mask=ob_mask_0, iteration=est_refine_iter)
+                        if seed_from_registration:
+                            # The mesh already sits where the registration put it,
+                            # so frame 0 only needs a local refinement. The global
+                            # search of register() scores a coarse rotation grid and
+                            # can pick a flipped hypothesis, which would throw away
+                            # the orientation SAM-3D predicted.
+                            est.pose_last = torch.as_tensor(
+                                T_seed_cam @ np.linalg.inv(
+                                    est.get_tf_to_centered_mesh().cpu().numpy()),
+                                device="cuda", dtype=torch.float)
+                            pose = est.track_one(rgb=color, depth=depth, K=K_i,
+                                                 iteration=max(1, est_refine_iter))
+                            drift = float(np.degrees(np.arccos(np.clip(
+                                (np.trace(np.linalg.inv(T_seed_cam)[:3, :3]
+                                          @ pose.reshape(4, 4)[:3, :3]) - 1) / 2,
+                                -1, 1))))
+                            logging.info(f"[object {oid}] frame 0 refined {drift:.2f} deg from the registration")
+                        else:
+                            ob_mask_0 = reader.get_mask(0).astype(bool)
+                            pose = est.register(K=K_i, rgb=color, depth=depth,
+                                                ob_mask=ob_mask_0, iteration=est_refine_iter)
                     else:
                         pose = est.track_one(rgb=color, depth=depth, K=K_i,
                                              iteration=track_refine_iter)
@@ -367,10 +394,17 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             scene_dict["info"]["objects"][obj_id]["fdpose_trajs"] = str(pose_save_path)
             logging.info(f"[object {oid}] relative trajs(rel_world) -> {pose_save_path}")
 
-            # transform the object mesh with the fdpose estimated pose at frame 0
-            T_obj_w_0 = (T_c2w @ all_poses_np[0]).astype(np.float64)
+            # place the object mesh for the export
             m_base = trimesh.load(mesh_in_path, force='mesh')
-            m_fd = m_base.copy(); m_fd.apply_transform(T_obj_w_0)
+            if placement_from_registration:
+                # The placement is the registered one, which comes from the
+                # SAM-3D layout; foundation pose is only used for the motion,
+                # and its trajectory is relative to frame 0 either way.
+                m_fd = m_base.copy()
+                logging.info(f"[object {oid}] keeping the registered placement for the export")
+            else:
+                T_obj_w_0 = (T_c2w @ all_poses_np[0]).astype(np.float64)
+                m_fd = m_base.copy(); m_fd.apply_transform(T_obj_w_0)
             fdpose_path = base_dir / f"outputs/{key}/reconstruction/objects" / f"{oid}_{oname}_fdpose.glb"
             m_fd.export(str(fdpose_path))
             scene_dict["info"]["objects"][obj_id]["fdpose"] = str(fdpose_path)
