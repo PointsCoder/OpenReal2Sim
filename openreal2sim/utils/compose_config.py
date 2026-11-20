@@ -45,10 +45,22 @@ default_configs = {
                                              # mesh in a second node of the same glb. Off by
                                              # default: that node is collision geometry downstream
         "fast_scene_construction": False,  # whether to use fast (but inaccurate) point cloud registration
+        "object_placement_mode": "sam3d",  # "sam3d": place the object with the rotation,
+                                           # translation and scale SAM-3D predicted, converted
+                                           # into our camera; "pointcloud_fit": the old path that
+                                           # fits the scale from the bounding box diagonal, centres
+                                           # the object on the point cloud and refines with an ICP
+        "table_snap": True,  # translate the object along the ground plane normal so it rests on it
+        "table_snap_max_height_fraction": 0.2,  # only snap when the gap to the plane is under this
+                                                # fraction of the object height, so a stacked or
+                                                # hanging object is not pulled down
         "fdpose_tracking_mode": "normal",  # foundation pose tracking mode: "normal" or "perframe"
         "fdpose_seed_from_registration": True,  # seed the frame-0 foundation pose with the
                                                 # registered placement instead of searching a
                                                 # global rotation grid, which can flip the object
+        "fdpose_placement_from_registration": True,  # keep the registered placement for the
+                                                     # exported mesh and use foundation pose only
+                                                     # to track the motion across the frames
         "fdpose_est_refine_iter": 5,  # foundation pose: number of iterations for pose estimation refinement
         "fdpose_track_refine_iter": 1,  # foundation pose: number of iterations for pose tracking refinement
         "collision_optimization_mode": "plane",  # collision checking mode: "sdf" or "plane"

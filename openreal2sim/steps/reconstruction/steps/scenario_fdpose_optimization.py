@@ -263,6 +263,7 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
         key_cfg = key_cfgs[key]
         pose_tracking_mode = key_cfg["fdpose_tracking_mode"]
         seed_from_registration = key_cfg["fdpose_seed_from_registration"]
+        placement_from_registration = key_cfg["fdpose_placement_from_registration"]
         est_refine_iter = key_cfg["fdpose_est_refine_iter"]
         track_refine_iter = key_cfg["fdpose_track_refine_iter"]
         objects = scene_dict["info"]["objects"]
@@ -393,10 +394,17 @@ def scenario_fdpose_optimization(keys, key_scene_dicts, key_cfgs):
             scene_dict["info"]["objects"][obj_id]["fdpose_trajs"] = str(pose_save_path)
             logging.info(f"[object {oid}] relative trajs(rel_world) -> {pose_save_path}")
 
-            # transform the object mesh with the fdpose estimated pose at frame 0
-            T_obj_w_0 = (T_c2w @ all_poses_np[0]).astype(np.float64)
+            # place the object mesh for the export
             m_base = trimesh.load(mesh_in_path, force='mesh')
-            m_fd = m_base.copy(); m_fd.apply_transform(T_obj_w_0)
+            if placement_from_registration:
+                # The placement is the registered one, which comes from the
+                # SAM-3D layout; foundation pose is only used for the motion,
+                # and its trajectory is relative to frame 0 either way.
+                m_fd = m_base.copy()
+                logging.info(f"[object {oid}] keeping the registered placement for the export")
+            else:
+                T_obj_w_0 = (T_c2w @ all_poses_np[0]).astype(np.float64)
+                m_fd = m_base.copy(); m_fd.apply_transform(T_obj_w_0)
             fdpose_path = base_dir / f"outputs/{key}/reconstruction/objects" / f"{oid}_{oname}_fdpose.glb"
             m_fd.export(str(fdpose_path))
             scene_dict["info"]["objects"][obj_id]["fdpose"] = str(fdpose_path)

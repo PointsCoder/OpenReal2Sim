@@ -79,6 +79,50 @@ def glb_to_camera_transform(output):
     return transform, torch.as_tensor(scale).reshape(-1).tolist()
 
 
+def focal_from_pointmap(points, mask):
+    """
+    Focal length in pixels implied by SAM-3D's own pointmap, read off its
+    geometry: x = (u - cx) * z / f, so the slope of x / z against the pixel
+    offset is 1 / f. Convention free, so it does not depend on how the model
+    normalises its intrinsics.
+
+    SAM-3D predicts the layout against this camera, not against the intrinsics
+    of our run, so the ratio of the two focals is what rescales its placement.
+    """
+    height, width = mask.shape
+    vs, us = np.nonzero(mask)
+    pts = points[vs, us]
+    good = np.all(np.isfinite(pts), axis=1) & (pts[:, 2] > 1e-6)
+    pts, us, vs = pts[good], us[good], vs[good]
+    if len(pts) < 50:
+        raise ValueError(f"only {len(pts)} valid pointmap pixels under the mask")
+    du = us + 0.5 - 0.5 * width
+    dv = vs + 0.5 - 0.5 * height
+    fx = float(np.sum(du * du) / np.sum(du * pts[:, 0] / pts[:, 2]))
+    fy = float(np.sum(dv * dv) / np.sum(dv * pts[:, 1] / pts[:, 2]))
+    return {
+        "focal_px": [fx, fy],
+        "pointmap_median_depth": float(np.median(pts[:, 2])),
+        "pointmap_pixels": int(len(pts)),
+        "image_size": [int(width), int(height)],
+    }
+
+
+def pointmap_camera(output, mask):
+    """SAM-3D's camera as its pointmap sees it, in the OpenCV convention."""
+    points = output["pointmap"].detach().cpu().float().numpy().astype(np.float64)
+    points = points * np.array([-1.0, -1.0, 1.0])
+    mask = np.asarray(mask)
+    if mask.ndim == 3:
+        mask = mask[..., -1]
+    mask = mask.astype(bool)
+    if mask.shape != points.shape[:2]:
+        raise ValueError(
+            f"mask {mask.shape} does not match the pointmap {points.shape[:2]}"
+        )
+    return focal_from_pointmap(points, mask)
+
+
 def run_inference(sam_3d_dir: str, config_path: str):
     """
     Run SAM-3D inference on prepared images.
@@ -136,6 +180,16 @@ def run_inference(sam_3d_dir: str, config_path: str):
                     "scale": scale,
                     "frame": "opencv_camera",
                 }
+                # The camera the layout is predicted against, so the placement
+                # can be re-expressed under the intrinsics of our own run.
+                try:
+                    pose.update(pointmap_camera(output, mask))
+                except Exception as error:
+                    print(f"[Warn] Could not measure the SAM-3D camera for mask {idx}: {error}")
+                else:
+                    print(f"[Info] SAM-3D camera for mask {idx}: focal "
+                          f"{pose['focal_px'][0]:.2f} / {pose['focal_px'][1]:.2f} px, "
+                          f"median depth {pose['pointmap_median_depth']:.4f} m")
                 pose_path = sam_3d_dir / f"output_{idx}_pose.json"
                 pose_path.write_text(json.dumps(pose, indent=2))
                 print(f"[Info] Saved layout pose: {pose_path}")
