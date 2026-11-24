@@ -135,6 +135,15 @@ class ReconAgent:
                 obj_glb_path = obj["optimized"]
                 new_obj_glb_path = save_dir / Path(obj_glb_path).name
                 shutil.copy(obj_glb_path, new_obj_glb_path)
+                # the same mesh with the texture the generator painted, before
+                # object_photo_texture projected the photo onto it, so a
+                # simulator that does not want the photo's baked lighting can
+                # take this one instead. Absent when that step did not run.
+                obj_sam_glb_path = obj.get("optimized_sam")
+                new_obj_sam_glb_path = None
+                if obj_sam_glb_path and Path(obj_sam_glb_path).exists():
+                    new_obj_sam_glb_path = save_dir / Path(obj_sam_glb_path).name
+                    shutil.copy(obj_sam_glb_path, new_obj_sam_glb_path)
                 obj_fdpose_trajs_path = obj["fdpose_trajs"]
                 new_obj_fdpose_trajs_path = save_dir / Path(obj_fdpose_trajs_path).name
                 shutil.copy(obj_fdpose_trajs_path, new_obj_fdpose_trajs_path)
@@ -153,6 +162,7 @@ class ReconAgent:
                     "object_max": obj["object_max"],
                     "object_to_world": obj.get("object_to_world"),
                     "optimized": str(new_obj_glb_path),
+                    "optimized_sam": str(new_obj_sam_glb_path) if new_obj_sam_glb_path else None,
                     "fdpose_trajs": str(new_obj_fdpose_trajs_path),
                     "simple_trajs": str(new_obj_simple_trajs_path),
                     "hybrid_trajs": str(new_obj_hybrid_trajs_path)
