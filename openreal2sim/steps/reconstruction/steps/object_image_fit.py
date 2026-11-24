@@ -352,8 +352,14 @@ class ObjectImageFit:
         transform[:3, 3] = self.basis.T @ placement[:3, 3] - linear @ self.centre
         return transform
 
-    def bounds_hit(self, params, tolerance=1e-3):
-        """Which bounds the given parameters are sitting on, for the record."""
+    def bounds_hit(self, params, tolerance=0.02):
+        """
+        Which bounds the given parameters are sitting on, for the record.
+
+        The tolerance is two per cent because a simplex walking into a
+        penalised boundary stops next to it, not on it: the keychain settles
+        0.1 mm above its 8.1 mm floor, and that is a bound hit, not a fit.
+        """
         hits = []
         if abs(float(params[0])) >= self.yaw_bound * (1.0 - tolerance):
             hits.append("yaw")
