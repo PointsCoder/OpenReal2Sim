@@ -89,6 +89,38 @@ default_configs = {
                                                       # object bounding box diagonal. A refinement
                                                       # is only kept when it also lowers the cost
         "pose_refine_levels": 3,  # pattern search: how many times the step size is halved
+        "image_fit": True,  # after the uniform scale, fit the object to the frame-0 image by
+                            # rendering it: yaw, uniform scale, the placement in the ground plane
+                            # and a thickness along the ground normal, against the mask and the
+                            # depth map. Off keeps the aspect ratio of the generated mesh exactly
+        "image_fit_depth_weight": 8.0,  # metres of median depth error worth one unit of silhouette
+                                        # cost, so 8.0 makes 12 mm of depth error cost as much as
+                                        # a tenth of the mask overlap
+        "image_fit_thickness_max": 1.0,  # the thickness factor along the ground normal may not go
+                                         # above this: the generated meshes are too thick, never
+                                         # too thin, and an inflating fit would only be trading
+                                         # thickness against the uniform scale
+        "image_fit_height_floor_percentile": 90.0,  # how short the fit may make an object, as this
+                                                    # percentile of the height its own masked depth
+                                                    # cloud reaches above the plane. The depth term
+                                                    # prefers a flatter object at every thickness,
+                                                    # so a fixed floor would be the answer instead
+                                                    # of the data
+        "image_fit_plane_noise_m": 0.002,  # the floor is never below this: nothing thinner than
+                                           # the residual of the ground plane fit could be
+                                           # measured from the depth map in the first place
+        "image_fit_depth_saturation": 0.8,  # skip the thickness axis when the depth residual over
+                                            # the mask is already this fraction of the miss charge,
+                                            # which means the depth map is not measuring the object
+                                            # at all, as for transparent glass
+        "image_fit_scale_max_factor": 1.5,  # how far the uniform scale may move from the one the
+                                            # placement set, as a factor either way
+        "image_fit_yaw_max_deg": 45.0,  # how far the fit may turn the object about the ground
+                                        # normal, so it refines the orientation the candidate
+                                        # search chose instead of replacing it
+        "image_fit_shift_max_fraction": 0.5,  # how far it may move in the plane, as a fraction of
+                                              # the object bounding box diagonal
+        "image_fit_max_iterations": 300,  # cap on the simplex refinement of each starting point
         "fdpose_tracking_mode": "normal",  # foundation pose tracking mode: "normal" or "perframe"
         "fdpose_seed_from_registration": True,  # seed the frame-0 foundation pose with the
                                                 # registered placement instead of searching a

@@ -527,12 +527,40 @@ def register_object_mesh(
     # Decide the orientation by render-and-compare instead of trusting the
     # seed: SAM-3D gets symmetries wrong, and neither a point cloud fit nor a
     # projection check can tell a remote turned 180 degrees from the right one.
-    search_record = None
+    records = {}
     if cfg is not None and cfg["pose_candidates"]:
         from openreal2sim.steps.reconstruction.steps.pose_candidate_search import search_object_pose
-        fg_mesh, T_search, search_record = search_object_pose(
+        fg_mesh, T_search, records["pose_search"] = search_object_pose(
             key, scene_dict, obj_info, fg_mesh, cfg)
         T_object = T_search @ T_object
+        report_projection(key, obj_info, fg_mesh, scene_dict)
+
+    # Fit the object to the frame-0 image: the uniform scale above keeps the
+    # aspect ratio of the generated mesh, which is where the objects get too
+    # thick for their footprint, and a thickness the image agrees with has to
+    # be baked in here, before foundation pose takes the registered mesh as
+    # its model and the collision step exports it.
+    if cfg is not None and cfg["image_fit"]:
+        from openreal2sim.steps.reconstruction.steps.object_image_fit import fit_object_to_image
+        plane = scene_dict["info"]["groundplane_in_cam"]
+        T_rest = np.eye(4)
+        if cfg["table_rest"]:
+            # Level the object on the plane here, in the camera frame the fit
+            # works in and with the caps register_scene_meshes uses, so the fit
+            # starts from a rested object and keeps it rested. The resting that
+            # runs later then finds nothing left to do, instead of turning the
+            # object off the silhouette this fit lined up.
+            from openreal2sim.steps.reconstruction.steps.pose_candidate_search import rest_on_plane
+            T_rest, _report = rest_on_plane(
+                fg_mesh, plane["point"], plane["normal"],
+                max_rotation_deg=cfg["table_rest_max_rotation_deg"],
+                max_height_fraction=cfg["table_snap_max_height_fraction"],
+                lift_below_plane=cfg["table_rest_lift_below_plane"],
+            )
+        fg_mesh, T_fit, records["image_fit"] = fit_object_to_image(
+            key, scene_dict, obj_info, fg_mesh,
+            np.asarray(target_pcd_o3d.points, dtype=np.float64), cfg)
+        T_object = T_fit @ T_rest @ T_object
         report_projection(key, obj_info, fg_mesh, scene_dict)
 
     determinant = float(np.linalg.det(T_object[:3, :3]))
@@ -541,7 +569,7 @@ def register_object_mesh(
         f"object {obj_info['oid']} registration transform is a reflection, determinant {determinant}"
     )
 
-    return fg_mesh, obj_info, T_object, search_record
+    return fg_mesh, obj_info, T_object, records
 
 # ─────────────────────────── scene registration utilities ──────────────────────────
 
@@ -593,7 +621,7 @@ def snap_to_plane(mesh, point, normal, max_height_fraction):
 
 
 def register_scene_meshes(key, fg_meshes, obj_infos, object_transforms, scene_dict, cfg=None,
-                          search_records=None):
+                          object_records=None):
     """
     Register the foreground and background meshes to the physical scene.
     Recover the camera pose and save the aligned meshes.
@@ -651,7 +679,7 @@ def register_scene_meshes(key, fg_meshes, obj_infos, object_transforms, scene_di
     # transform object meshes
     base_dir = Path.cwd()
     save_obj_infos = {}
-    search_records = search_records or {}
+    object_records = object_records or {}
     snap = True if cfg is None else cfg["table_snap"]
     rest = True if cfg is None else cfg["table_rest"]
     max_height_fraction = 0.2 if cfg is None else cfg["table_snap_max_height_fraction"]
@@ -704,8 +732,9 @@ def register_scene_meshes(key, fg_meshes, obj_infos, object_transforms, scene_di
         }
         if rest_report is not None:
             save_obj_info["table_rest"] = rest_report
-        if obj_info['oid'] in search_records and search_records[obj_info['oid']] is not None:
-            save_obj_info["pose_search"] = search_records[obj_info['oid']]
+        for name, record in (object_records.get(obj_info['oid']) or {}).items():
+            if record is not None:
+                save_obj_info[name] = record
         save_obj_infos[obj_info['oid']] = save_obj_info
         print(f"[Info] Object {obj_info['oid']}_{obj_info['name']} aligned and saved to: {out_path}")
 
@@ -771,10 +800,10 @@ def scenario_construction(keys, key_scene_dicts, key_cfgs):
                 poses = {oid: None for oid in object_metas}
 
         fg_meshes, obj_infos, object_transforms = [], [], []
-        search_records = {}
+        object_records = {}
         for oid, obj in object_metas.items():
             print(f"[Info] Adding object {obj['name']} (oid={obj['oid']}) to scene [key={key}]")
-            fg_mesh, obj_info, T_object, search_record = register_object_mesh(
+            fg_mesh, obj_info, T_object, records = register_object_mesh(
                 key            = key,
                 scene_dict      = scene_dict,
                 obj_info       = obj,
@@ -787,10 +816,10 @@ def scenario_construction(keys, key_scene_dicts, key_cfgs):
             fg_meshes.append(fg_mesh)
             obj_infos.append(obj_info)
             object_transforms.append(T_object)
-            search_records[obj_info["oid"]] = search_record
+            object_records[obj_info["oid"]] = records
         print(f"[Info] align the scene meshes [key={key}] with gravity ===")
         scene_dict = register_scene_meshes(key, fg_meshes, obj_infos, object_transforms, scene_dict, cfg,
-                                           search_records=search_records)
+                                           object_records=object_records)
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)
