@@ -96,13 +96,23 @@ default_configs = {
         "image_fit_depth_weight": 8.0,  # metres of median depth error worth one unit of silhouette
                                         # cost, so 8.0 makes 12 mm of depth error cost as much as
                                         # a tenth of the mask overlap
-        "image_fit_thickness_min": 0.25,  # how far the object may be thinned along the ground
-        "image_fit_thickness_max": 1.0,   # normal. The upper bound is 1: the generated meshes are
-                                          # too thick, never too thin, and letting the fit inflate
-                                          # one lets it trade thickness against the uniform scale
-        "image_fit_upright_ratio": 1.0,  # skip the thickness axis when the object is at least this
-                                         # tall relative to its footprint: for a standing bottle
-                                         # that axis is its height, not its thickness
+        "image_fit_thickness_max": 1.0,  # the thickness factor along the ground normal may not go
+                                         # above this: the generated meshes are too thick, never
+                                         # too thin, and an inflating fit would only be trading
+                                         # thickness against the uniform scale
+        "image_fit_height_floor_percentile": 90.0,  # how short the fit may make an object, as this
+                                                    # percentile of the height its own masked depth
+                                                    # cloud reaches above the plane. The depth term
+                                                    # prefers a flatter object at every thickness,
+                                                    # so a fixed floor would be the answer instead
+                                                    # of the data
+        "image_fit_plane_noise_m": 0.002,  # the floor is never below this: nothing thinner than
+                                           # the residual of the ground plane fit could be
+                                           # measured from the depth map in the first place
+        "image_fit_depth_saturation": 0.8,  # skip the thickness axis when the depth residual over
+                                            # the mask is already this fraction of the miss charge,
+                                            # which means the depth map is not measuring the object
+                                            # at all, as for transparent glass
         "image_fit_scale_max_factor": 1.5,  # how far the uniform scale may move from the one the
                                             # placement set, as a factor either way
         "image_fit_yaw_max_deg": 45.0,  # how far the fit may turn the object about the ground

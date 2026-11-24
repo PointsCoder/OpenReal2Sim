@@ -17,9 +17,11 @@ single photograph can actually constrain:
     candidate search chose instead of replacing it;
   - the uniform scale, as a bounded factor on the one already applied;
   - the placement in the ground plane, two numbers;
-  - a thickness factor along the ground normal, bounded below 1 so it can only
-    thin the object, never inflate it. Skipped for an upright object, where
-    that axis is its height and the mask's in-plane hull is not its footprint.
+  - a thickness factor along the ground normal, at most 1 so it can only thin
+    the object, and never short enough to put the object below the height its
+    own depth cloud reaches. That floor is the whole guard on this axis: the
+    depth term is monotonically happier the flatter the object gets, so a
+    fixed factor floor would be the answer rather than the data (OPE-231).
 
 with the lowest vertex held on the ground plane by construction, against
 
@@ -30,6 +32,13 @@ so that shrinking the object onto the patch the depth map happens to agree
 with is not a way to win. Everything happens in the frame-0 camera frame,
 where the mask, the depth map and the intrinsics live, so `register_scene_meshes` can
 apply the gravity alignment and the shift to the origin unchanged.
+
+Two guards keep a depth map that is not measuring the object from deciding
+its shape. The thickness axis is skipped when the depth residual over the
+mask saturates the miss charge, which is what a transparent bottle does by
+reading the table behind it, and when thinning to the floor does not lower
+the residual at all. And no fit is kept that ends with less silhouette than
+the placement it started from, whatever it does to the cost.
 
 The result is baked into the vertices, like every other transform here, and it
 runs before FoundationPose, which takes the registered mesh as its model: the
@@ -61,6 +70,11 @@ from openreal2sim.steps.reconstruction.steps.pose_candidate_search import (
 # exactly what a transparent bottle, whose depth map reads the table behind
 # it, talks the fit into doing.
 MISSED_DEPTH_ERROR = 0.1
+
+# How much silhouette a fit may lose against the placement it started from
+# before it is thrown away. Zero to the rounding of one pixel of a small mask:
+# the fit exists to raise the overlap, so losing it is a failure, not a trade.
+SILHOUETTE_TOLERANCE = 1e-4
 
 # Weight of every bound violation. The silhouette term is at most 1, so a
 # tenth outside a bound already costs more than any gain in overlap.
@@ -144,13 +158,20 @@ class FitRenderer:
     up for that.
 
     The scene frame is the ground plane frame, not the camera frame, and the
-    rotation between them is folded into the pose of the camera. That is not
-    cosmetic: pyrender decomposes a node matrix into a quaternion and three
-    scales, which only reproduces the matrix when its columns are orthogonal.
-    In the plane frame the fit is a yaw about the third axis composed with
-    diag(s, s, s * thickness), whose columns are orthogonal; written in the
-    camera frame the same transform has oblique columns and pyrender would
-    silently render something else.
+    rotation between them is folded into the pose of the camera. In the plane
+    frame the fit is a yaw about the third axis composed with
+    diag(s, s, s * thickness), which is diagonal in the two parameters that
+    are searched and makes the resting constraint one coordinate of one row.
+
+    It also keeps the node pose renderable. pyrender stores a node pose as a
+    quaternion, three scales and a translation, which reproduces a matrix only
+    when its columns are orthogonal. The plane frame matrix above has
+    orthogonal columns; the same transform written in the camera frame does
+    not, and rendering it as a node pose disagrees with rendering the baked
+    vertices. Measured with `h5py/pyrender_check2.py`, identically on the
+    0.1.17 of the reconstruction image and the 0.1.45 of the eval venv:
+    silhouette IoU 1.0000 in the plane frame, 0.8974 for the same fit written
+    in the camera frame, 0.7315 for a general oblique matrix.
     """
 
     def __init__(self, intrinsics, width, height, vertices, faces, basis):
@@ -201,8 +222,7 @@ class ObjectImageFit:
     def __init__(self, scene_dict, obj_info, mesh, cloud, cfg):
         self.oid = obj_info["oid"]
         self.depth_weight = float(cfg["image_fit_depth_weight"])
-        self.thickness_bounds = (float(cfg["image_fit_thickness_min"]),
-                                 float(cfg["image_fit_thickness_max"]))
+        self.thickness_max = float(cfg["image_fit_thickness_max"])
         self.scale_bound = float(cfg["image_fit_scale_max_factor"])
         self.yaw_bound = np.radians(float(cfg["image_fit_yaw_max_deg"]))
         self.shift_bound = (float(cfg["image_fit_shift_max_fraction"])
@@ -231,31 +251,72 @@ class ObjectImageFit:
                                     scene_dict["width"], scene_dict["height"],
                                     self.local, mesh.faces, self.basis)
 
+        # how tall the object is now, and how short the depth map lets it get
+        self.start_height = float(self.local[:, 2].max() - self.local[:, 2].min())
+        self.height_floor = self._height_floor(
+            float(cfg["image_fit_height_floor_percentile"]),
+            float(cfg["image_fit_plane_noise_m"]))
+        self.thickness_floor = float(np.clip(
+            self.height_floor / max(self.start_height, 1e-9), 1e-3, self.thickness_max))
+
+        # the fit may not end below the silhouette it started from, so the
+        # overlap of the placement it was handed is measured first, with no
+        # guard of its own
+        self.iou_floor = None
+        self.start_terms = self.measure(np.zeros(4))
+        self.iou_floor = self.start_terms["silhouette_iou"]
+
         self.fit_thickness, self.thickness_note = self._thickness_decision(
-            float(cfg["image_fit_upright_ratio"]))
+            float(cfg["image_fit_depth_saturation"]))
 
     def close(self):
         self.renderer.close()
 
     # ---- parameters
 
-    def _thickness_decision(self, upright_ratio):
+    def _height_floor(self, percentile, plane_noise):
+        """
+        How short the object may be made, in metres, from the depth map alone.
+
+        The depth term is minimised by a flat object: the thinner the mesh, the
+        closer its visible surface to the single surface the depth map has, so
+        with a fixed floor it is the floor that sets the thickness, not the
+        data (OPE-231: with the floor at 0.25 the keychain lands on it, and at
+        0.02 the fit takes it to 0.8 mm at a lower cost). The depth cloud of
+        the object does know how tall it is: its height above the plane, read
+        at a high percentile so a few outliers do not set it, and never below
+        the noise of the plane fit itself, which is the thinnest thing that
+        could be measured at all.
+        """
+        heights = (self.cloud @ self.basis[2]) - self.plane_offset
+        if len(heights) == 0:
+            return plane_noise
+        return max(float(np.percentile(heights, percentile)), plane_noise)
+
+    def _thickness_decision(self, saturation):
         """
         Whether the thickness axis may be fitted for this object.
 
-        The axis is the ground normal, so for something standing up it is the
-        object's height, not its thickness: squashing a bottle along it makes a
-        shorter bottle, and the in-plane hull of its mask is its side view
-        rather than its footprint, so there is nothing to read the right value
-        off. Those objects keep the generated proportions.
+        Two ways it must not be. A depth map that saturates the miss charge
+        over the whole mask is not measuring the object at all, which is what
+        a transparent bottle does by reading the table behind it; thinning
+        then trades a silhouette the fit cannot check against a residual that
+        means nothing. And a depth map that does not improve when the object
+        is thinned to its floor is saying the object is not too thick, so
+        there is nothing to fit.
         """
-        measure = plane_frame_measure(self.local + self.centre_local, self.plane_offset)
-        tall = measure["height_over_diameter"] >= upright_ratio
-        if tall:
-            return False, (f"upright: {1000.0 * measure['height_m']:.0f} mm tall over a "
-                           f"{1000.0 * measure['diameter_m']:.0f} mm footprint, ratio "
-                           f"{measure['height_over_diameter']:.2f} at or above the "
-                           f"{upright_ratio:.2f} limit, so the normal axis is its height")
+        start_error = self.start_terms["depth_error_m"]
+        if start_error >= saturation * MISSED_DEPTH_ERROR:
+            return False, (f"the depth map saturates over the mask "
+                           f"({1000.0 * start_error:.0f} mm median residual, charge "
+                           f"{1000.0 * MISSED_DEPTH_ERROR:.0f} mm), so it cannot say how "
+                           f"thick the object is")
+        probe = np.array([0.0, 0.0, 0.0, 0.0, float(np.log(self.thickness_floor))])
+        probe_error = self.measure(probe)["depth_error_m"]
+        if probe_error >= start_error:
+            return False, (f"thinning to the {1000.0 * self.height_floor:.1f} mm the depth "
+                           f"cloud allows does not lower the depth residual "
+                           f"({1000.0 * start_error:.1f} -> {1000.0 * probe_error:.1f} mm)")
         return True, None
 
     def placement(self, params):
@@ -291,24 +352,53 @@ class ObjectImageFit:
         transform[:3, 3] = self.basis.T @ placement[:3, 3] - linear @ self.centre
         return transform
 
+    def bounds_hit(self, params, tolerance=1e-3):
+        """Which bounds the given parameters are sitting on, for the record."""
+        hits = []
+        if abs(float(params[0])) >= self.yaw_bound * (1.0 - tolerance):
+            hits.append("yaw")
+        if abs(float(params[1])) >= np.log(self.scale_bound) * (1.0 - tolerance):
+            hits.append("scale")
+        if float(np.hypot(params[2], params[3])) >= self.shift_bound * (1.0 - tolerance):
+            hits.append("shift")
+        if len(params) > 4:
+            thickness = float(np.exp(params[4]))
+            height = thickness * float(np.exp(params[1])) * self.start_height
+            if height <= self.height_floor * (1.0 + tolerance):
+                hits.append("height_floor")
+            if thickness >= self.thickness_max * (1.0 - tolerance):
+                hits.append("thickness_max")
+        return hits
+
     def penalty(self, params):
-        """How far the parameters sit outside their bounds, in cost units."""
+        """
+        How far the parameters sit outside their bounds, in cost units.
+
+        The thickness is bounded by a height in metres rather than by a factor:
+        the depth term always prefers a flatter object, so whatever the factor
+        floor is, that is the answer it gives. The height the depth cloud of
+        this object reaches is the floor that has something to do with the
+        object (see `_height_floor`), and it is read against the height the
+        fit actually produces, which the uniform scale also moves.
+        """
         yaw, log_scale, shift_x, shift_y = params[:4]
         outside = max(0.0, abs(float(yaw)) - self.yaw_bound) / max(self.yaw_bound, 1e-9)
         outside += max(0.0, abs(float(log_scale)) - np.log(self.scale_bound)) / np.log(self.scale_bound)
         shift = float(np.hypot(shift_x, shift_y))
         outside += max(0.0, shift - self.shift_bound) / max(self.shift_bound, 1e-9)
         if len(params) > 4:
-            low, high = self.thickness_bounds
             thickness = float(np.exp(params[4]))
-            outside += max(0.0, low - thickness) + max(0.0, thickness - high)
+            outside += max(0.0, thickness - self.thickness_max)
+            height = thickness * float(np.exp(log_scale)) * self.start_height
+            outside += max(0.0, self.height_floor - height) / max(self.height_floor, 1e-9)
         return PENALTY * outside
 
     # ---- objective
 
-    def score(self, params):
+    def measure(self, params):
         """
-        Cost of one parameter vector, with the terms that make it up.
+        Silhouette overlap and depth residual of one parameter vector, with no
+        bound or guard terms.
 
         The depth residual is read over the mask, not over the overlap: every
         pixel of the mask the depth map can speak for is charged, either with
@@ -330,8 +420,25 @@ class ObjectImageFit:
             error = float(np.median(np.minimum(residual, MISSED_DEPTH_ERROR)))
         else:
             error = MISSED_DEPTH_ERROR
-        cost = (1.0 - iou) + self.depth_weight * error + self.penalty(params)
-        return cost, {"silhouette_iou": iou, "depth_error_m": error, "cost": cost}
+        return {"silhouette_iou": iou, "depth_error_m": error}
+
+    def score(self, params):
+        """
+        Cost of one parameter vector, with the terms that make it up.
+
+        On top of the two measured terms the fit pays for leaving its bounds
+        and for any silhouette it loses against the placement it was handed.
+        That last one is a guard, not a preference: the depth map of a badly
+        reconstructed object can be worth more than the mask to the sum, and
+        then a fit that is visibly worse still wins on cost (OPE-231).
+        """
+        terms = self.measure(params)
+        cost = (1.0 - terms["silhouette_iou"]) + self.depth_weight * terms["depth_error_m"]
+        cost += self.penalty(params)
+        if self.iou_floor is not None:
+            cost += PENALTY * max(0.0, self.iou_floor - terms["silhouette_iou"])
+        terms["cost"] = cost
+        return cost, terms
 
     def start(self):
         """The all-zero parameter vector: the placement exactly as it came in."""
@@ -351,7 +458,7 @@ class ObjectImageFit:
             yaws = np.array([0.0])
         scales = [factor for factor in (0.8, 0.9, 1.0, 1.1, 1.25)
                   if factor <= self.scale_bound and factor >= 1.0 / self.scale_bound]
-        low, high = self.thickness_bounds
+        low, high = self.thickness_floor, self.thickness_max
         thicknesses = [1.0]
         if self.fit_thickness:
             thicknesses = sorted({float(np.clip(value, low, high))
@@ -408,8 +515,9 @@ def fit_object_to_image(key, scene_dict, obj_info, mesh, cloud, cfg):
     Fit the placed object to frame 0 and return the moved mesh.
 
     Returns the mesh, the 4x4 that was applied to it, and the record for the
-    report. A fit that does not beat the placement it started from is dropped,
-    so this step can only lower the cost it is measured on.
+    report. A fit is kept only when it both lowers the cost and does not lose
+    silhouette against the placement it started from, so this step cannot make
+    the one thing it is measured on worse.
     """
     oid = obj_info["oid"]
     name = obj_info["name"]
@@ -425,10 +533,16 @@ def fit_object_to_image(key, scene_dict, obj_info, mesh, cloud, cfg):
             refined, refined_cost = fit.refine(params)
             if refined_cost < best_cost:
                 best_params, best_cost = refined, refined_cost
-        accepted = best_cost < before["cost"] - 1e-6
+        cheaper = best_cost < before["cost"] - 1e-6
+        candidate = fit.report(best_params)
+        keeps_silhouette = (candidate["silhouette_iou"]
+                            >= before["silhouette_iou"] - SILHOUETTE_TOLERANCE)
+        accepted = bool(cheaper and keeps_silhouette)
         if not accepted:
-            print(f"[Info] [{key}] object {oid}_{name} image fit found nothing better "
-                  f"than the placement (cost {before['cost']:.4f}), so it is left alone")
+            reason = ("it costs no less than the placement" if not cheaper else
+                      f"it loses silhouette ({before['silhouette_iou']:.3f} -> "
+                      f"{candidate['silhouette_iou']:.3f})")
+            print(f"[Info] [{key}] object {oid}_{name} image fit dropped: {reason}")
             best_params = fit.start()
         after = fit.report(best_params)
         transform = fit.transform(best_params)
@@ -442,6 +556,9 @@ def fit_object_to_image(key, scene_dict, obj_info, mesh, cloud, cfg):
             "thickness_scale": thickness,
             "thickness_fitted": bool(fit.fit_thickness),
             "thickness_note": fit.thickness_note,
+            "height_floor_mm": 1000.0 * fit.height_floor,
+            "thickness_floor": fit.thickness_floor,
+            "bounds_hit": fit.bounds_hit(best_params) if accepted else [],
             "yaw_deg": yaw_deg,
             "shift_mm": shift_mm,
             "iou_before": before["silhouette_iou"],
@@ -457,8 +574,12 @@ def fit_object_to_image(key, scene_dict, obj_info, mesh, cloud, cfg):
             "cost_before": before["cost"],
             "cost_after": after["cost"],
         }
+        hits = record["bounds_hit"]
         print(f"[Info] [{key}] object {oid}_{name} image fit: scale {scale:.4f}, thickness "
-              f"{thickness:.3f}, yaw {yaw_deg:.1f} deg, moved {shift_mm:.1f} mm in the plane")
+              f"{thickness:.3f} (floor {fit.thickness_floor:.3f} from a "
+              f"{1000.0 * fit.height_floor:.1f} mm depth cloud), yaw {yaw_deg:.1f} deg, moved "
+              f"{shift_mm:.1f} mm in the plane"
+              f"{', on the ' + ', '.join(hits) + ' bound' if hits else ''}")
         print(f"[Info] [{key}] object {oid}_{name} silhouette IoU "
               f"{before['silhouette_iou']:.3f} -> {after['silhouette_iou']:.3f}, depth error "
               f"{1000.0 * before['depth_error_m']:.1f} -> {1000.0 * after['depth_error_m']:.1f} mm, "
