@@ -36,6 +36,7 @@ STEPS = [
     "scenario_construction",
     "scenario_fdpose_optimization",
     "scenario_collision_optimization",
+    "object_photo_texture",
 ]
 
 
@@ -205,6 +206,11 @@ class ReconAgent:
         from openreal2sim.steps.reconstruction.steps.scenario_collision_optimization import scenario_collision_optimization
         self.key_scene_dicts = scenario_collision_optimization(self.keys, self.key_scene_dicts, self.key_cfgs)
         print('[Info] Scenario collision optimization completed.')
+
+    def object_photo_texture(self):
+        from openreal2sim.steps.reconstruction.steps.object_photo_texture import object_photo_texture
+        self.key_scene_dicts = object_photo_texture(self.keys, self.key_scene_dicts, self.key_cfgs)
+        print('[Info] Object photo texture projection completed.')
 
     def run(self):
         for step in self.steps:

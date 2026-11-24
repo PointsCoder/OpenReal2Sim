@@ -18,7 +18,8 @@ openreal2sim/steps/reconstruction
 │   ├── sam_object_mesh_generation.py
 │   ├── scenario_construction.py
 │   ├── scenario_fdpose_optimization.py
-│   └── scenario_collision_optimization.py
+│   ├── scenario_collision_optimization.py
+│   └── object_photo_texture.py
 ├── utils
 │   └── viz_object_trajectory.py
 └── README.md
@@ -70,6 +71,10 @@ We use Foundation Pose to futher optimize the object placement and track the obj
 
 We optimize the object placement to avoid collisions between objects and the background. (See `steps/scenario_collision_optimization.py`)
 
+### object photo texture
+
+The mesh generator paints the whole object, the hidden faces included, so the parts that are in the photo come out blurred and any printing on them is unreadable. Since the placed mesh is registered to the frame-0 camera, every texel can be projected into that photo: where it lands in front of the rest of the scene, inside the object mask and on a face that is not seen edge on, the texel takes the photo pixel it came from. Everywhere else the generated texture is kept, gain corrected per colour cluster to the photo so the observed and generated halves match in tone, and the UV gutters are filled from the nearest covered texel. Only the texture image changes: the glb is written back to the same path with the same geometry, vertex order, UVs and material, and the mesh as the generator textured it is kept next to it as `{oid}_{name}_optimized_sam.glb`. Set `photo_texture: false` to skip the step. (See `steps/object_photo_texture.py`)
+
 ## How to Use
 
 Make sure you have `scene.pkl` (from preprocess steps) in the `outputs/{key}/scene` folder.
@@ -97,7 +102,7 @@ or run it on its own, propagation included:
 python openreal2sim/steps/reconstruction/steps/segmentation_auto.py --key <key>
 ```
 The `stage` argument can be set to one of the following:
-[auto_segmentation, mask_propagation, background_pixel_inpainting, background_point_inpainting, background_mesh_generation, object_mesh_generation, scenario_construction, scenario_fdpose_optimization, scenario_collision_optimization]
+[auto_segmentation, mask_propagation, background_pixel_inpainting, background_point_inpainting, background_mesh_generation, object_mesh_generation, scenario_construction, scenario_fdpose_optimization, scenario_collision_optimization, object_photo_texture]
 
 You can also run individual stages separately, for example:
 ```
