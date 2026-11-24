@@ -44,13 +44,13 @@ We conduct background pixel inpainting to fill in missing regions in the backgro
 
 The inpainted background image will serve as the texture for the background mesh. (See `steps/background_pixel_inpainting.py`)
 
-### background point inpainting
+### background point inpainting (opt-in)
 
-We inpaint the background point cloud to fill in missing regions (by depth estimation or ground plane assumption) and then generate a complete 3D background mesh. (See `steps/background_point_inpainting.py`)
+We inpaint the background point cloud to fill in the region the objects occupied. The background mesh completes that region with the ground plane on its own, so this step is off by default (`bg_point_inpainting: false`). Turn it on to complete the geometry with a monocular depth prediction instead (`bg_completion_mode: moge`), which is what a background that is not a plane needs. (See `steps/background_point_inpainting.py`)
 
 ### background mesh generation
 
-We generate the 3D mesh of the background using the inpainted point cloud and texture. This step produces a complete background mesh that can be used in the final scene. (See `steps/background_mesh_generation.py`)
+We generate the 3D mesh of the background using the inpainted background image as its texture. A plane is fitted on the ground mask, the mask outline is projected onto it and extruded into a flat textured slab (`bg_table_mode: slab`); `bg_table_mode: depth` meshes the whole background per pixel instead. This step produces a complete background mesh that can be used in the final scene. (See `steps/background_mesh_generation.py`)
 
 ### object mesh generation
 
@@ -99,6 +99,8 @@ python openreal2sim/steps/reconstruction/steps/segmentation_auto.py --key <key>
 The `stage` argument can be set to one of the following:
 [auto_segmentation, mask_propagation, background_pixel_inpainting, background_point_inpainting, background_mesh_generation, object_mesh_generation, scenario_construction, scenario_fdpose_optimization, scenario_collision_optimization]
 
+The default run is the list without `auto_segmentation` and without `background_point_inpainting`: the first is selected by name only, the second also runs when the config turns `bg_point_inpainting` on.
+
 You can also run individual stages separately, for example:
 ```
 python openreal2sim/steps/reconstruction/steps/background_pixel_inpainting.py
@@ -124,8 +126,10 @@ pkl file structure:
         "foreground": # foreground (first frame) image [H, W, 3] uint8 np array
         "ground_mask": # ground mask [H, W] bool array
         "object_mask": # object mask [H, W] bool array
-        "bg_depth": # background inpainted depth [H, W] float array
         "fg_depth": # foreground original depth [H, W] float array
+        # the three maps below come from the opt-in point inpainting step only; the
+        # background mesh and the scenario construction rebuild them when they are absent
+        "bg_depth": # background inpainted depth [H, W] float array
         "bg_pts": # background xyzrgb map [H, W, 6] float array, rgb in [0, 1]
         "fg_pts": # foreground xyzrgb map [H, W, 6] float array, rgb in [0, 1]
         "normal": # ground normal direction [3]
