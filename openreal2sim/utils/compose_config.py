@@ -101,6 +101,11 @@ default_configs = {
         "collision_optimization_mode": "plane",  # collision checking mode: "sdf" or "plane"
         "collision_clearance": 0.002,  # in meters, minimum clearance distance for collision optimization
         "collision_sdf_resolution": 192,  # resolution for SDF grid if using "sdf" mode
+        "scene_check": True,  # run the per-scene check as the last step, writing
+                              # simulation/check.json and check.png: silhouette IoU against the
+                              # annotation mask, thickness ratio against the depth and a drop
+                              # test. It only reads the exported assets, so turning it off
+                              # changes nothing else
     },
     "simulation": {
         "physics": "default",
