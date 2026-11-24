@@ -19,6 +19,8 @@ openreal2sim/steps/reconstruction
 │   ├── scenario_construction.py
 │   ├── scenario_fdpose_optimization.py
 │   └── scenario_collision_optimization.py
+├── tools
+│   └── scene_check.py
 ├── utils
 │   └── viz_object_trajectory.py
 └── README.md
@@ -70,6 +72,10 @@ We use Foundation Pose to futher optimize the object placement and track the obj
 
 We optimize the object placement to avoid collisions between objects and the background. (See `steps/scenario_collision_optimization.py`)
 
+### scene check
+
+The last step measures the scene it just exported, per object: the silhouette IoU and centroid error of the optimized mesh rendered from the recorded camera against the frame-0 annotation mask, the thickness ratio (height over convex-hull diameter) of the mesh against the same measure on the depth back-projection of that mask, and a 3 s PyBullet drop over the ground plane and over the background mesh, reported as drift and rotation. It writes `outputs/{key}/simulation/check.json` and a `check.png` figure (photo, render, mask-versus-render overlay) and prints one summary line per object, so a pipeline change can be compared against the baseline in `tasks/agent_vs_pipeline/baseline_check.md`. The step only reads the exported assets: a failure in it is logged and does not fail the key, and `scene_check: false` in the reconstruction config turns it off. (See `tools/scene_check.py`, which also runs on its own with `--key` or `--dir`)
+
 ## How to Use
 
 Make sure you have `scene.pkl` (from preprocess steps) in the `outputs/{key}/scene` folder.
@@ -97,7 +103,7 @@ or run it on its own, propagation included:
 python openreal2sim/steps/reconstruction/steps/segmentation_auto.py --key <key>
 ```
 The `stage` argument can be set to one of the following:
-[auto_segmentation, mask_propagation, background_pixel_inpainting, background_point_inpainting, background_mesh_generation, object_mesh_generation, scenario_construction, scenario_fdpose_optimization, scenario_collision_optimization]
+[auto_segmentation, mask_propagation, background_pixel_inpainting, background_point_inpainting, background_mesh_generation, object_mesh_generation, scenario_construction, scenario_fdpose_optimization, scenario_collision_optimization, save_assets, scene_check]
 
 You can also run individual stages separately, for example:
 ```

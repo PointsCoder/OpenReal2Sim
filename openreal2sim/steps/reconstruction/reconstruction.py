@@ -36,6 +36,11 @@ STEPS = [
     "scenario_construction",
     "scenario_fdpose_optimization",
     "scenario_collision_optimization",
+    # The portable assets and the check that reads them are steps like any other, so
+    # `--stage save_assets` re-exports a finished scene and `--stage scene_check` only
+    # measures it.
+    "save_assets",
+    "scene_check",
 ]
 
 
@@ -206,10 +211,42 @@ class ReconAgent:
         self.key_scene_dicts = scenario_collision_optimization(self.keys, self.key_scene_dicts, self.key_cfgs)
         print('[Info] Scenario collision optimization completed.')
 
+    def scene_check(self):
+        """Measure the finished scene: silhouette IoU, thickness ratio and drop test.
+
+        The check only reads the assets, so a failure in it says nothing about the
+        reconstruction and must not fail the key: it is logged, and whatever the check
+        produced, even just the error, is written to `simulation/check.json`.
+        """
+        for key in self.keys:
+            if not self.key_cfgs[key]["scene_check"]:
+                print(f'[Info] Scene check disabled for {key}.')
+                continue
+            scene_dir = self.base_dir / f'outputs/{key}'
+            try:
+                # Imported here so that a missing renderer or physics engine is one more
+                # failed check rather than a failed reconstruction.
+                from openreal2sim.steps.reconstruction.tools.scene_check import (
+                    scene_check, summarise)
+                result = scene_check(scene_dir)
+            except Exception as error:
+                print(f'[Warning] Scene check failed for {key}: {error}')
+                traceback.print_exc()
+                check_path = scene_dir / 'simulation' / 'check.json'
+                check_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(check_path, 'w') as f:
+                    json.dump({"scene_dir": str(scene_dir), "error": str(error),
+                               "traceback": traceback.format_exc()}, f, indent=1)
+                continue
+            print(f'[Info] Scene check for {key}:')
+            print(summarise(result))
+            print(f'[Info] Wrote {result["check_json"]} and '
+                  f'{result.get("check_png", "no figure")}.')
+        print('[Info] Scene check completed.')
+
     def run(self):
         for step in self.steps:
             getattr(self, step)()
-        self.save_assets()
         print('[Info] ReconAgent run completed.')
         return self.key_scene_dicts
 
