@@ -52,6 +52,14 @@ GRAZING_SOFTNESS = 0.1
 # things rather than a tone difference, so the correction is held back.
 MIN_GAIN, MAX_GAIN = 0.25, 4.0
 
+# Where the correction stops being linear. A cluster gain is capped so the
+# cluster's 99th percentile lands here, and whatever still goes over is rolled
+# off, so no gain can flatten a face against 255.
+HIGHLIGHT_KNEE = 235.0
+
+# A texel this close to the top has lost its detail; counted and reported.
+SATURATED = 254
+
 
 # ──────────────────────────────── loading ──────────────────────────────── #
 
@@ -274,9 +282,52 @@ def colour_clusters(samples, count, iterations=12):
     return centres, labels
 
 
+def bounded_gain(requested, selected):
+    """
+    The gain actually applied to a cluster, and the name of what cut it back.
+
+    A cluster is a spread of texels, not one colour, so a gain that moves its
+    mean onto the photo drives the top of that spread into the clipping point:
+    on a near-black object the requested gain is large, the brightest texels
+    flatten against 255 and the unseen faces come out a blown, flat colour
+    instead of a dark one. The ceiling keeps the 99th percentile of the
+    cluster under the knee, so the correction is as strong as it can be
+    without destroying what it corrects.
+    """
+    peak = float(np.percentile(selected.max(axis=-1), 99)) if selected.size else 0.0
+    ceiling = HIGHLIGHT_KNEE / peak if peak > 1.0 else np.inf
+    allowed = min(MAX_GAIN, ceiling)
+    applied = float(np.clip(requested, MIN_GAIN, allowed))
+    reason = ""
+    if applied < requested - 1e-6:
+        reason = "max_gain" if allowed == MAX_GAIN else "highlight_ceiling"
+    elif applied > requested + 1e-6:
+        reason = "min_gain"
+    return applied, reason
+
+
+def soft_highlights(texture):
+    """
+    Roll the top of the range off rather than letting it clip.
+
+    Applied to the peak channel with the other two following it, so a
+    compressed texel keeps the hue it had: compressing each channel on its own
+    is what turns a scaled dark brown into flat yellow.
+    """
+    peak = texture.max(axis=-1)
+    over = peak > HIGHLIGHT_KNEE
+    if not over.any():
+        return texture
+    span = 255.0 - HIGHLIGHT_KNEE
+    scale = np.ones_like(peak)
+    rolled = HIGHLIGHT_KNEE + span * (1.0 - np.exp(-(peak[over] - HIGHLIGHT_KNEE) / span))
+    scale[over] = rolled / peak[over]
+    return texture * scale[..., None]
+
+
 def gain_correct(texture, photo_colour, strong, clusters):
     """
-    Scale the generated texture so its colour matches the photo.
+    Scale the generated texture so its brightness matches the photo.
 
     The gain is fitted on the texels that *are* observed and applied to the
     whole texture, which carries the correction onto the faces the camera never
@@ -285,34 +336,49 @@ def gain_correct(texture, photo_colour, strong, clusters):
     every texel takes the gain of the cluster its generated colour is nearest
     to. Clustering on colour rather than on luminance alone matters for the
     objects the segmentation fused: a black fob and a silver key share a
-    luminance band with the red and yellow ribbon next to them, and one gain
-    over that band tints both of them.
+    luminance band with the red and yellow ribbon next to them.
+
+    The gain is a single number per cluster, fitted on luminance and applied to
+    all three channels, so the chroma ratios of a texel survive it. A
+    per-channel gain also corrects the white balance, but on a fused object it
+    carries one part's colour onto another: the keychain's gain of 0.62, 0.53,
+    1.28 fitted on a yellow and red ribbon turned the ribbon's unobserved far
+    stripe olive. Brightness is the part of the difference that is safe to
+    carry onto a surface nobody photographed.
     """
     if int(strong.sum()) < 500:
         return texture, []
     generated, observed = texture[strong], photo_colour[strong]
     count = max(int(clusters), 1)
     if count == 1:
-        gain = np.clip((observed.mean(axis=0) + 1.0) / (generated.mean(axis=0) + 1.0),
-                       MIN_GAIN, MAX_GAIN)
-        return np.clip(texture * gain, 0.0, 255.0), [
-            {"texels": int(strong.sum()), "gain_rgb": gain.round(3).tolist()}]
+        centres = generated.mean(axis=0, keepdims=True)
+        labels = np.zeros(len(generated), dtype=np.int64)
+        nearest = np.zeros(texture.shape[:2], dtype=np.int64)
+    else:
+        centres, labels = colour_clusters(generated, count)
+        distance = np.stack([((texture - centre) ** 2).sum(-1) for centre in centres], axis=-1)
+        nearest = np.argmin(distance, axis=-1)
 
-    centres, labels = colour_clusters(generated, count)
-    distance = np.stack([((texture - centre) ** 2).sum(-1) for centre in centres], axis=-1)
-    nearest = np.argmin(distance, axis=-1)
     corrected, report = texture.copy(), []
     for index in range(count):
         fitted = labels == index
-        if int(fitted.sum()) < 100:
+        selected = nearest == index
+        if int(fitted.sum()) < 100 or not selected.any():
             continue
-        gain = (observed[fitted].mean(axis=0) + 1.0) / (generated[fitted].mean(axis=0) + 1.0)
-        gain = np.clip(gain, MIN_GAIN, MAX_GAIN)
-        corrected[nearest == index] = np.clip(texture[nearest == index] * gain, 0.0, 255.0)
+        requested = float(((observed[fitted] @ LUMA).mean() + 1.0)
+                          / ((generated[fitted] @ LUMA).mean() + 1.0))
+        applied, reason = bounded_gain(requested, texture[selected])
+        corrected[selected] = texture[selected] * applied
+        if reason:
+            print(f"[Warn] cluster {index} luminance gain {requested:.2f} cut back to "
+                  f"{applied:.2f} ({reason}); its share of the texture stays further "
+                  f"from the photo than the fit asked for")
         report.append({"texels": int(fitted.sum()),
                        "centre_rgb": centres[index].round(1).tolist(),
-                       "gain_rgb": gain.round(3).tolist()})
-    return corrected, report
+                       "gain_requested": round(requested, 3),
+                       "gain_applied": round(applied, 3),
+                       "clamped": reason})
+    return np.clip(soft_highlights(corrected), 0.0, 255.0), report
 
 
 def fill_gutters(texture, covered):
@@ -422,18 +488,33 @@ def project_photo_onto_object(mesh_path, backup_path, photo, photo_scale, mask,
     blended = corrected * (1.0 - feathered[..., None]) + photo_colour * feathered[..., None]
     blended = fill_gutters(blended, covered)
 
-    material.baseColorTexture = Image.fromarray(
-        np.clip(blended, 0, 255).astype(np.uint8))
+    written = np.clip(blended, 0, 255).astype(np.uint8)
+    material.baseColorTexture = Image.fromarray(written)
     mesh.export(mesh_path)
 
+    # the generated region is what the gain correction can damage, so its
+    # saturation is the number worth keeping: the faces nobody photographed
+    # are only ever seen through it
+    generated_region = covered & (weight <= 0.0)
+    saturated = (written.max(axis=-1) >= SATURATED)
+    clamped = [entry["clamped"] for entry in gains if entry["clamped"]]
     report = {
         "texture_size": [tex_width, tex_height],
         "covered_fraction": float(covered.mean()),
         "photo_fraction_of_covered": float((weight > 0.3).sum() / max(int(covered.sum()), 1)),
         "photo_scale": int(photo_scale),
         "gain_clusters": gains,
+        "gain_clamped": clamped,
+        "saturated_fraction_generated": float(saturated[generated_region].mean())
+        if generated_region.any() else 0.0,
+        "saturated_fraction_generated_before": float(
+            (texture.max(axis=-1) >= SATURATED)[generated_region].mean())
+        if generated_region.any() else 0.0,
     }
     report.update(flags)
+    if clamped:
+        print(f"[Warn] {Path(mesh_path).name}: {len(clamped)} of {len(gains)} cluster gains "
+              f"cut back ({', '.join(sorted(set(clamped)))})")
     return report
 
 

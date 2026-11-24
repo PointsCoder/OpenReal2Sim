@@ -119,8 +119,10 @@ default_configs = {
         "photo_texture_gain_clusters": 4,  # how many colour clusters the generated texture is gain
                                            # corrected to the photo in, so a two tone object, or an
                                            # object the segmentation fused with its neighbours, is
-                                           # not corrected with one gain. 1 matches the mean colour
-                                           # over the whole visible region instead
+                                           # not corrected with one gain. Each cluster gets one
+                                           # luminance gain applied to all three channels, capped so
+                                           # it cannot clip. 1 matches the mean brightness over the
+                                           # whole visible region instead
         "photo_texture_super_resolution": False,  # upscale the photo 4x before projecting it. Off
                                                   # by default: no checkpoint ships in the image,
                                                   # so this needs a download at run time
