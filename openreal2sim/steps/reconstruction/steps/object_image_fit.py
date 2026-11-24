@@ -163,15 +163,19 @@ class FitRenderer:
     diag(s, s, s * thickness), which is diagonal in the two parameters that
     are searched and makes the resting constraint one coordinate of one row.
 
-    It also keeps the node pose renderable. pyrender stores a node pose as a
-    quaternion, three scales and a translation, which reproduces a matrix only
-    when its columns are orthogonal. The plane frame matrix above has
-    orthogonal columns; the same transform written in the camera frame does
-    not, and rendering it as a node pose disagrees with rendering the baked
-    vertices. Measured with `h5py/pyrender_check2.py`, identically on the
-    0.1.17 of the reconstruction image and the 0.1.45 of the eval venv:
-    silhouette IoU 1.0000 in the plane frame, 0.8974 for the same fit written
-    in the camera frame, 0.7315 for a general oblique matrix.
+    It also keeps the node pose renderable on the pyrender in the image.
+    Whether a node pose with oblique columns survives depends on the API path:
+    `Scene.add(pose=)` goes through `Node(matrix=)`, whose setter re-derives
+    the matrix from a quaternion, three scales and a translation and so only
+    reproduces it when its columns are orthogonal, while `Scene.set_pose`,
+    which is the path used here, writes `node._matrix` straight through on
+    pyrender 0.1.45 and renders anything exactly. The image pins 0.1.17, where
+    `set_pose` is `node.matrix = pose` and therefore lossy too. Measured with
+    `h5py/pyrender_check3.py` against the baked vertices, for a general
+    oblique matrix: 0.1.45 gives silhouette IoU 1.0000 through `set_pose` and
+    0.7315 through `add`, 0.1.17 gives 0.7315 through both. In the plane frame
+    the columns are orthogonal, so the render is exact either way and does not
+    depend on which pyrender is installed.
     """
 
     def __init__(self, intrinsics, width, height, vertices, faces, basis):
