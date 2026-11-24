@@ -20,7 +20,8 @@ openreal2sim/steps/reconstruction
 │   ├── object_image_fit.py
 │   ├── scenario_construction.py
 │   ├── scenario_fdpose_optimization.py
-│   └── scenario_collision_optimization.py
+│   ├── scenario_collision_optimization.py
+│   └── object_photo_texture.py
 ├── tools
 │   └── scene_check.py
 ├── utils
@@ -76,6 +77,12 @@ We use Foundation Pose to futher optimize the object placement and track the obj
 
 We optimize the object placement to avoid collisions between objects and the background. (See `steps/scenario_collision_optimization.py`)
 
+### object photo texture
+
+The mesh generator paints the whole object, the hidden faces included, so the parts that are in the photo come out blurred and any printing on them is unreadable. Since the placed mesh is registered to the frame-0 camera, every texel can be projected into that photo: where it lands in front of the rest of the scene, inside the object mask and on a face that is not seen edge on, the texel takes the photo pixel it came from. Everywhere else the generated texture is kept, brightness matched to the photo per colour cluster, and the UV gutters are filled from the nearest covered texel. The per-cluster gain is one number applied to all three channels, so a texel keeps its hue; it is capped so it cannot push the cluster into the clipping point, and the step warns and records in `scene.pkl` whenever a cap bites. Only the texture image changes: the glb is written back to the same path with the same geometry, vertex order, UVs and material, and the mesh as the generator textured it is kept next to it as `{oid}_{name}_optimized_sam.glb` and carried into `scene.json` as `optimized_sam`. Set `photo_texture: false` to skip the step. (See `steps/object_photo_texture.py`)
+
+The copied texels are photographed pixels, so they carry the lighting of the room the photo was taken in: shadows, specular highlights and the camera's white balance are baked into the base colour map. Relighting such an object in a simulator double counts that lighting, and the brightness match spreads the photo's exposure onto the generated faces as well. Nothing here de-lights the texture. A simulator that needs an unlit base colour should load `optimized_sam` instead.
+
 ### scene check
 
 The last step measures the scene it just exported, per object: the silhouette IoU and centroid error of the optimized mesh rendered from the recorded camera against the frame-0 annotation mask, the thickness ratio (height over convex-hull diameter) of the mesh against the same measure on the depth back-projection of that mask, and a 3 s PyBullet drop over the ground plane and over the background mesh, reported as drift and rotation. It writes `outputs/{key}/simulation/check.json` and a `check.png` figure (photo, render, mask-versus-render overlay) and prints one summary line per object, so a pipeline change can be compared against the baseline in `tasks/agent_vs_pipeline/baseline_check.md`. The step only reads the exported assets: a failure in it is logged and does not fail the key, and `scene_check: false` in the reconstruction config turns it off. (See `tools/scene_check.py`, which also runs on its own with `--key` or `--dir`)
@@ -107,7 +114,7 @@ or run it on its own, propagation included:
 python openreal2sim/steps/reconstruction/steps/segmentation_auto.py --key <key>
 ```
 The `stage` argument can be set to one of the following:
-[auto_segmentation, mask_propagation, background_pixel_inpainting, background_point_inpainting, background_mesh_generation, object_mesh_generation, scenario_construction, scenario_fdpose_optimization, scenario_collision_optimization, save_assets, scene_check]
+[auto_segmentation, mask_propagation, background_pixel_inpainting, background_point_inpainting, background_mesh_generation, object_mesh_generation, scenario_construction, scenario_fdpose_optimization, scenario_collision_optimization, object_photo_texture, save_assets, scene_check]
 
 You can also run individual stages separately, for example:
 ```
@@ -174,6 +181,8 @@ pkl file structure:
                     "fdpose":      # object placement at using foundation pose estimation [glb],
                     "fdpose_trajs": # object relative trajs [N,4,4],
                     "optimized":      # object placement after collision optimization [glb],
+                    "optimized_sam":  # the same mesh with the generated texture, before the photo
+                                      # was projected onto it [glb], null if that step did not run,
                 },
             ...
         },

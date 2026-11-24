@@ -36,6 +36,7 @@ STEPS = [
     "scenario_construction",
     "scenario_fdpose_optimization",
     "scenario_collision_optimization",
+    "object_photo_texture",
     # The portable assets and the check that reads them are steps like any other, so
     # `--stage save_assets` re-exports a finished scene and `--stage scene_check` only
     # measures it.
@@ -139,6 +140,15 @@ class ReconAgent:
                 obj_glb_path = obj["optimized"]
                 new_obj_glb_path = save_dir / Path(obj_glb_path).name
                 shutil.copy(obj_glb_path, new_obj_glb_path)
+                # the same mesh with the texture the generator painted, before
+                # object_photo_texture projected the photo onto it, so a
+                # simulator that does not want the photo's baked lighting can
+                # take this one instead. Absent when that step did not run.
+                obj_sam_glb_path = obj.get("optimized_sam")
+                new_obj_sam_glb_path = None
+                if obj_sam_glb_path and Path(obj_sam_glb_path).exists():
+                    new_obj_sam_glb_path = save_dir / Path(obj_sam_glb_path).name
+                    shutil.copy(obj_sam_glb_path, new_obj_sam_glb_path)
                 obj_fdpose_trajs_path = obj["fdpose_trajs"]
                 new_obj_fdpose_trajs_path = save_dir / Path(obj_fdpose_trajs_path).name
                 shutil.copy(obj_fdpose_trajs_path, new_obj_fdpose_trajs_path)
@@ -157,6 +167,7 @@ class ReconAgent:
                     "object_max": obj["object_max"],
                     "object_to_world": obj.get("object_to_world"),
                     "optimized": str(new_obj_glb_path),
+                    "optimized_sam": str(new_obj_sam_glb_path) if new_obj_sam_glb_path else None,
                     "fdpose_trajs": str(new_obj_fdpose_trajs_path),
                     "simple_trajs": str(new_obj_simple_trajs_path),
                     "hybrid_trajs": str(new_obj_hybrid_trajs_path)
@@ -210,6 +221,11 @@ class ReconAgent:
         from openreal2sim.steps.reconstruction.steps.scenario_collision_optimization import scenario_collision_optimization
         self.key_scene_dicts = scenario_collision_optimization(self.keys, self.key_scene_dicts, self.key_cfgs)
         print('[Info] Scenario collision optimization completed.')
+
+    def object_photo_texture(self):
+        from openreal2sim.steps.reconstruction.steps.object_photo_texture import object_photo_texture
+        self.key_scene_dicts = object_photo_texture(self.keys, self.key_scene_dicts, self.key_cfgs)
+        print('[Info] Object photo texture projection completed.')
 
     def scene_check(self):
         """Measure the finished scene: silhouette IoU, thickness ratio and drop test.

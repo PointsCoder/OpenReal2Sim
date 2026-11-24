@@ -133,6 +133,32 @@ default_configs = {
         "collision_optimization_mode": "plane",  # collision checking mode: "sdf" or "plane"
         "collision_clearance": 0.002,  # in meters, minimum clearance distance for collision optimization
         "collision_sdf_resolution": 192,  # resolution for SDF grid if using "sdf" mode
+        "photo_texture": True,  # project the frame-0 photo onto the texture of every object
+                                # where its surface is visible from that camera, and keep the
+                                # generated texture, gain corrected, everywhere else. Off leaves
+                                # the generated texture alone
+        "photo_texture_mask_erode_pixels": 2,  # in pixels, how far the object mask is eroded
+                                               # before it is sampled, so the part background
+                                               # pixels of the silhouette stay out of the texture
+        "photo_texture_depth_tolerance": 0.004,  # in meters, how far behind the rendered scene
+                                                 # depth a texel may still count as visible
+        "photo_texture_max_grazing_deg": 75.0,  # faces seen at a larger angle than this between
+                                                # their normal and the view ray keep the generated
+                                                # texture: one photo pixel there covers too much
+                                                # surface to copy
+        "photo_texture_blend_sigma": 1.5,  # in texels, feather of the seam between the projected
+                                           # and the generated texture
+        "photo_texture_gain_clusters": 4,  # how many colour clusters the generated texture is gain
+                                           # corrected to the photo in, so a two tone object, or an
+                                           # object the segmentation fused with its neighbours, is
+                                           # not corrected with one gain. Each cluster gets one
+                                           # luminance gain applied to all three channels, capped so
+                                           # it cannot clip. 1 matches the mean brightness over the
+                                           # whole visible region instead
+        "photo_texture_super_resolution": False,  # upscale the photo 4x before projecting it. Off
+                                                  # by default: no checkpoint ships in the image,
+                                                  # so this needs a download at run time
+        "photo_texture_super_resolution_model": "caidas/swin2SR-classical-sr-x4-64",
         "scene_check": True,  # run the per-scene check as the last step, writing
                               # simulation/check.json and check.png: silhouette IoU against the
                               # annotation mask, thickness ratio against the depth and a drop
