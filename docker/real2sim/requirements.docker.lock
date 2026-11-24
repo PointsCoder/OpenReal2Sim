@@ -150,6 +150,7 @@ ptyprocess==0.7.0
 pure-eval==0.2.4
 py-cpuinfo==9.0.0
 pybind11==3.1.0
+pybullet==3.2.7
 pycollada==0.9.3
 pydantic==2.11.10
 pydantic-core==2.33.2

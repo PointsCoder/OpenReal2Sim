@@ -95,3 +95,6 @@ PyOpenGL==3.1.5
 tensordict  
 scene-synthesizer[recommend]
 flask
+
+#12) Scene check drop test
+pybullet==3.2.7
