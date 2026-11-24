@@ -1,12 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Geometry helpers for building the table as a flat textured slab, used by
-background_mesh_generation.py (bg_table_mode="slab").
+Geometry helpers for the background mesh, used by background_mesh_generation.py.
 
 A plane is fitted on the ground-mask pixels of the inpainted background depth, the mask
 outline is projected onto it to give a footprint, and the footprint is extruded downward
-into a slab whose top face is textured by the camera projection of the background image.
+into a slab whose top face is textured by the camera projection of the background image
+(bg_table_mode="slab").
+
+The background depth itself is built here too: the frame-0 depth with the segmented
+objects replaced by the ground plane they stood on, which is all the slab needs.
 """
 
 import cv2
@@ -114,6 +117,64 @@ def plane_frame(normal: np.ndarray, origin: np.ndarray) -> tuple[np.ndarray, np.
     e2 = np.cross(normal, e1)
     e2 /= (np.linalg.norm(e2) + 1e-12)
     return e1, e2
+
+
+# ──────────────────── background depth and colour point map ─────────────────────
+def dilate_mask(binary_mask: np.ndarray, pixels: int = 4, shape: str = "ellipse") -> np.ndarray:
+    """Dilate a boolean mask outward to stabilize boundary pixels near object edges."""
+    if pixels == 0:
+        return binary_mask
+    shape_map = {
+        "ellipse": cv2.MORPH_ELLIPSE,
+        "rect":    cv2.MORPH_RECT,
+        "cross":   cv2.MORPH_CROSS,
+    }
+    k = cv2.getStructuringElement(shape_map.get(shape, cv2.MORPH_ELLIPSE),
+                                  (2 * pixels + 1, 2 * pixels + 1))
+    out = cv2.dilate(binary_mask.astype(np.uint8), k, iterations=1)
+    return out.astype(bool)
+
+def plane_fill(depth0: np.ndarray, K: np.ndarray,
+               ground: np.ndarray, obj: np.ndarray) -> np.ndarray:
+    """The depth map with the object region replaced by the ground plane the objects hide.
+
+    A plane is fitted on the ground-mask depth and the camera rays of the object pixels are
+    intersected with it, so the geometry behind a removed object is the tabletop continued.
+    """
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+
+    # fit plane on ground region
+    pts_ground = depth_to_points(depth0, K).reshape(-1, 3)[ground.ravel()]
+    pc = o3d.geometry.PointCloud(); pc.points = o3d.utility.Vector3dVector(pts_ground)
+    plane, _ = pc.segment_plane(distance_threshold=0.01, ransac_n=3, num_iterations=1000)
+    a, b, c, d = plane
+
+    # intersect rays with plane inside the object mask
+    ys, xs = np.where(obj)
+    dx = (xs - cx) / fx; dy = (ys - cy) / fy; dz = np.ones_like(dx)
+    denom = a * dx + b * dy + c * dz
+    valid = np.abs(denom) > 1e-6
+    t = np.full_like(dx, np.nan, dtype=np.float32)
+    t[valid] = -d / denom[valid]
+    valid &= (t > 0) & np.isfinite(t)
+    z_new = t[valid] * dz[valid]
+
+    depth0_filled = depth0.copy()
+    depth0_filled[ys[valid], xs[valid]] = np.clip(z_new, 0, depth0.max())
+    return depth0_filled
+
+def complete_background_depth(depth0: np.ndarray, K: np.ndarray, ground_mask: np.ndarray,
+                              object_mask: np.ndarray, cfg: dict) -> np.ndarray:
+    """`plane_fill` with the mask dilation the configuration asks for."""
+    object_mask = dilate_mask(object_mask, pixels=cfg["obj_dilate_pixels"], shape="ellipse")
+    ground_mask = dilate_mask(ground_mask, pixels=cfg["ground_dilate_pixels"], shape="ellipse")
+    return plane_fill(depth0, K, ground_mask, object_mask)
+
+def color_pointmap(depth: np.ndarray, K: np.ndarray, img: np.ndarray) -> np.ndarray:
+    """The (H,W,6) xyzrgb map of a depth map and its image, rgb in [0,1]."""
+    xyz = depth_to_points(depth, K)
+    rgb = np.asarray(img).reshape(xyz.shape[0], xyz.shape[1], 3) / 255.
+    return np.concatenate([xyz, rgb], -1).astype(np.float32)
 
 
 # ──────────────────── mask and footprint ─────────────────────

@@ -27,6 +27,12 @@ from openreal2sim.utils.notification import notify_started, notify_failed, notif
 # default run keeps using the masks a human already annotated.
 OPTIONAL_STEPS = ["auto_segmentation"]
 
+# Steps that only run when their reconstruction config flag is on, or when --stage names
+# them. background_mesh_generation completes the depth of the object region with the ground
+# plane itself, so the point completion is only needed for a non-planar background
+# (bg_completion_mode: "moge").
+FLAGGED_STEPS = {"background_point_inpainting": "bg_point_inpainting"}
+
 STEPS = [
     "mask_propagation",
     "background_pixel_inpainting",
@@ -107,7 +113,16 @@ class ReconAgent:
                 self.steps = self.steps[self.steps.index(stage):]
             else:
                 print(f"[Warning] Step '{stage}' not found. It must be one of the {OPTIONAL_STEPS + self.steps}. Running all steps by default.")
+        self.steps = [step for step in self.steps if self.step_enabled(step, stage)]
         print('[Info] ReconAgent initialized.')
+
+    def step_enabled(self, step: str, stage: str = None) -> bool:
+        """Whether a flagged step runs: a key asks for it, or --stage named it."""
+        flag = FLAGGED_STEPS.get(step)
+        if flag is None or step == stage or any(cfg[flag] for cfg in self.key_cfgs.values()):
+            return True
+        print(f"[Info] Skipping '{step}': '{flag}' is off in the configuration.")
+        return False
 
     def save_scene_dicts(self):
         for key, scene_dict in self.key_scene_dicts.items():

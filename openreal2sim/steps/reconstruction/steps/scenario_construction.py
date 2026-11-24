@@ -68,6 +68,8 @@ import copy
 import transforms3d
 # from scipy.spatial import ConvexHull, distance_matrix
 
+from openreal2sim.steps.reconstruction.utils.table_slab import color_pointmap
+
 
 # ─────────────────────────── object registration utilities ──────────────────────────
 
@@ -457,17 +459,27 @@ def fast_registration(target_pcd_o3d, obj_info, object_dir):
 
     return fg_mesh, T_fine @ T_coarse
 
-def object_point_cloud(key: str, scene_dict: dict, obj_info: dict):
+def foreground_pointmap(scene_dict: dict) -> np.ndarray:
+    """The (H,W,6) xyzrgb map of the first frame, rgb in [0,1].
+
+    The opt-in point completion step stores it in the scene; the default path does not run
+    it, so build it from the same depth map and frame.
+    """
+    recon = scene_dict["recon"]
+    if "fg_pts" in recon:
+        return recon["fg_pts"]
+    K = np.asarray(scene_dict["intrinsics"], np.float32)
+    return color_pointmap(scene_dict["depths"][0], K, recon["foreground"])
+
+def object_point_cloud(key: str, fg_pmap: np.ndarray, obj_info: dict):
     """The masked, outlier trimmed object point cloud in the camera frame."""
     base_dir = Path.cwd()
     object_dir = base_dir / f"outputs/{key}/reconstruction/objects"
 
     # extract object points and colors using the mask
     obj_mask = obj_info['mask']
-    color_map = scene_dict["recon"]["fg_pts"][..., 3:6]  # use RGB from fg_pts
-    color_map = color_map.reshape(-1, 3)  # [H*W, 3]
-    xyz_map = scene_dict["recon"]["fg_pts"][..., 0:3]  # use XYZ from fg_pts
-    xyz_map = xyz_map.reshape(-1, 3)
+    color_map = fg_pmap[..., 3:6].reshape(-1, 3)  # [H*W, 3]
+    xyz_map = fg_pmap[..., 0:3].reshape(-1, 3)
     obj_mask = obj_mask.reshape(-1)
     object_points = xyz_map[obj_mask]
     object_colors = color_map[obj_mask]
@@ -783,7 +795,8 @@ def scenario_construction(keys, key_scene_dicts, key_cfgs):
         if not object_metas:
             print(f"[Warning] No objects found in scene_dict for key: {key}. Skipping.")
             continue
-        clouds = {oid: object_point_cloud(key, scene_dict, obj)
+        fg_pmap = foreground_pointmap(scene_dict)
+        clouds = {oid: object_point_cloud(key, fg_pmap, obj)
                   for oid, obj in object_metas.items()}
 
         # Placement from the layout SAM-3D predicted, which needs the two
