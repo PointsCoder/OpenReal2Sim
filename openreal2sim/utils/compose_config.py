@@ -19,7 +19,15 @@ default_configs = {
         "gpu": "0",
         "obj_dilate_pixels": 8,
         "ground_dilate_pixels": 8,
-        "bg_completion_mode": "plane",  # "plane" or "moge"
+        "bg_point_inpainting": False,  # run the background point completion step before the
+                                       # background mesh. Off by default: the background mesh
+                                       # completes the depth of the object region with the
+                                       # ground plane itself, which is all the table slab
+                                       # needs. Turn it on for "moge" completion below
+        "bg_completion_mode": "plane",  # how the point completion step fills the object
+                                        # region: "plane" (what the background mesh does on
+                                        # its own) or "moge", a monocular depth prediction
+                                        # for a background that is not a plane
         "bg_mesh_simplify_step": 1,  # 1 means no background mesh simplification
         "bg_mesh_target_faces": 0,  # 0 means no background mesh simplification
         "bg_mesh_thickness": 0.1,  # in meters, added thickness of the background mesh

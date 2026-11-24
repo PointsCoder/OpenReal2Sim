@@ -104,9 +104,8 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
         if ground_accum is None:
             raise RuntimeError(
                 f"[{key}] no object named 'ground' in outputs/{key}/scene/scene.pkl. "
-                "The ground mask carries the ground plane and the later steps "
-                "(background_point_inpainting, background_mesh_generation) cannot run "
-                "without it. Annotate a 'ground' object with "
+                "The ground mask carries the ground plane and background_mesh_generation "
+                "cannot run without it. Annotate a 'ground' object with "
                 "openreal2sim/gui/segmentation_annotator.py, or run the auto_segmentation "
                 "step (steps/segmentation_auto.py), which detects the ground itself."
             )
@@ -158,10 +157,16 @@ def background_pixel_inpainting(keys, key_scene_dicts, key_cfgs):
         # Save in scene_dict
         if "recon" not in scene_dict:
             scene_dict["recon"] = {}
+        # the completed point maps and the ground normal are derived from the masks and the
+        # images written below, so a previous run's copies must not outlive them
+        for derived in ("bg_depth", "bg_pts", "fg_pts", "normal"):
+            scene_dict["recon"].pop(derived, None)
         scene_dict["recon"]["background"] = np.ascontiguousarray(np.array(fused_img_pil, dtype=np.uint8))
         scene_dict["recon"]["foreground"] = np.ascontiguousarray(np.array(image_orig,   dtype=np.uint8))
         scene_dict["recon"]["ground_mask"] = ground_accum  # H x W, bool
         scene_dict["recon"]["object_mask"] = mask_accum if mask_accum is not None else None   # H x W, bool
+        # the measured depth of the same frame, which the later steps read next to its image
+        scene_dict["recon"]["fg_depth"] = np.asarray(scene_dict["depths"][0], np.float32)
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)

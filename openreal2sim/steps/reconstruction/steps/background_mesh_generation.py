@@ -5,7 +5,7 @@ Generate the textured background mesh.
 
 Two modes, selected by cfg["bg_table_mode"]:
   - "slab" (default): the table is built like an object. A plane is fitted on the
-    recon.ground_mask pixels of recon.bg_depth, the mask outline is projected onto it to
+    recon.ground_mask pixels of the background depth, the mask outline is projected onto it to
     give a footprint (extended past the image border by a margin so objects cannot fall
     off), and the footprint is extruded downward into a flat slab. The top face carries
     the inpainted background image through UVs from the camera projection; the sides, the
@@ -18,7 +18,8 @@ Two modes, selected by cfg["bg_table_mode"]:
     the default config this reproduces the pre-slab mesh exactly.
 
 Inputs:
-    - outputs/{key}/scene/scene.pkl (must contain a "bg_pts" key in "recon" containing background pointmap)
+    - outputs/{key}/scene/scene.pkl (must contain the "recon" key background_pixel_inpainting
+      writes: the inpainted background image and the ground and object masks)
 Outputs:
     - outputs/{key}/recon/background_textured_mesh.glb # background textured mesh
       ("slab" mode: node "table_slab", plus node "background_depth" when
@@ -53,8 +54,9 @@ import pickle
 from PIL import Image
 
 from openreal2sim.steps.reconstruction.utils.table_slab import (
-    boundary_edges, build_table_slab, clean_ground_mask, depth_to_points, fit_plane_trimmed,
-    flat_color_uv, footprint_polygon, plane_frame, plane_rms, slab_shadow_mask)
+    boundary_edges, build_table_slab, clean_ground_mask, color_pointmap,
+    complete_background_depth, depth_to_points, fit_plane_trimmed, flat_color_uv,
+    footprint_polygon, plane_frame, plane_rms, slab_shadow_mask)
 
 # used when cfg["bg_mesh_discontinuity_rel"] is left at None: the filter is on for the slab's
 # depth layer and off in "depth" mode, which keeps that mode an exact reproduction of the
@@ -208,6 +210,14 @@ def per_pixel_background_mesh(pmap: np.ndarray, img: Image.Image, cfg: dict,
         mesh.faces = mesh.faces[:, ::-1]
     return mesh, diag
 
+def background_pointmap(recon: dict, bg_depth: np.ndarray, K: np.ndarray,
+                        img_rgb: np.ndarray) -> np.ndarray:
+    """The (H,W,6) xyzrgb map of the completed background, which only the per-pixel
+    layers need: taken from the point completion step when it ran, else built here."""
+    if "bg_pts" in recon:
+        return recon["bg_pts"]
+    return color_pointmap(bg_depth, K, img_rgb)
+
 def visualize_plane_normal(plane_pts, normal, filename, num_arrow_pts=200, normal_length=0.5):
     plane_pts = np.asarray(plane_pts)
     normal = np.asarray(normal, dtype=float)
@@ -275,25 +285,31 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
         recon_dir = base_dir / f'outputs/{key}/reconstruction'
         recon_dir.mkdir(parents=True, exist_ok=True)
         recon = scene_dict.get("recon", {})
-        if "bg_pts" not in recon:
-            print(f"[Error] No 'bg_pts' in 'recon' of {key}/scene/scene.pkl, please run background_pixel_inpainting.py first!")
+        missing = [k for k in ("background", "ground_mask", "object_mask") if k not in recon]
+        if missing:
+            print(f"[Error] No {missing} in 'recon' of {key}/scene/scene.pkl, please run background_pixel_inpainting.py first!")
             continue
-        pmap = recon["bg_pts"]  # (H,W,6) float32
-        fg_pmap = recon["fg_pts"] # (H,W,6) float32
-
-        H, W = pmap.shape[:2]
         img_rgb = np.ascontiguousarray(recon["background"])
         img = Image.fromarray(img_rgb, mode="RGB")
+        H, W = img_rgb.shape[:2]
         K = np.asarray(scene_dict["intrinsics"], np.float64)
-
-        # plane estimation: fitted on the ground mask pixels of the inpainted background
-        # depth, used both for the mesh thickening direction and for the table slab
+        K32 = np.asarray(scene_dict["intrinsics"], np.float32)
         ground_mask = recon["ground_mask"]
+        obj_mask = recon["object_mask"]
+        depth0 = scene_dict["depths"][0]
+
+        # the background depth: the frame-0 depth with the segmented objects replaced by the
+        # ground plane behind them. The point completion step writes it when that opt-in step
+        # runs, which is the only way to get a non-planar fill; otherwise it is the plane
+        # fill, which is all the plane fit and the slab need
         if "bg_depth" in recon:
-            bg_xyz = depth_to_points(np.asarray(recon["bg_depth"], np.float64), K)
+            bg_depth = np.asarray(recon["bg_depth"])
         else:
-            print(f"[Warning] [{key}] no 'bg_depth' in recon, falling back to 'bg_pts'")
-            bg_xyz = pmap[..., :3].astype(np.float64)
+            bg_depth = complete_background_depth(depth0, K32, ground_mask, obj_mask, cfg)
+        bg_xyz = depth_to_points(np.asarray(bg_depth, np.float64), K)
+
+        # plane estimation: fitted on the ground mask pixels of the background depth, used
+        # both for the mesh thickening direction and for the table slab
         plane_pts = bg_xyz[ground_mask].reshape(-1, 3)
         plane_pts = plane_pts[np.all(np.isfinite(plane_pts), axis=1)]
         normal, plane_offset, inliers = fit_plane_trimmed(
@@ -305,8 +321,9 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
 
         # we need to determine the normal direction (up or down)
         # we will assume most object points are above the ground plane, and use this hints to flip normal if needed
-        obj_mask = recon["object_mask"]
-        pts = fg_pmap[..., :3][obj_mask].reshape(-1, 3)
+        fg_xyz = recon["fg_pts"][..., :3] if "fg_pts" in recon \
+            else depth_to_points(depth0, K32).astype(np.float32)
+        pts = fg_xyz[obj_mask].reshape(-1, 3)
         pts = pts[np.all(np.isfinite(pts), axis=1)]
         obj_pts = pts
         assert len(obj_pts) > 0, f"[Error] No valid object points found in {key}! We need them to determine the ground normal direction."
@@ -366,7 +383,8 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
                                           ground_mask=clean_ground_mask(ground_mask))
                 print(f"[Info] [{key}] slab hides {100 * shadow.mean():.1f}% of the pixels")
                 layer, ldiag = per_pixel_background_mesh(
-                    pmap, img, cfg, normal, signed, drop_mask=shadow)
+                    background_pointmap(recon, bg_depth, K32, img_rgb),
+                    img, cfg, normal, signed, drop_mask=shadow)
                 if len(layer.faces):
                     # most of the pixel grid now belongs to the slab, so drop the vertices
                     # the remaining faces do not use before thickening doubles them
@@ -390,6 +408,7 @@ def background_mesh_generation(keys, key_scene_dicts, key_cfgs):
                   f"(nodes: {list(geoms)})")
         else:
             # ── old behaviour: the whole background, tabletop included, from per-pixel depth ──
+            pmap = background_pointmap(recon, bg_depth, K32, img_rgb)
             mesh, _ = per_pixel_background_mesh(pmap, img, cfg, normal, signed)
             thickness = cfg["bg_mesh_thickness"]
             mesh_thick = add_thickness_below_mesh_preserve_texture(mesh, thickness, direction)

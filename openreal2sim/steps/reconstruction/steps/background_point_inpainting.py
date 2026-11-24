@@ -2,7 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Complete point-cloud geometry for inpainted background images.
-Since the background pixels are inpainted, we also need to inpaint the geomtry in the masked region. 
+Since the background pixels are inpainted, we also need to inpaint the geomtry in the masked region.
+
+Opt-in: the step runs only when the reconstruction config sets bg_point_inpainting, because
+background_mesh_generation fills the object region with the ground plane itself. Turn it on
+for bg_completion_mode "moge", the monocular depth prediction, which is the one completion
+this step can do and the mesh step cannot.
 Inputs:
     - outputs/{key}/scene/scene.pkl (must contain a "recon" key containing inpainting results)
 Outputs:
@@ -10,44 +15,28 @@ Outputs:
     - outputs/{key}/reconstruction/background_points.ply (background complete point cloud)
     - outputs/{key}/reconstruction/foreground_points.ply (foreground point cloud)
 Note:
-    - added keys in "recon": "bg_depth", "fg_depth", "bg_pts", "fg_pts"
+    - added keys in "recon": "bg_depth", "bg_pts", "fg_pts"
 """
 
-import json
 from pathlib import Path
 from typing import Tuple
 import pickle
-import cv2
 import numpy as np
 import open3d as o3d
 import torch
 import tqdm
 import yaml
 
-from moge.model.v2 import MoGeModel
-
-from openreal2sim.steps.reconstruction.utils.table_slab import depth_to_points
+from openreal2sim.steps.reconstruction.utils.table_slab import (
+    color_pointmap, dilate_mask, plane_fill)
 
 
 base_dir = Path.cwd()
 
-def dilate_mask(binary_mask: np.ndarray, pixels: int = 4, shape: str = "ellipse") -> np.ndarray:
-    """Dilate a boolean mask outward to stabilize boundary pixels near object edges."""
-    if pixels == 0:
-        return binary_mask
-    shape_map = {
-        "ellipse": cv2.MORPH_ELLIPSE,
-        "rect":    cv2.MORPH_RECT,
-        "cross":   cv2.MORPH_CROSS,
-    }
-    k = cv2.getStructuringElement(shape_map.get(shape, cv2.MORPH_ELLIPSE),
-                                  (2 * pixels + 1, 2 * pixels + 1))
-    out = cv2.dilate(binary_mask.astype(np.uint8), k, iterations=1)
-    return out.astype(bool)
-
 # ─────────────────────────── Depth prediction  ──────────────────────────
 def run_moge_depth(img_rgb: np.ndarray, device: torch.device) -> np.ndarray:
     """MoGe-2 inference (unchanged). Returns float32 depth (H,W)."""
+    from moge.model.v2 import MoGeModel
     model = MoGeModel.from_pretrained("Ruicheng/moge-2-vitl-normal").to(device).eval()
     with torch.no_grad():
         inp = torch.tensor(img_rgb/255.0, dtype=torch.float32,
@@ -101,30 +90,6 @@ def robust_scale_shift_align(
 
     return float(a), float(b)
 
-def plane_fill(depth0, K, ground, obj):
-    H,W=depth0.shape; fx,fy,cx,cy=K[0,0],K[1,1],K[0,2],K[1,2]
-
-    # fit plane on ground region
-    pts_ground = depth_to_points(depth0, K).reshape(-1, 3)[ground.ravel()]
-    pc = o3d.geometry.PointCloud(); pc.points = o3d.utility.Vector3dVector(pts_ground)
-    plane,_ = pc.segment_plane(distance_threshold=0.01, ransac_n=3, num_iterations=1000)
-    a,b,c,d = plane
-
-    # intersect rays with plane inside the object mask
-    ys,xs = np.where(obj)
-    dx = (xs - cx) / fx; dy = (ys - cy) / fy; dz = np.ones_like(dx)
-    denom = a*dx + b*dy + c*dz
-    valid = np.abs(denom) > 1e-6
-    t = np.full_like(dx, np.nan, dtype=np.float32)
-    t[valid] = -d / denom[valid]
-    valid &= (t > 0) & np.isfinite(t)
-    z_new = t[valid] * dz[valid]
-
-    depth0_filled = depth0.copy()
-    depth0_filled[ys[valid], xs[valid]] = np.clip(z_new, 0, depth0.max())
-    return depth0_filled
-
-
 def export_cloud(pts: np.ndarray, colors: np.ndarray, out_path: Path):
     pts = pts.reshape(-1,3)
     colors = colors.reshape(-1,3)
@@ -161,7 +126,6 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
         bg_img = scene_dict["recon"]["background"]  # H x W x 3, uint8
         depth0 = scene_dict["depths"][0]  # H x W, float32
         K      = scene_dict["intrinsics"].astype(np.float32)  # 3 x 3, float32
-        H, W = depth0.shape
 
         completion_mode = key_cfg["bg_completion_mode"]
         if completion_mode == "plane":
@@ -188,22 +152,17 @@ def background_point_inpainting(keys, key_scene_dicts, key_cfgs):
             depth_bg[object_mask] = depth_align[object_mask]
 
         scene_dict["recon"]["bg_depth"] = depth_bg.astype(np.float32)
-        scene_dict["recon"]["fg_depth"] = depth0.astype(np.float32)
-        bg_pts = depth_to_points(depth_bg, K).reshape(-1, 3)
-        bg_colors = bg_img.reshape(-1,3) / 255.
-        bg_color_pts = np.concatenate([bg_pts.reshape(H,W,3), bg_colors.reshape(H,W,3)], -1)
-        fg_pts = depth_to_points(depth0, K).reshape(-1, 3)
-        fg_colors = fg_img.reshape(-1,3) / 255.
-        fg_color_pts = np.concatenate([fg_pts.reshape(H,W,3), fg_colors.reshape(H,W,3)], -1)
-        scene_dict["recon"]["bg_pts"] = bg_color_pts.astype(np.float32) # (H, W, 6) xyzrgb rgb in [0,1]
-        scene_dict["recon"]["fg_pts"] = fg_color_pts.astype(np.float32) # (H, W, 6) xyzrgb rgb in [0,1]
+        bg_color_pts = color_pointmap(depth_bg, K, bg_img)  # (H, W, 6) xyzrgb, rgb in [0,1]
+        fg_color_pts = color_pointmap(depth0, K, fg_img)
+        scene_dict["recon"]["bg_pts"] = bg_color_pts
+        scene_dict["recon"]["fg_pts"] = fg_color_pts
         key_scene_dicts[key] = scene_dict
         with open(base_dir / f'outputs/{key}/scene/scene.pkl', 'wb') as f:
             pickle.dump(scene_dict, f)
 
         # exports
-        export_cloud(fg_pts, fg_colors, recon_dir / "foreground_points.ply")
-        export_cloud(bg_pts, bg_colors, recon_dir / "background_points.ply")
+        export_cloud(fg_color_pts[..., :3], fg_color_pts[..., 3:6], recon_dir / "foreground_points.ply")
+        export_cloud(bg_color_pts[..., :3], bg_color_pts[..., 3:6], recon_dir / "background_points.ply")
         print(f"[Info] [{key}] geometry inpainting done.\n")
     return key_scene_dicts
 
