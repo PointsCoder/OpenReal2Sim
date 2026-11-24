@@ -89,6 +89,28 @@ default_configs = {
                                                       # object bounding box diagonal. A refinement
                                                       # is only kept when it also lowers the cost
         "pose_refine_levels": 3,  # pattern search: how many times the step size is halved
+        "image_fit": True,  # after the uniform scale, fit the object to the frame-0 image by
+                            # rendering it: yaw, uniform scale, the placement in the ground plane
+                            # and a thickness along the ground normal, against the mask and the
+                            # depth map. Off keeps the aspect ratio of the generated mesh exactly
+        "image_fit_depth_weight": 8.0,  # metres of median depth error worth one unit of silhouette
+                                        # cost, so 8.0 makes 12 mm of depth error cost as much as
+                                        # a tenth of the mask overlap
+        "image_fit_thickness_min": 0.25,  # how far the object may be thinned along the ground
+        "image_fit_thickness_max": 1.0,   # normal. The upper bound is 1: the generated meshes are
+                                          # too thick, never too thin, and letting the fit inflate
+                                          # one lets it trade thickness against the uniform scale
+        "image_fit_upright_ratio": 1.0,  # skip the thickness axis when the object is at least this
+                                         # tall relative to its footprint: for a standing bottle
+                                         # that axis is its height, not its thickness
+        "image_fit_scale_max_factor": 1.5,  # how far the uniform scale may move from the one the
+                                            # placement set, as a factor either way
+        "image_fit_yaw_max_deg": 45.0,  # how far the fit may turn the object about the ground
+                                        # normal, so it refines the orientation the candidate
+                                        # search chose instead of replacing it
+        "image_fit_shift_max_fraction": 0.5,  # how far it may move in the plane, as a fraction of
+                                              # the object bounding box diagonal
+        "image_fit_max_iterations": 300,  # cap on the simplex refinement of each starting point
         "fdpose_tracking_mode": "normal",  # foundation pose tracking mode: "normal" or "perframe"
         "fdpose_seed_from_registration": True,  # seed the frame-0 foundation pose with the
                                                 # registered placement instead of searching a

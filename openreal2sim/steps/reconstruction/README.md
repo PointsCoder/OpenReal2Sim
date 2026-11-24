@@ -16,6 +16,8 @@ openreal2sim/steps/reconstruction
 │   ├── background_mesh_generation.py
 │   ├── sam_object_mesh_inference.py
 │   ├── sam_object_mesh_generation.py
+│   ├── pose_candidate_search.py
+│   ├── object_image_fit.py
 │   ├── scenario_construction.py
 │   ├── scenario_fdpose_optimization.py
 │   └── scenario_collision_optimization.py
@@ -61,6 +63,8 @@ We generate the 3D mesh of each object using the segmented masks and input image
 We assemble the object and background meshes together to form the complete scene.
 
 Specifically, we resize and register the object mesh to the correct position in the scene using metric image point cloud. Then, we rotate the scene (background+objects) mesh so the ground plane is aligned with the gravity Z direction. (See `steps/scenario_construction.py`)
+
+The uniform scale that step applies keeps the aspect ratio of the generated mesh, which is where the objects come out too thick for their footprint. `steps/object_image_fit.py` then fits each object to the frame-0 image: a yaw about the ground normal, the uniform scale, the placement in the ground plane and a thickness factor along the normal, with the lowest vertex held on the plane, minimising one minus the mask overlap plus `image_fit_depth_weight` times the median depth error over the mask. The thickness axis is skipped for an object taller than its footprint, where that axis is its height. It is baked into the vertices before foundation pose, which takes the registered mesh as its model, and it is turned off with `image_fit: false`.
 
 ### scenario fdpose optimization
 
